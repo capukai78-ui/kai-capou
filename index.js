@@ -207,7 +207,7 @@ const conversaciones = new Map();
 
 function llamarClaude(systemPrompt, messages, maxTokens = 400) {
   return new Promise((resolve) => {
-    const postData = JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: maxTokens, system: systemPrompt, messages });
+    const postData = JSON.stringify({ model: 'claude-sonnet-4-5-20251001', max_tokens: maxTokens, system: systemPrompt, messages });
     const options = {
       hostname: 'api.anthropic.com', path: '/v1/messages', method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'Content-Length': Buffer.byteLength(postData) }
@@ -651,7 +651,7 @@ app.post('/api/documentos/extraer-texto', authMiddleware, upload.single('file'),
     const mediaType = filename.endsWith('.pdf') ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
     const postData = JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-5-20251001',
       max_tokens: 4000,
       messages: [{
         role: 'user',
