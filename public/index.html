@@ -3,22 +3,22 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-<title>Botly — Panel Completo</title>
-<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet"/>
+<title>KAI — Colegio Capouilliez</title>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <style>
 :root{
-  --g:#00D97E;--g2:#00B865;--g3:rgba(0,217,126,.1);--g4:rgba(0,217,126,.05);
-  --bg:#050905;--bg2:#0c110d;--bg3:#111810;--bg4:#161e17;
-  --border:rgba(0,217,126,.07);--border2:rgba(0,217,126,.2);
-  --text:#eef2ee;--text2:rgba(238,242,238,.45);--text3:rgba(238,242,238,.22);
+  --g:#F5A800;--g2:#D4900A;--g3:rgba(245,168,0,.12);--g4:rgba(245,168,0,.06);
+  --bg:#06103a;--bg2:#0c1a4a;--bg3:#112058;--bg4:#162464;
+  --border:rgba(255,255,255,.07);--border2:rgba(245,168,0,.35);
+  --text:#f0f4ff;--text2:rgba(200,210,255,.55);--text3:rgba(200,210,255,.28);
   --red:#FF4B4B;--amber:#F5A623;--blue:#4B9EFF;--purple:#A855F7;
-  --font-h:'Syne',sans-serif;--font:'DM Sans',sans-serif;--r:14px;--r2:10px;
+  --font-h:'Outfit',sans-serif;--font:'Plus Jakarta Sans',sans-serif;--r:14px;--r2:10px;
 }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-font-smoothing:antialiased}
-body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:100vh}
+body{font-family:var(--font);background:linear-gradient(135deg,#06103a 0%,#0c1a4a 40%,#0f1f5a 70%,#1a1060 100%);color:var(--text);min-height:100vh}
 body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
-  background-image:linear-gradient(rgba(0,217,126,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(0,217,126,.02) 1px,transparent 1px);background-size:56px 56px;}
+  background-image:linear-gradient(rgba(245,168,0,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(245,168,0,.04) 1px,transparent 1px);background-size:56px 56px;}
 .app{display:flex;min-height:100vh;position:relative;z-index:1}
 .sb{width:228px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;position:fixed;height:100vh;z-index:50;overflow-y:auto}
 .main{margin-left:228px;flex:1;padding:26px 30px}
@@ -188,9 +188,9 @@ tr:hover td{background:var(--g4)}
 
 <div id="login-wrap" class="login-wrap">
   <div class="login-card">
-    <div class="login-logo">botly</div>
+    <div class="login-logo" style="background:linear-gradient(135deg,#F5A800,#FFD166);-webkit-background-clip:text;-webkit-text-fill-color:transparent;font-family:Outfit,sans-serif;font-size:2.2rem;font-weight:800;letter-spacing:-1px">KAI Capouilliez</div>
     <div class="login-sub">Selecciona tu rol para la demo</div>
-    <div class="fg"><label class="fl">Correo</label><input class="fi" id="l-email" type="email" placeholder="colegio@botly.io"/></div>
+    <div class="fg"><label class="fl">Correo</label><input class="fi" id="l-email" type="email" placeholder="admin@capouilliez.edu.gt"/></div>
     <div class="fg"><label class="fl">Contraseña</label><input class="fi" id="l-pass" type="password" placeholder="••••••••"/></div>
     <div class="fg" style="text-align:center;padding:8px 0">
       <div style="font-size:11px;color:var(--text3)">Tu rol se asigna automáticamente según tu cuenta</div>
@@ -202,7 +202,7 @@ tr:hover td{background:var(--g4)}
 
 <div id="app" class="app" style="display:none">
   <aside class="sb">
-    <div class="logo"><div class="logo-pulse"></div>botly</div>
+    <div class="logo"><div class="logo-pulse"></div>KAI</div>
     <div id="plan-tag" class="plan-tag">Plan Profesional</div>
     <div id="role-badge" class="role-badge ra">👑 Administrador</div>
 
@@ -242,7 +242,7 @@ tr:hover td{background:var(--g4)}
     <div class="sb-bot">
       <div class="uc">
         <div class="uav" id="u-av">C</div>
-        <div><div class="un" id="u-name">Colegio Demo</div><div class="ue" id="u-email">admin@botly.io</div></div>
+        <div><div class="un" id="u-name">Colegio Demo</div><div class="ue" id="u-email">admin@capouilliez.edu.gt</div></div>
       </div>
       <button class="logout-btn" onclick="doLogout()">⟵ Cambiar rol</button>
     </div>
@@ -373,7 +373,7 @@ tr:hover td{background:var(--g4)}
 
     <!-- COMISIONES -->
     <div id="p-comisiones" class="page">
-      <div class="ph"><div><div class="ph-title">Mis Comisiones</div><div class="ph-sub" id="com-sub">Estructura de incentivos Botly</div></div></div>
+      <div class="ph"><div><div class="ph-title">Mis Comisiones</div><div class="ph-sub" id="com-sub">Estructura de incentivos KAI</div></div></div>
       <div style="background:linear-gradient(135deg,rgba(0,217,126,.08),rgba(0,184,101,.04));border:1px solid var(--border2);border-radius:var(--r);padding:24px;margin-bottom:16px">
         <div style="font-family:var(--font-h);font-size:18px;font-weight:800;letter-spacing:-.5px;margin-bottom:4px">💰 Cuanto más largo el contrato, más ganas</div>
         <div style="font-size:13px;color:var(--text2);margin-bottom:20px">El vendedor decide qué contrato ofrecer — los contratos largos benefician a todos</div>
@@ -605,9 +605,9 @@ Conoce instalaciones, habla con maestros y descubre por qué somos la mejor opci
 
 <script>
 const API='https://kai-capouilliez.up.railway.app';
-let TOKEN=localStorage.getItem('botly_token');
-let ROLE=localStorage.getItem('botly_role')||'admin';
-let USER=JSON.parse(localStorage.getItem('botly_user')||'{"nombre":"Demo","email":"admin@botly.io"}');
+let TOKEN=localStorage.getItem('kai_token');
+let ROLE=localStorage.getItem('kai_role')||'admin';
+let USER=JSON.parse(localStorage.getItem('kai_user')||'{"nombre":"Demo","email":"admin@capouilliez.edu.gt"}');
 let cDash=null,cPipe=null,kHist=[];
 
 const LEADS=[
@@ -636,8 +636,8 @@ window.onload=async()=>{
       const d=await r.json();
       if(d.ok){
         USER=d.user; ROLE=d.user.role;
-        localStorage.setItem('botly_role',ROLE);
-        localStorage.setItem('botly_user',JSON.stringify(USER));
+        localStorage.setItem('kai_role',ROLE);
+        localStorage.setItem('kai_user',JSON.stringify(USER));
         document.getElementById('login-wrap').style.display='none';
         document.getElementById('app').style.display='flex';
         applyRole(ROLE); initApp();
@@ -669,9 +669,9 @@ async function doLogin(){
     TOKEN=d.token;
     USER=d.user;
     ROLE=d.user.role;
-    localStorage.setItem('botly_token',TOKEN);
-    localStorage.setItem('botly_role',ROLE);
-    localStorage.setItem('botly_user',JSON.stringify(USER));
+    localStorage.setItem('kai_token',TOKEN);
+    localStorage.setItem('kai_role',ROLE);
+    localStorage.setItem('kai_user',JSON.stringify(USER));
     document.getElementById('login-wrap').style.display='none';
     document.getElementById('app').style.display='flex';
     applyRole(ROLE);
