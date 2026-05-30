@@ -207,7 +207,7 @@ const conversaciones = new Map();
 
 function llamarClaude(systemPrompt, messages, maxTokens = 400) {
   return new Promise((resolve) => {
-    const postData = JSON.stringify({ model: 'claude-sonnet-4-5-20251001', max_tokens: maxTokens, system: systemPrompt, messages });
+    const postData = JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: maxTokens, system: systemPrompt, messages });
     const options = {
       hostname: 'api.anthropic.com', path: '/v1/messages', method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'Content-Length': Buffer.byteLength(postData) }
@@ -215,9 +215,9 @@ function llamarClaude(systemPrompt, messages, maxTokens = 400) {
     const apiReq = https.request(options, (apiRes) => {
       let data = '';
       apiRes.on('data', chunk => data += chunk);
-      apiRes.on('end', () => { try { resolve(JSON.parse(data).content?.[0]?.text || null); } catch(e) { resolve(null); } });
+      apiRes.on('end', () => { try { resolve(JSON.parse(data).content?.[0]?.text || null); } catch(e) { console.error('Claude parse error:', e.message, data.substring(0,200)); resolve(null); } });
     });
-    apiReq.on('error', () => resolve(null)); apiReq.write(postData); apiReq.end();
+    apiReq.on('error', (e) => { console.error('Claude API error:', e.message); resolve(null); }); apiReq.write(postData); apiReq.end();
   });
 }
 
@@ -651,7 +651,7 @@ app.post('/api/documentos/extraer-texto', authMiddleware, upload.single('file'),
     const mediaType = filename.endsWith('.pdf') ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
     const postData = JSON.stringify({
-      model: 'claude-sonnet-4-5-20251001',
+      model: 'claude-sonnet-4-6',
       max_tokens: 4000,
       messages: [{
         role: 'user',
@@ -689,7 +689,7 @@ app.post('/api/documentos/extraer-texto', authMiddleware, upload.single('file'),
           try {
             const parsed = JSON.parse(data);
             resolve(parsed.content?.[0]?.text || null);
-          } catch(e) { resolve(null); }
+          } catch(e) { console.error('Claude parse error:', e.message, data.substring(0,200)); resolve(null); }
         });
       });
       apiReq.on('error', reject);
