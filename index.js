@@ -215,9 +215,9 @@ function llamarClaude(systemPrompt, messages, maxTokens = 400) {
     const apiReq = https.request(options, (apiRes) => {
       let data = '';
       apiRes.on('data', chunk => data += chunk);
-      apiRes.on('end', () => { try { resolve(JSON.parse(data).content?.[0]?.text || null); } catch(e) { console.error('Claude parse error:', e.message, data.substring(0,200)); resolve(null); } });
+      apiRes.on('end', () => { try { resolve(JSON.parse(data).content?.[0]?.text || null); } catch(e) { resolve(null); } });
     });
-    apiReq.on('error', (e) => { console.error('Claude API error:', e.message); resolve(null); }); apiReq.write(postData); apiReq.end();
+    apiReq.on('error', () => resolve(null)); apiReq.write(postData); apiReq.end();
   });
 }
 
@@ -689,7 +689,7 @@ app.post('/api/documentos/extraer-texto', authMiddleware, upload.single('file'),
           try {
             const parsed = JSON.parse(data);
             resolve(parsed.content?.[0]?.text || null);
-          } catch(e) { console.error('Claude parse error:', e.message, data.substring(0,200)); resolve(null); }
+          } catch(e) { resolve(null); }
         });
       });
       apiReq.on('error', reject);
