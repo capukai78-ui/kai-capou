@@ -502,10 +502,15 @@ Conoce instalaciones, habla con maestros y descubre por qué somos la mejor opci
           <div class="fg" style="margin-bottom:0">
             <label class="fl">Tipo</label>
             <select class="fs" id="doc-tipo">
-              <option value="general">General</option>
-              <option value="logica_negocio">Lógica de negocio</option>
-              <option value="faq">FAQs extendidas</option>
-              <option value="inventario">Inventario / Precios</option>
+              <option value="admision">📋 Admisión</option>
+              <option value="cuotas">💰 Cuotas y Precios</option>
+              <option value="programas">🎓 Programas Académicos</option>
+              <option value="info_general">🏫 Información General</option>
+              <option value="faq">❓ Preguntas Frecuentes</option>
+              <option value="restricciones">⚠️ Restricciones KAI</option>
+              <option value="comunicacion">📞 Comunicación</option>
+              <option value="imagen">🖼️ Imagen / Infografía</option>
+              <option value="general">📄 General</option>
             </select>
           </div>
         </div>
@@ -1088,6 +1093,21 @@ function loadFaqsDemo(){
 }
 
 // ── DOCUMENTOS ───────────────────────────────────────────────────────────────
+function tipoLabel(tipo) {
+  const map = {
+    admision: '📋 Admisión',
+    cuotas: '💰 Cuotas',
+    programas: '🎓 Programas',
+    info_general: '🏫 Info General',
+    faq: '❓ FAQs',
+    restricciones: '⚠️ Restricciones',
+    comunicacion: '📞 Comunicación',
+    imagen: '🖼️ Imagen',
+    general: '📄 General'
+  };
+  return map[tipo] || tipo;
+}
+
 async function loadDocs(){
   const el=document.getElementById('docs-list');
   try{
@@ -1098,7 +1118,7 @@ async function loadDocs(){
       <div class="fc" style="margin-bottom:10px;padding:14px 18px;display:flex;justify-content:space-between;align-items:start;gap:12px">
         <div style="flex:1">
           <div style="font-weight:600;font-size:13px;margin-bottom:2px">📄 ${doc.nombre}</div>
-          <div style="font-size:11px;color:var(--text3);margin-bottom:6px">${doc.tipo} · ${new Date(doc.creado).toLocaleDateString('es-GT')}</div>
+          <div style="font-size:11px;color:var(--text3);margin-bottom:6px">${tipoLabel(doc.tipo)} · ${new Date(doc.creado).toLocaleDateString('es-GT')}</div>
           <div style="font-size:12px;color:var(--text2);line-height:1.5">${(doc.contenido||'').substring(0,150)}${doc.contenido?.length>150?'...':''}</div>
         </div>
         <button onclick="deleteDoc('${doc._id}')" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:18px;padding:0 4px">×</button>
