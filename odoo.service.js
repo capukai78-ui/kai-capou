@@ -1,6 +1,6 @@
 const https = require('https');
 
-const ODOO_URL = 'https://odoo-botly.skysize.io/jsonrpc';
+const ODOO_URL = 'https://alba.capouilliez.edu.gt/jsonrpc';
 const ODOO_BASE_URL = 'https://odoo-botly.skysize.io';
 const ODOO_DB = process.env.ODOO_DB|| 'main-xv8crc';
 const ODOO_UID = 2;
