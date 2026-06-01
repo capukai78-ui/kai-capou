@@ -80,7 +80,7 @@ const faqSchema = new mongoose.Schema({
 const documentoSchema = new mongoose.Schema({
   tenant_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Tenant' },
   nombre: String,
-  tipo: { type: String, enum: ['faq', 'logica_negocio', 'inventario', 'general'], default: 'general' },
+  tipo: { type: String, enum: ['info_general','cuotas','admision','programas','faq','restricciones','comunicacion','imagen','general'], default: 'general' },
   contenido: String,
   activo: { type: Boolean, default: true },
   creado: { type: Date, default: Date.now }
@@ -238,6 +238,21 @@ function buildSystemPrompt(tenant) {
   return base + (industria === 'colegio' ? instruccionesColegio : instruccionesGeneral);
 }
 
+
+function buildDocsContext(docs) {
+  if (!docs || !docs.length) return '';
+  let ctx = '';
+  const porCat = { restricciones:[], admision:[], cuotas:[], programas:[], info_general:[], faq:[], comunicacion:[], imagen:[], general:[] };
+  docs.forEach(d => { const c = porCat[d.tipo] !== undefined ? d.tipo : 'general'; porCat[c].push(d); });
+  if (porCat.restricciones.length)
+    ctx += '\n\n⚠️ REGLAS Y RESTRICCIONES (seguir siempre, tienen prioridad):\n' + porCat.restricciones.map(d => d.contenido.substring(0, 4000)).join('\n');
+  const orden = ['admision','cuotas','programas','info_general','faq','comunicacion','general'];
+  orden.forEach(cat => {
+    if (porCat[cat].length)
+      ctx += `\n\n=== ${cat.toUpperCase().replace('_',' ')} ===\n` + porCat[cat].map(d => `[${d.nombre}]\n${d.contenido.substring(0, 3000)}`).join('\n\n');
+  });
+  return ctx;
+}
 async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
   if (!conversaciones.has(numeroOrigen)) conversaciones.set(numeroOrigen, []);
   const historial = conversaciones.get(numeroOrigen);
@@ -248,10 +263,10 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
   try {
     const [faqs, docs] = await Promise.all([
       FAQ.find({ tenant_id: tenant._id, activo: true }).limit(20),
-      Documento.find({ tenant_id: tenant._id, activo: true }).limit(5)
+      Documento.find({ tenant_id: tenant._id, activo: true }).sort({ tipo: 1, creado: -1 }).limit(15)
     ]);
     if (faqs.length) contextoExtra += '\n\nPREGUNTAS FRECUENTES:\n' + faqs.map(f => `P: ${f.pregunta}\nR: ${f.respuesta}`).join('\n\n');
-    if (docs.length) contextoExtra += '\n\nINFO ADICIONAL DEL NEGOCIO (usa esta información para responder con precisión):\n' + docs.map(d => `=== ${d.nombre} ===\n${d.contenido.substring(0, 3000)}`).join('\n\n');
+    contextoExtra += buildDocsContext(docs);
   } catch (e) {}
   const reply = await llamarClaude(systemPrompt + contextoExtra, historial, 600);
   const respuesta = reply || 'Disculpe, tuve un problema técnico. Por favor llámenos directamente. 📞';
@@ -304,10 +319,10 @@ app.post('/demo', async (req, res) => {
       try {
         const [faqs, docs] = await Promise.all([
           FAQ.find({ tenant_id, activo: true }).limit(20),
-          Documento.find({ tenant_id, activo: true }).limit(5)
+          Documento.find({ tenant_id, activo: true }).sort({ tipo: 1, creado: -1 }).limit(15)
         ]);
         if (faqs.length) contextoExtra += '\n\nPREGUNTAS FRECUENTES:\n' + faqs.map(f => `P: ${f.pregunta}\nR: ${f.respuesta}`).join('\n\n');
-        if (docs.length) contextoExtra += '\n\nINFO DEL COLEGIO:\n' + docs.map(d => `=== ${d.nombre} ===\n${d.contenido.substring(0, 3000)}`).join('\n\n');
+        contextoExtra += buildDocsContext(docs);
       } catch(e) { console.error('Demo docs error:', e.message); }
     }
     const reply = await llamarClaude(system + contextoExtra, messages, 600);
