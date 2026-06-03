@@ -752,16 +752,27 @@ function initApp(){
   setTimeout(prevMsg,100);
 }
 
-function buildDash(){
-  const isV=ROLE==='vendedor';
-  const data=isV?LEADS.filter(l=>l.vendedor==='Carlos López'):LEADS;
-  const ins=data.filter(l=>l.estado==='inscrito').length;
-  const vis=data.filter(l=>l.estado==='visita_agendada').length;
+async function buildDash(){
+  let odooLeads=[], odooStages=[];
+  try {
+    const [rL,rS]=await Promise.all([
+      fetch(API+'/api/odoo/leads',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json()),
+      fetch(API+'/api/odoo/stages',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json())
+    ]);
+    if(rL.ok) odooLeads=rL.leads||[];
+    if(rS.ok) odooStages=rS.stages||[];
+  } catch(e){ console.warn('Odoo no disponible'); }
+  const total=odooLeads.length;
+  const inscritos=odooLeads.filter(l=>/inscrit/i.test(l.stage_id?.[1]||'')).length;
+  const visitas=odooLeads.filter(l=>/visita|visit/i.test(l.stage_id?.[1]||'')).length;
+  const nuevos=odooLeads.filter(l=>/nuevo|new/i.test(l.stage_id?.[1]||'')).length;
+  const contactados=odooLeads.filter(l=>/contactad/i.test(l.stage_id?.[1]||'')).length;
+  const perdidos=odooLeads.filter(l=>/perdid|lost/i.test(l.stage_id?.[1]||'')).length;
   document.getElementById('dash-metrics').innerHTML=`
-    <div class="mc"><div class="mc-lbl">${isV?'Mis leads':'Total leads'}</div><div class="mc-val">${data.length}</div><div class="mc-sub">capturados por Kai</div></div>
-    <div class="mc amber"><div class="mc-lbl">Visitas agendadas</div><div class="mc-val">${vis}</div><div class="mc-sub">este mes</div></div>
-    <div class="mc blue"><div class="mc-lbl">Inscritos</div><div class="mc-val">${ins}</div><div class="mc-sub">confirmados</div></div>
-    <div class="mc purple"><div class="mc-lbl">${isV?'Mi comisión':'Valor pipeline'}</div><div class="mc-val">${isV?'Q2,400':'Q47,500'}</div><div class="mc-sub">${isV?'este mes':'estimado'}</div></div>`;
+    <div class="mc"><div class="mc-lbl">Total leads Odoo</div><div class="mc-val">${total}</div><div class="mc-sub">datos en tiempo real</div></div>
+    <div class="mc amber"><div class="mc-lbl">Visitas agendadas</div><div class="mc-val">${visitas}</div><div class="mc-sub">este mes</div></div>
+    <div class="mc blue"><div class="mc-lbl">Inscritos</div><div class="mc-val">${inscritos}</div><div class="mc-sub">confirmados</div></div>
+    <div class="mc purple"><div class="mc-lbl">Etapas activas</div><div class="mc-val">${odooStages.length}</div><div class="mc-sub">en CRM</div></div>`;
   const dias=['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
   const hI=new Date().getDay();
   const lb=[],dt=[];
@@ -770,9 +781,9 @@ function buildDash(){
   if(cDash)cDash.destroy();
   cDash=new Chart(document.getElementById('c-dash'),{type:'bar',data:{labels:lb,datasets:[{data:dt,backgroundColor:dt.map((_,i)=>i===6?'rgba(0,217,126,.8)':'rgba(0,217,126,.2)'),borderColor:dt.map((_,i)=>i===6?'#00D97E':'rgba(0,217,126,.4)'),borderWidth:1,borderRadius:8,borderSkipped:false}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{color:gc},ticks:{color:tc,font:{size:11}}},y:{grid:{color:gc},ticks:{color:tc,font:{size:11},precision:0}}}}});
   if(cPipe)cPipe.destroy();
-  cPipe=new Chart(document.getElementById('c-pipe'),{type:'doughnut',data:{labels:['Nuevo','Contactado','Visita','Inscrito','Perdido'],datasets:[{data:[21,10,12,5,2],backgroundColor:['rgba(75,158,255,.7)','rgba(245,166,35,.7)','rgba(168,85,247,.7)','rgba(0,217,126,.8)','rgba(255,75,75,.5)'],borderColor:['#4B9EFF','#F5A623','#A855F7','#00D97E','#FF4B4B'],borderWidth:2}]},options:{responsive:true,maintainAspectRatio:false,cutout:'65%',plugins:{legend:{position:'bottom',labels:{color:'rgba(238,242,238,.4)',font:{size:10},padding:10,usePointStyle:true}}}}});
-  const rec=data.slice(0,5);
-  document.getElementById('t-dash').innerHTML=`<table><thead><tr><th>Padre/Madre</th><th>Grado</th><th>Sede</th><th>Estado</th><th>Fecha</th></tr></thead><tbody>${rec.map(l=>`<tr><td><div style="font-weight:500">${l.nombre}</div><div style="font-size:11px;color:var(--text2)">${l.tel}</div></td><td style="font-size:12px">${l.grado}</td><td style="font-size:12px;color:var(--text2)">${l.sede}</td><td>${sb(l.estado)}</td><td style="font-size:11px;color:var(--text3)">${l.fecha.toLocaleDateString('es-GT')}</td></tr>`).join('')}</tbody></table>`;
+  cPipe=new Chart(document.getElementById('c-pipe'),{type:'doughnut',data:{labels:['Nuevo','Contactado','Visita','Inscrito','Perdido'],datasets:[{data:[nuevos||1,contactados||1,visitas||1,inscritos||1,perdidos||1],backgroundColor:['rgba(75,158,255,.7)','rgba(245,166,35,.7)','rgba(168,85,247,.7)','rgba(0,217,126,.8)','rgba(255,75,75,.5)'],borderColor:['#4B9EFF','#F5A623','#A855F7','#00D97E','#FF4B4B'],borderWidth:2}]},options:{responsive:true,maintainAspectRatio:false,cutout:'65%',plugins:{legend:{position:'bottom',labels:{color:'rgba(238,242,238,.4)',font:{size:10},padding:10,usePointStyle:true}}}}});
+  const rec=odooLeads.slice(0,5);
+  document.getElementById('t-dash').innerHTML=rec.length?`<table><thead><tr><th>Nombre</th><th>Teléfono</th><th>Etapa</th><th>Fecha</th></tr></thead><tbody>${rec.map(l=>`<tr><td><div style="font-weight:500">${l.name||'Sin nombre'}</div></td><td style="font-size:12px;color:var(--text2)">${l.phone||'—'}</td><td><span class="bx blue">${l.stage_id?.[1]||'—'}</span></td><td style="font-size:11px;color:var(--text3)">${l.create_date?l.create_date.substring(0,10):'—'}</td></tr>`).join('')}</tbody></table>`:'<div style="text-align:center;padding:20px;color:var(--text3)">Sin leads en Odoo</div>';
 }
 
 function renderLeads(){
