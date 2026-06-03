@@ -1,234 +1,106 @@
 const https = require('https');
 
-const ODOO_URL = 'https://alba.capouilliez.edu.gt/jsonrpc';
-const ODOO_BASE_URL = 'https://odoo-botly.skysize.io';
-const ODOO_DB = process.env.ODOO_DB|| 'main-xv8crc';
-const ODOO_UID = 2;
-const ODOO_PASSWORD = process.env.ODOO_PASSWORD;
+// ===== CONFIGURACIÓN =====
+const ODOO_DOMINIO  = process.env.ODOO_URL      || 'kintechgt-capouilliez-staging-2026-05-28-32806697.dev.odoo.com';
+const ODOO_DB       = process.env.ODOO_DB       || 'kintechgt-capouilliez-staging-2026-05-28-32806697';
+const ODOO_USER     = process.env.ODOO_USER     || 'admin';
+const ODOO_PASSWORD = process.env.ODOO_PASSWORD || 'Pru3B4#2026';
 
-const PRODUCTO_ID = 3;
-const CURRENCY_GTQ = 166;
+let _uid = null;
 
-// ===== CORE =====
-function odooCall(model, method, args, kwargs = {}) {
+// ===== JSON-RPC =====
+function jsonrpc(service, method, args) {
   return new Promise((resolve) => {
-
     const payload = JSON.stringify({
-      jsonrpc: '2.0',
-      method: 'call',
-      params: {
-        service: 'object',
-        method: 'execute_kw',
-        args: [ODOO_DB, ODOO_UID, ODOO_PASSWORD, model, method, args, kwargs]
-      },
+      jsonrpc: '2.0', method: 'call',
+      params: { service, method, args },
       id: Date.now()
     });
 
-    const url = new URL(ODOO_URL);
-
     const req = https.request({
-      hostname: url.hostname,
-      path: url.pathname,
+      hostname: ODOO_DOMINIO,
+      path: '/jsonrpc',
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(payload)
+        'Content-Length': Buffer.byteLength(payload),
+        'Host': ODOO_DOMINIO
       }
     }, (res) => {
-
-      let body = '';
-
-      res.on('data', chunk => body += chunk);
-
+      let data = '';
+      res.on('data', c => data += c);
       res.on('end', () => {
         try {
-          const json = JSON.parse(body);
-
-          if (json.error) {
-            console.error('❌ ODOO:', json.error.data?.message);
-            return resolve(null);
-          }
-
-          resolve(json.result);
-
-        } catch {
-          resolve(null);
-        }
+          const r = JSON.parse(data);
+          if (r.error) { console.error('❌ ODOO:', r.error.data?.message); resolve(null); }
+          else resolve(r.result);
+        } catch(e) { resolve(null); }
       });
     });
 
-    req.on('error', () => resolve(null));
+    req.on('error', (e) => { console.error('❌ Error:', e.message); resolve(null); });
     req.write(payload);
     req.end();
   });
 }
 
-// ===== HELPERS =====
-function limpiarTelefono(tel) {
-  return tel?.replace(/\D/g, '').slice(-12);
+// ===== AUTENTICACIÓN =====
+async function getUID() {
+  if (_uid) return _uid;
+  console.log('🔑 Autenticando en Odoo...');
+  const uid = await jsonrpc('common', 'authenticate', [ODOO_DB, ODOO_USER, ODOO_PASSWORD, {}]);
+  if (!uid) { console.error('❌ Autenticación fallida'); return null; }
+  _uid = uid;
+  console.log(`✅ UID: ${uid}`);
+  return uid;
 }
 
-function detectarIntencion(texto) {
-  const t = (texto || '').toLowerCase();
-
-  return {
-    interes: /cotiz|precio|propuesta|cu[aá]nto|servicio|bot/.test(t),
-    compra: /comprar|contratar|plan/.test(t)
-  };
+// ===== EXECUTE_KW — SOLO LECTURA =====
+async function odooRead(model, domain, fields, limit = 10) {
+  const uid = await getUID();
+  if (!uid) return null;
+  return jsonrpc('object', 'execute_kw', [
+    ODOO_DB, uid, ODOO_PASSWORD,
+    model, 'search_read', [domain], { fields, limit }
+  ]);
 }
 
-// ===== TEAM =====
-async function getTeam() {
-  const res = await odooCall('crm.team', 'search_read',
-    [[['name', '=', 'Botly Ventas']]],
-    { fields: ['id'], limit: 1 }
-  );
+// ===== CONSULTAS DE SOLO LECTURA =====
 
-  if (res?.length) return res[0].id;
-
-  const id = await odooCall('crm.team', 'create', [{
-    name: 'Botly Ventas'
-  }]);
-
-  console.log('🆕 TEAM creado:', id);
-  return id;
+async function getLeads(limit = 20) {
+  return odooRead('crm.lead', [['type', '=', 'opportunity']], 
+    ['name', 'phone', 'email_from', 'stage_id', 'team_id', 'probability', 'create_date'], 
+    limit);
 }
 
-// ===== STAGE =====
-async function getStage() {
-  const res = await odooCall('crm.stage', 'search_read',
-    [[['name', '=', 'Botly Nuevo']]],
-    { fields: ['id'], limit: 1 }
-  );
-
-  if (res?.length) return res[0].id;
-
-  const id = await odooCall('crm.stage', 'create', [{
-    name: 'Botly Nuevo'
-  }]);
-
-  console.log('🆕 STAGE creado:', id);
-  return id;
+async function getStages() {
+  return odooRead('crm.stage', [], ['id', 'name', 'sequence'], 50);
 }
 
-// ===== CLIENTE =====
-async function getCliente(nombre, telefono) {
-  const res = await odooCall('res.partner', 'search_read',
-    [[['phone', '=', telefono]]],
-    { fields: ['id'], limit: 1 }
-  );
-
-  if (res?.length) return res[0].id;
-
-  const id = await odooCall('res.partner', 'create', [{
-    name: nombre || telefono,
-    phone: telefono
-  }]);
-
-  console.log('👤 Cliente creado:', id);
-  return id;
+async function getTeams() {
+  return odooRead('crm.team', [['active', '=', true]], ['id', 'name'], 20);
 }
 
-// ===== COTIZACIÓN (FIX IMPORTANTE) =====
-async function crearCotizacion(partnerId, leadId) {
-
-  const existe = await odooCall('sale.order', 'search_read',
-    [[['opportunity_id', '=', leadId]]],
-    { fields: ['id'], limit: 1 }
-  );
-
-  // 🔥 SI YA EXISTE → DEVUELVE LINK
-  if (existe?.length) {
-    const orderId = existe[0].id;
-    const link = `${ODOO_BASE_URL}/web#id=${orderId}&model=sale.order&view_type=form`;
-
-    console.log('♻️ Reutilizando cotización:', link);
-    return link;
+async function testConexion() {
+  console.log('🔄 Probando conexión con Odoo...');
+  const info = await jsonrpc('common', 'version', []);
+  if (info) {
+    console.log(`✅ Odoo ${info.server_version} conectado`);
+    return info;
   }
-
-  // 🔥 CREAR NUEVA
-  const orderId = await odooCall('sale.order', 'create', [{
-    partner_id: partnerId,
-    opportunity_id: leadId,
-    currency_id: CURRENCY_GTQ
-  }]);
-
-  if (!orderId) {
-    console.log('❌ Error creando cotización');
-    return null;
-  }
-
-  await odooCall('sale.order.line', 'create', [{
-    order_id: orderId,
-    product_id: PRODUCTO_ID,
-    product_uom_qty: 1
-  }]);
-
-  const link = `${ODOO_BASE_URL}/web#id=${orderId}&model=sale.order&view_type=form`;
-
-  console.log('💰 COTIZACIÓN OK:', link);
-
-  return link;
+  return null;
 }
 
-// ===== MAIN =====
+// ===== STUB — NO ESCRIBE NADA AÚN =====
 async function procesarMensajeWhatsApp(telefono, nombre, mensaje) {
-
-  const limpio = limpiarTelefono(telefono);
-  if (!limpio) return null;
-
-  const intent = detectarIntencion(mensaje);
-  console.log('🎯 INTENCIONES:', intent);
-
-  const teamId = await getTeam();
-  const stageId = await getStage();
-
-  let lead = await odooCall('crm.lead', 'search_read',
-    [[['phone', '=', limpio]]],
-    { fields: ['id'], limit: 1 }
-  );
-
-  let leadId = lead?.[0]?.id;
-
-  if (!leadId) {
-
-    leadId = await odooCall('crm.lead', 'create', [{
-      name: `Lead - ${nombre}`,
-      phone: limpio,
-      type: 'opportunity',
-
-      team_id: teamId,
-      user_id: ODOO_UID,
-
-      active: true,
-      probability: 10,
-      expected_revenue: 100,
-
-      description: mensaje
-    }]);
-
-    console.log('🆕 Lead creado:', leadId);
-
-    // 🔥 FORZAR VISIBILIDAD
-    await odooCall('crm.lead', 'write', [[leadId], {
-      stage_id: stageId
-    }]);
-  }
-
-  console.log('📊 Lead FINAL:', { leadId, teamId, stageId });
-
-  await odooCall('crm.lead', 'message_post', [[leadId]], {
-    body: mensaje
-  });
-
-  let link = null;
-
-  if (intent.interes || intent.compra) {
-    const partnerId = await getCliente(nombre, limpio);
-    link = await crearCotizacion(partnerId, leadId);
-  }
-
-  return { linkCotizacion: link };
+  console.log(`📱 [FASE 1 - Solo lectura] Tel: ${telefono} | Nombre: ${nombre}`);
+  return null; // No escribe nada todavía
 }
 
-module.exports = { procesarMensajeWhatsApp };
+module.exports = { 
+  procesarMensajeWhatsApp,
+  testConexion,
+  getLeads,
+  getStages,
+  getTeams
+};
