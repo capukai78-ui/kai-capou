@@ -80,7 +80,7 @@ const faqSchema = new mongoose.Schema({
 const documentoSchema = new mongoose.Schema({
   tenant_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Tenant' },
   nombre: String,
-  tipo: { type: String, enum: ['info_general','cuotas','admision','programas','aha','faq','restricciones','comunicacion','imagen','general'], default: 'general' },
+  tipo: { type: String, enum: ['info_general','cuotas','admision','programas','faq','restricciones','comunicacion','imagen','general'], default: 'general' },
   contenido: String,
   activo: { type: Boolean, default: true },
   creado: { type: Date, default: Date.now }
@@ -242,11 +242,11 @@ function buildSystemPrompt(tenant) {
 function buildDocsContext(docs) {
   if (!docs || !docs.length) return '';
   let ctx = '';
-  const porCat = { restricciones:[], admision:[], cuotas:[], programas:[], aha:[], info_general:[], faq:[], comunicacion:[], imagen:[], general:[] };
+  const porCat = { restricciones:[], admision:[], cuotas:[], programas:[], info_general:[], faq:[], comunicacion:[], imagen:[], general:[] };
   docs.forEach(d => { const c = porCat[d.tipo] !== undefined ? d.tipo : 'general'; porCat[c].push(d); });
   if (porCat.restricciones.length)
     ctx += '\n\n⚠️ REGLAS Y RESTRICCIONES (seguir siempre, tienen prioridad):\n' + porCat.restricciones.map(d => d.contenido.substring(0, 4000)).join('\n');
-  const orden = ['admision','cuotas','programas','aha','info_general','faq','comunicacion','general'];
+  const orden = ['admision','cuotas','programas','info_general','faq','comunicacion','general'];
   orden.forEach(cat => {
     if (porCat[cat].length)
       ctx += `\n\n=== ${cat.toUpperCase().replace('_',' ')} ===\n` + porCat[cat].map(d => `[${d.nombre}]\n${d.contenido.substring(0, 3000)}`).join('\n\n');
@@ -742,6 +742,39 @@ app.get('/api/admin/limites', async (req, res) => {
 });
 
 app.get('/test', (req, res) => res.send('OK'));
+
+// ===== ODOO — FASE 1: SOLO LECTURA =====
+const { testConexion, getLeads, getStages, getTeams } = require('./odoo.service');
+
+app.get('/api/odoo/test', authMiddleware, async (req, res) => {
+  try {
+    const info = await testConexion();
+    if (!info) return res.status(500).json({ ok: false, error: 'No se pudo conectar a Odoo' });
+    res.json({ ok: true, version: info.server_version, serie: info.server_serie });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.get('/api/odoo/leads', authMiddleware, async (req, res) => {
+  try {
+    const leads = await getLeads(20);
+    if (!leads) return res.status(500).json({ ok: false, error: 'Error al traer leads de Odoo' });
+    res.json({ ok: true, total: leads.length, leads });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.get('/api/odoo/stages', authMiddleware, async (req, res) => {
+  try {
+    const stages = await getStages();
+    res.json({ ok: true, stages: stages || [] });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.get('/api/odoo/teams', authMiddleware, async (req, res) => {
+  try {
+    const teams = await getTeams();
+    res.json({ ok: true, teams: teams || [] });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
 app.get('/', (req, res) => res.sendFile('index.html', { root: 'public' }));
 
 app.listen(PORT, () => {
