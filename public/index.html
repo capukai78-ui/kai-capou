@@ -786,14 +786,17 @@ async function buildDash(){
   document.getElementById('t-dash').innerHTML=rec.length?`<table><thead><tr><th>Nombre</th><th>Teléfono</th><th>Etapa</th><th>Fecha</th></tr></thead><tbody>${rec.map(l=>`<tr><td><div style="font-weight:500">${l.name||'Sin nombre'}</div></td><td style="font-size:12px;color:var(--text2)">${l.phone||'—'}</td><td><span class="bx blue">${l.stage_id?.[1]||'—'}</span></td><td style="font-size:11px;color:var(--text3)">${l.create_date?l.create_date.substring(0,10):'—'}</td></tr>`).join('')}</tbody></table>`:'<div style="text-align:center;padding:20px;color:var(--text3)">Sin leads en Odoo</div>';
 }
 
-function renderLeads(){
+async function renderLeads(){
   const est=document.getElementById('filtro-estado').value;
-  const isV=ROLE==='vendedor';
-  let data=isV?LEADS.filter(l=>l.vendedor==='Carlos López'):LEADS;
-  if(est)data=data.filter(l=>l.estado===est);
   const el=document.getElementById('t-leads');
-  if(!data.length){el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text3)">Sin leads en esta etapa</div>';return;}
-  el.innerHTML=`<table><thead><tr><th>Padre/Madre</th><th>Grado</th><th>Zona</th><th>Sede</th>${!isV?'<th>Vendedor</th>':''}<th>Estado</th><th>Acción</th></tr></thead><tbody>${data.map((l,i)=>`<tr><td><div style="font-weight:500">${l.nombre}</div><div style="font-size:11px;color:var(--text2)">${l.correo}</div></td><td style="font-size:12px">${l.grado}</td><td style="font-size:12px">${l.zona}</td><td style="font-size:12px;color:var(--text2)">${l.sede}</td>${!isV?`<td style="font-size:12px;color:var(--blue)">${l.vendedor}</td>`:''}<td>${sb(l.estado)}</td><td><select onchange="LEADS[${i}].estado=this.value;showToast('Estado actualizado ✓','ok')" style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:11px;color:var(--text);outline:none">${['nuevo','contactado','visita_agendada','inscrito','perdido'].map(s=>`<option value="${s}" ${l.estado===s?'selected':''}>${s.replace('_',' ')}</option>`).join('')}</select></td></tr>`).join('')}</tbody></table>`;
+  el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text3)">Cargando...</div>';
+  let odooLeads=[];
+  try{
+    const r=await fetch(API+'/api/odoo/leads',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+    if(r.ok) odooLeads=r.leads||[];
+  }catch(e){}
+  if(!odooLeads.length){el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text3)">Sin leads en Odoo</div>';return;}
+  el.innerHTML=`<table><thead><tr><th>Nombre</th><th>Teléfono</th><th>Correo</th><th>Etapa</th><th>Fecha</th></tr></thead><tbody>${odooLeads.map(l=>`<tr><td><div style="font-weight:500">${l.name||'Sin nombre'}</div></td><td style="font-size:12px;color:var(--text2)">${l.phone||'—'}</td><td style="font-size:12px;color:var(--text2)">${l.email_from||'—'}</td><td><span class="bx blue">${l.stage_id?.[1]||'—'}</span></td><td style="font-size:11px;color:var(--text3)">${l.create_date?l.create_date.substring(0,10):'—'}</td></tr>`).join('')}</tbody></table>`;
 }
 
 function sb(e){const m={nuevo:'<span class="bx blue">Nuevo</span>',contactado:'<span class="bx warn">Contactado</span>',visita_agendada:'<span class="bx purple">Visita agendada</span>',inscrito:'<span class="bx ok">Inscrito</span>',perdido:'<span class="bx red">Perdido</span>'};return m[e]||`<span class="bx">${e}</span>`;}
