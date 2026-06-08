@@ -1,10 +1,10 @@
 const https = require('https');
 
-// ===== CONFIGURACIÓN =====
-const ODOO_DOMINIO  = process.env.ODOO_URL      || 'kintechgt-capouilliez-staging-2026-05-28-32806697.dev.odoo.com';
-const ODOO_DB       = process.env.ODOO_DB       || 'kintechgt-capouilliez-staging-2026-05-28-32806697';
+// ===== CONFIGURACIÓN PRODUCCIÓN CAPOUILLIEZ =====
+const ODOO_DOMINIO  = process.env.ODOO_URL      || 'kintechgt-capouilliez.odoo.com';
+const ODOO_DB       = process.env.ODOO_DB       || 'kintechgt-capouilliez-prod-2395037';
 const ODOO_USER     = process.env.ODOO_USER     || 'admin';
-const ODOO_PASSWORD = process.env.ODOO_PASSWORD || 'Pru3B4#2026';
+const ODOO_PASSWORD = process.env.ODOO_PASSWORD || 'C4p0Odoo#2026';
 
 let _uid = null;
 
@@ -16,11 +16,8 @@ function jsonrpc(service, method, args) {
       params: { service, method, args },
       id: Date.now()
     });
-
     const req = https.request({
-      hostname: ODOO_DOMINIO,
-      path: '/jsonrpc',
-      method: 'POST',
+      hostname: ODOO_DOMINIO, path: '/jsonrpc', method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(payload),
@@ -37,17 +34,16 @@ function jsonrpc(service, method, args) {
         } catch(e) { resolve(null); }
       });
     });
-
     req.on('error', (e) => { console.error('❌ Error:', e.message); resolve(null); });
     req.write(payload);
     req.end();
   });
 }
 
-// ===== AUTENTICACIÓN =====
+// ===== AUTENTICACIÓN DINÁMICA =====
 async function getUID() {
   if (_uid) return _uid;
-  console.log('🔑 Autenticando en Odoo...');
+  console.log('🔑 Autenticando en Odoo Capouilliez producción...');
   const uid = await jsonrpc('common', 'authenticate', [ODOO_DB, ODOO_USER, ODOO_PASSWORD, {}]);
   if (!uid) { console.error('❌ Autenticación fallida'); return null; }
   _uid = uid;
@@ -55,52 +51,95 @@ async function getUID() {
   return uid;
 }
 
-// ===== EXECUTE_KW — SOLO LECTURA =====
-async function odooRead(model, domain, fields, limit = 10) {
+// ===== EXECUTE_KW =====
+async function odooRead(model, domain, fields, limit = 100, offset = 0) {
   const uid = await getUID();
   if (!uid) return null;
   return jsonrpc('object', 'execute_kw', [
     ODOO_DB, uid, ODOO_PASSWORD,
-    model, 'search_read', [domain], { fields, limit }
+    model, 'search_read', [domain],
+    { fields, limit, offset, order: 'create_date desc' }
   ]);
 }
 
-// ===== CONSULTAS DE SOLO LECTURA =====
+async function odooCount(model, domain) {
+  const uid = await getUID();
+  if (!uid) return 0;
+  const r = await jsonrpc('object', 'execute_kw', [
+    ODOO_DB, uid, ODOO_PASSWORD,
+    model, 'search_count', [domain]
+  ]);
+  return r || 0;
+}
 
-async function getLeads(limit = 20) {
-  return odooRead('crm.lead', [['type', '=', 'opportunity']], 
-    ['name', 'phone', 'email_from', 'stage_id', 'team_id', 'probability', 'create_date'], 
-    limit);
+// ===== CONSULTAS PARA DASHBOARD DE MARKETING =====
+
+async function getLeads(limit = 100) {
+  return odooRead('crm.lead',
+    [['type','=','opportunity']],
+    ['name','phone','email_from','stage_id','user_id','tag_ids',
+     'probability','create_date','date_closed','active',
+     'lost_reason_id','partner_name'],
+    limit
+  );
+}
+
+async function getLeadsPerdidos(limit = 100) {
+  return odooRead('crm.lead',
+    [['type','=','opportunity'],['active','=',false]],
+    ['name','phone','stage_id','user_id','lost_reason_id',
+     'create_date','date_closed','tag_ids'],
+    limit
+  );
 }
 
 async function getStages() {
-  return odooRead('crm.stage', [], ['id', 'name', 'sequence'], 50);
+  return odooRead('crm.stage', [], ['id','name','sequence','probability'], 100);
 }
 
 async function getTeams() {
-  return odooRead('crm.team', [['active', '=', true]], ['id', 'name'], 20);
+  return odooRead('crm.team', [['active','=',true]], ['id','name'], 20);
+}
+
+async function getLostReasons() {
+  return odooRead('crm.lost.reason', [], ['id','name'], 50);
+}
+
+async function getTags() {
+  return odooRead('crm.tag', [], ['id','name'], 100);
+}
+
+async function getUsuarios() {
+  return odooRead('res.users',
+    [['active','=',true]],
+    ['id','name','login'], 50
+  );
 }
 
 async function testConexion() {
-  console.log('🔄 Probando conexión con Odoo...');
+  console.log('🔄 Probando conexión con Odoo Capouilliez...');
   const info = await jsonrpc('common', 'version', []);
   if (info) {
-    console.log(`✅ Odoo ${info.server_version} conectado`);
+    console.log(`✅ Odoo ${info.server_version} — ${ODOO_DOMINIO}`);
     return info;
   }
   return null;
 }
 
-// ===== STUB — NO ESCRIBE NADA AÚN =====
+// ===== STUB FASE 1 — NO ESCRIBE AÚN =====
 async function procesarMensajeWhatsApp(telefono, nombre, mensaje) {
-  console.log(`📱 [FASE 1 - Solo lectura] Tel: ${telefono} | Nombre: ${nombre}`);
-  return null; // No escribe nada todavía
+  console.log(`📱 [FASE 1] Tel: ${telefono} | Nombre: ${nombre}`);
+  return null;
 }
 
-module.exports = { 
+module.exports = {
   procesarMensajeWhatsApp,
   testConexion,
   getLeads,
+  getLeadsPerdidos,
   getStages,
-  getTeams
+  getTeams,
+  getLostReasons,
+  getTags,
+  getUsuarios
 };
