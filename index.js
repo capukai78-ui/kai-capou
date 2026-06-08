@@ -743,8 +743,8 @@ app.get('/api/admin/limites', async (req, res) => {
 
 app.get('/test', (req, res) => res.send('OK'));
 
-// ===== ODOO — FASE 1: SOLO LECTURA =====
-const { testConexion, getLeads, getStages, getTeams } = require('./odoo.service');
+// ===== ODOO PRODUCCIÓN — CAPOUILLIEZ =====
+const { testConexion, getLeads, getLeadsPerdidos, getStages, getTeams, getLostReasons, getTags, getUsuarios } = require('./odoo.service');
 
 app.get('/api/odoo/test', authMiddleware, async (req, res) => {
   try {
@@ -756,9 +756,17 @@ app.get('/api/odoo/test', authMiddleware, async (req, res) => {
 
 app.get('/api/odoo/leads', authMiddleware, async (req, res) => {
   try {
-    const leads = await getLeads(20);
-    if (!leads) return res.status(500).json({ ok: false, error: 'Error al traer leads de Odoo' });
+    const limit = parseInt(req.query.limit) || 200;
+    const leads = await getLeads(limit);
+    if (!leads) return res.status(500).json({ ok: false, error: 'Error al traer leads' });
     res.json({ ok: true, total: leads.length, leads });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.get('/api/odoo/leads/perdidos', authMiddleware, async (req, res) => {
+  try {
+    const leads = await getLeadsPerdidos(500);
+    res.json({ ok: true, total: leads?.length || 0, leads: leads || [] });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
@@ -773,6 +781,55 @@ app.get('/api/odoo/teams', authMiddleware, async (req, res) => {
   try {
     const teams = await getTeams();
     res.json({ ok: true, teams: teams || [] });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.get('/api/odoo/lost-reasons', authMiddleware, async (req, res) => {
+  try {
+    const reasons = await getLostReasons();
+    res.json({ ok: true, reasons: reasons || [] });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.get('/api/odoo/tags', authMiddleware, async (req, res) => {
+  try {
+    const tags = await getTags();
+    res.json({ ok: true, tags: tags || [] });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.get('/api/odoo/usuarios', authMiddleware, async (req, res) => {
+  try {
+    const usuarios = await getUsuarios();
+    res.json({ ok: true, usuarios: usuarios || [] });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// Dashboard marketing — un solo endpoint
+app.get('/api/odoo/dashboard', authMiddleware, async (req, res) => {
+  try {
+    const [leads, perdidos, stages, reasons, tags, usuarios] = await Promise.all([
+      getLeads(500), getLeadsPerdidos(500), getStages(),
+      getLostReasons(), getTags(), getUsuarios()
+    ]);
+    const porEtapa = {}, porUsuario = {}, porMotivo = {};
+    (leads||[]).forEach(l => {
+      const e = l.stage_id?.[1]||'Sin etapa';
+      porEtapa[e] = (porEtapa[e]||0)+1;
+      const u = l.user_id?.[1]||'Sin asignar';
+      porUsuario[u] = (porUsuario[u]||0)+1;
+    });
+    (perdidos||[]).forEach(l => {
+      const m = l.lost_reason_id?.[1]||'Sin motivo';
+      porMotivo[m] = (porMotivo[m]||0)+1;
+    });
+    res.json({
+      ok: true,
+      resumen: { totalLeads:(leads||[]).length, totalPerdidos:(perdidos||[]).length, totalEtapas:(stages||[]).length },
+      porEtapa, porUsuario, porMotivo,
+      ultimosLeads: (leads||[]).slice(0,10),
+      stages: stages||[], reasons: reasons||[], tags: tags||[]
+    });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 app.get('/', (req, res) => res.sendFile('index.html', { root: 'public' }));
