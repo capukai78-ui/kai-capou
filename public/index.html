@@ -222,6 +222,9 @@ tr:hover td{background:var(--g4)}
     <a class="nl" onclick="nav('comisiones',this)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>Mis Comisiones
     </a>
+    <a class="nl" id="nav-marketing" onclick="nav('marketing',this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>Marketing
+    </a>
     <div class="ns" style="margin-top:6px" id="ns-admin">Config</div>
     <a class="nl" id="nav-faqs" onclick="nav('faqs',this)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>FAQs del Bot
@@ -742,6 +745,109 @@ function nav(page,el){
   if(page==='usuarios'){loadUsuarios();loadSedes();}
   if(page==='faqs')loadFaqs();
   if(page==='docs')loadDocs();
+  if(page==='marketing')loadMarketing();
+}
+
+async function loadMarketing(){
+  const kpisEl=document.getElementById('mkt-kpis');
+  const pipeEl=document.getElementById('mkt-pipeline');
+  const perdEl=document.getElementById('mkt-perdidos');
+  const equipoEl=document.getElementById('mkt-equipo');
+  const leadsEl=document.getElementById('mkt-leads');
+
+  kpisEl.innerHTML='<div class="mc"><div class="mc-lbl">Cargando datos de Odoo...</div><div class="mc-val">⏳</div></div>';
+
+  let dash={resumen:{totalLeads:0,totalPerdidos:0,totalEtapas:0},porEtapa:{},porUsuario:{},porMotivo:{},ultimosLeads:[]};
+  try{
+    const r=await fetch(API+'/api/odoo/dashboard',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+    if(r.ok) dash=r;
+  }catch(e){console.warn('Error cargando marketing:',e);}
+
+  const {totalLeads,totalPerdidos}=dash.resumen;
+  const inscritos=Object.entries(dash.porEtapa).filter(([k])=>/inscrit/i.test(k)).reduce((a,[,v])=>a+v,0);
+  const conv=totalLeads>0?Math.round((inscritos/totalLeads)*100):0;
+
+  // KPIs
+  kpisEl.innerHTML=`
+    <div class="mc"><div class="mc-lbl">Leads activos</div><div class="mc-val">${totalLeads}</div><div class="mc-sub">en Odoo producción</div></div>
+    <div class="mc" style="border-top:2px solid var(--red,#E24B4A)"><div class="mc-lbl">Leads perdidos</div><div class="mc-val" style="color:var(--red,#E24B4A)">${totalPerdidos}</div><div class="mc-sub">requieren análisis</div></div>
+    <div class="mc" style="border-top:2px solid var(--green,#00D97E)"><div class="mc-lbl">Inscritos</div><div class="mc-val" style="color:var(--green,#00D97E)">${inscritos}</div><div class="mc-sub">confirmados</div></div>
+    <div class="mc" style="border-top:2px solid var(--purple,#A855F7)"><div class="mc-lbl">Conversión</div><div class="mc-val" style="color:var(--purple,#A855F7)">${conv}%</div><div class="mc-sub">leads → inscritos</div></div>`;
+
+  // Pipeline
+  const etapasOrden=['Ciclo 2027','2026 - Inscritos','Evaluación Enero','Confirmados Open 12 de julio','Intereated','12 y 13 mayo','Abono Inscripciones 2027','Inside Tour 19 marzo 2026','Seleccionados'];
+  const maxPipe=Math.max(...Object.values(dash.porEtapa),1);
+  pipeEl.innerHTML=Object.entries(dash.porEtapa)
+    .sort((a,b)=>b[1]-a[1]).slice(0,10)
+    .map(([etapa,n])=>{
+      const pct=Math.round((n/maxPipe)*100);
+      const color=(/inscrit/i.test(etapa)?'var(--green,#00D97E)':/selecc/i.test(etapa)?'var(--amber,#F5A623)':/eval/i.test(etapa)?'var(--purple,#A855F7)':/abono/i.test(etapa)?'var(--blue,#4B9EFF)':'var(--blue,#4B9EFF)');
+      return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12px">
+        <div style="min-width:160px;color:var(--text2);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${etapa}">${etapa}</div>
+        <div style="flex:1;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden">
+          <div style="width:${pct}%;height:100%;background:${color};border-radius:3px"></div>
+        </div>
+        <div style="min-width:24px;text-align:right;font-weight:500">${n}</div>
+      </div>`;
+    }).join('');
+
+  // Motivos de pérdida
+  const maxMot=Math.max(...Object.values(dash.porMotivo),1);
+  perdEl.innerHTML=Object.entries(dash.porMotivo)
+    .sort((a,b)=>b[1]-a[1]).slice(0,10)
+    .map(([motivo,n])=>{
+      const pct=Math.round((n/maxMot)*100);
+      const color=n>40?'var(--red,#E24B4A)':n>20?'#F09595':'#FFBBBB';
+      return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12px">
+        <div style="min-width:160px;color:var(--text2);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${motivo}">${motivo}</div>
+        <div style="flex:1;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden">
+          <div style="width:${pct}%;height:100%;background:${color};border-radius:3px"></div>
+        </div>
+        <div style="min-width:24px;text-align:right;font-weight:500">${n}</div>
+      </div>`;
+    }).join('');
+
+  // Rendimiento equipo
+  const equipo=[
+    {nombre:'Sylvia Flores',correo:'sylvia@capouilliez.edu.gt',rol:'Coordinadora',color:'#F5A800'},
+    {nombre:'Cindy Godoy',correo:'cindy.godoy@capouilliez.edu.gt',rol:'Asesora de admisiones',color:'#378ADD'},
+    {nombre:'Vanessa Carreto',correo:'vanessa.carreto@capouilliez.edu.gt',rol:'Asesora de admisiones',color:'#1D9E75'},
+  ];
+  const totalPorUsuario=Object.values(dash.porUsuario).reduce((a,b)=>a+b,0)||1;
+  equipoEl.innerHTML=`<table><thead><tr>
+    <th>Asesora</th><th>Rol</th><th>Leads asignados</th><th>% del total</th><th>Estado</th>
+  </tr></thead><tbody>${equipo.map(p=>{
+    const leads=dash.porUsuario[p.nombre]||0;
+    const pct=Math.round((leads/totalPorUsuario)*100);
+    const status=leads>0?`<span class="bx blue">Activa</span>`:`<span class="bx" style="background:var(--bg3);color:var(--text3)">Sin leads asignados</span>`;
+    return `<tr>
+      <td><div style="font-weight:500;color:${p.color}">${p.nombre}</div><div style="font-size:11px;color:var(--text3)">${p.correo}</div></td>
+      <td style="font-size:12px;color:var(--text2)">${p.rol}</td>
+      <td style="font-size:14px;font-weight:500">${leads}</td>
+      <td><div style="display:flex;align-items:center;gap:6px">
+        <div style="width:60px;height:4px;background:var(--bg3);border-radius:2px;overflow:hidden">
+          <div style="width:${pct}%;height:100%;background:${p.color};border-radius:2px"></div>
+        </div>
+        <span style="font-size:11px">${pct}%</span>
+      </div></td>
+      <td>${status}</td>
+    </tr>`;
+  }).join('')}</tbody></table>
+  <div style="margin-top:10px;padding:10px 12px;background:var(--bg2);border-radius:8px;font-size:11px;color:var(--text3)">
+    💡 Para ver comisiones individuales, los leads deben estar asignados en Odoo a cada asesora. 
+    Cindy y Vanessa aún no tienen leads reasignados — coordinar con Sylvia.
+  </div>`;
+
+  // Últimos leads
+  leadsEl.innerHTML=dash.ultimosLeads.length?`<table><thead><tr>
+    <th>Nombre</th><th>Teléfono</th><th>Etapa</th><th>Fecha</th>
+  </tr></thead><tbody>${dash.ultimosLeads.map(l=>`<tr>
+    <td style="font-weight:500">${l.name||'Sin nombre'}</td>
+    <td style="font-size:12px;color:var(--text2)">${l.phone||'—'}</td>
+    <td><span class="bx blue" style="font-size:10px">${l.stage_id?.[1]||'—'}</span></td>
+    <td style="font-size:11px;color:var(--text3)">${l.create_date?l.create_date.substring(0,10):'—'}</td>
+  </tr>`).join('')}</tbody></table>`
+  :'<div style="text-align:center;padding:20px;color:var(--text3)">Sin datos</div>';
 }
 
 function initApp(){
