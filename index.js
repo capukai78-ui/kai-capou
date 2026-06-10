@@ -138,6 +138,21 @@ const LeadDetallado = mongoose.model('LeadDetallado', leadDetalladoSchema);
 const Sede          = mongoose.model('Sede', sedeSchema);
 const UsuarioPanel  = mongoose.model('UsuarioPanel', usuarioPanelSchema);
 
+// ===== MODELO CITA =====
+const citaSchema = new mongoose.Schema({
+  tenant_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Tenant' },
+  nombre:    { type: String, required: true },
+  telefono:  { type: String },
+  grado:     { type: String },
+  sede:      { type: String, default: 'Sede Central' },
+  fecha:     { type: String },
+  hora:      { type: String, default: '09:00 AM' },
+  tipo:      { type: String, default: 'open_house' },
+  estado:    { type: String, enum: ['confirmada','pendiente','cancelada'], default: 'confirmada' },
+  creado:    { type: Date, default: Date.now }
+});
+const Cita = mongoose.model('Cita', citaSchema);
+
 // ===== MIDDLEWARE AUTH =====
 function authMiddleware(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
@@ -630,7 +645,7 @@ app.get('/api/leads-stats', authMiddleware, async (req, res) => { try { const ti
 // ===== AGENDAR CITA =====
 app.post('/api/agendar-cita', async (req, res) => {
   try {
-    const { nombre, telefono, grado, fecha, hora, tipo } = req.body;
+    const { nombre, telefono, grado, fecha, hora, tipo, sede } = req.body;
     if (!nombre||!telefono||!fecha) return res.status(400).json({ error: 'Nombre, teléfono y fecha requeridos' });
     let leadId = null;
     try {
@@ -640,7 +655,81 @@ app.post('/api/agendar-cita', async (req, res) => {
       const fechaHora = `${fecha} ${hora?.replace(' AM','').replace(' PM','')||'09:00'}:00`;
       await odooCallLocal('mail.activity','create',[{ res_model:'crm.lead', res_id:leadId, activity_type_id:1, summary:`Open House — ${grado}`, note:`Padre: ${nombre}\nTel: ${telefono}\nGrado: ${grado}\nFecha: ${fecha} ${hora}`, date_deadline:fecha, user_id:2 }]);
     } catch (odooErr) { console.error('⚠️ Odoo cita:', odooErr.message); }
+
+    // Guardar en MongoDB también
+    try {
+      const tenantId = req.body.tenant_id;
+      await Cita.create({ tenant_id: tenantId, nombre, telefono, grado, sede: sede||'Sede Central', fecha, hora: hora||'09:00 AM', tipo: tipo||'open_house', estado: 'confirmada' });
+    } catch(e) { console.warn('Cita MongoDB:', e.message); }
+
     res.json({ ok:true, odoo_id:leadId, mensaje:`Cita agendada para ${nombre} el ${fecha} a las ${hora}` });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ===== CITAS — GET y gestión =====
+app.get('/api/citas', authMiddleware, async (req, res) => {
+  try {
+    const citas = await Cita.find({ tenant_id: req.user.tenant_id }).sort({ creado: -1 }).limit(100);
+    res.json({ ok: true, citas });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/citas/:id', authMiddleware, async (req, res) => {
+  try {
+    const cita = await Cita.findOneAndUpdate(
+      { _id: req.params.id, tenant_id: req.user.tenant_id },
+      req.body, { new: true }
+    );
+    res.json({ ok: true, cita });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ===== CAMPAÑA DE PRUEBA — enviar mensaje a un número =====
+app.post('/api/campana/prueba', authMiddleware, async (req, res) => {
+  try {
+    const { telefono, mensaje } = req.body;
+    if (!telefono || !mensaje) return res.status(400).json({ error: 'Teléfono y mensaje requeridos' });
+
+    const PHONE_ID = process.env.WHATSAPP_PHONE_ID;
+    const TOKEN_WA = process.env.WHATSAPP_TOKEN;
+
+    if (!PHONE_ID || !TOKEN_WA) {
+      return res.status(400).json({ error: 'WhatsApp no configurado. Agrega WHATSAPP_PHONE_ID y WHATSAPP_TOKEN en Railway.' });
+    }
+
+    const https = require('https');
+    const body = JSON.stringify({
+      messaging_product: 'whatsapp',
+      to: telefono.replace(/\D/g,''),
+      type: 'text',
+      text: { body: mensaje }
+    });
+
+    const result = await new Promise((resolve, reject) => {
+      const req2 = https.request({
+        hostname: 'graph.facebook.com',
+        path: `/v19.0/${PHONE_ID}/messages`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${TOKEN_WA}`,
+          'Content-Length': Buffer.byteLength(body)
+        }
+      }, (r) => {
+        let d = '';
+        r.on('data', c => d += c);
+        r.on('end', () => { try { resolve(JSON.parse(d)); } catch(e) { resolve({ raw: d }); } });
+      });
+      req2.on('error', reject);
+      req2.write(body);
+      req2.end();
+    });
+
+    if (result.messages) {
+      res.json({ ok: true, mensaje: 'Mensaje enviado correctamente', id: result.messages[0]?.id });
+    } else {
+      res.status(400).json({ ok: false, error: result.error?.message || 'Error al enviar', detalle: result });
+    }
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -742,6 +831,91 @@ app.get('/api/admin/limites', async (req, res) => {
 });
 
 app.get('/test', (req, res) => res.send('OK'));
+
+// ===== ODOO PRODUCCIÓN — CAPOUILLIEZ =====
+const { testConexion, getLeads, getLeadsPerdidos, getStages, getTeams, getLostReasons, getTags, getUsuarios } = require('./odoo.service');
+
+app.get('/api/odoo/test', authMiddleware, async (req, res) => {
+  try {
+    const info = await testConexion();
+    if (!info) return res.status(500).json({ ok: false, error: 'No se pudo conectar a Odoo' });
+    res.json({ ok: true, version: info.server_version, serie: info.server_serie });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.get('/api/odoo/leads', authMiddleware, async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 200;
+    const leads = await getLeads(limit);
+    if (!leads) return res.status(500).json({ ok: false, error: 'Error al traer leads' });
+    res.json({ ok: true, total: leads.length, leads });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.get('/api/odoo/leads/perdidos', authMiddleware, async (req, res) => {
+  try {
+    const leads = await getLeadsPerdidos(500);
+    res.json({ ok: true, total: leads?.length||0, leads: leads||[] });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.get('/api/odoo/stages', authMiddleware, async (req, res) => {
+  try {
+    const stages = await getStages();
+    res.json({ ok: true, stages: stages||[] });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.get('/api/odoo/teams', authMiddleware, async (req, res) => {
+  try {
+    const teams = await getTeams();
+    res.json({ ok: true, teams: teams||[] });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.get('/api/odoo/lost-reasons', authMiddleware, async (req, res) => {
+  try {
+    const reasons = await getLostReasons();
+    res.json({ ok: true, reasons: reasons||[] });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.get('/api/odoo/tags', authMiddleware, async (req, res) => {
+  try {
+    const tags = await getTags();
+    res.json({ ok: true, tags: tags||[] });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.get('/api/odoo/usuarios', authMiddleware, async (req, res) => {
+  try {
+    const usuarios = await getUsuarios();
+    res.json({ ok: true, usuarios: usuarios||[] });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.get('/api/odoo/dashboard', authMiddleware, async (req, res) => {
+  try {
+    const [leads, perdidos, stages, reasons, tags] = await Promise.all([
+      getLeads(500), getLeadsPerdidos(500), getStages(), getLostReasons(), getTags()
+    ]);
+    const porEtapa={}, porUsuario={}, porMotivo={};
+    (leads||[]).forEach(l=>{
+      const e=l.stage_id?.[1]||'Sin etapa'; porEtapa[e]=(porEtapa[e]||0)+1;
+      const u=l.user_id?.[1]||'Sin asignar'; porUsuario[u]=(porUsuario[u]||0)+1;
+    });
+    (perdidos||[]).forEach(l=>{
+      const m=l.lost_reason_id?.[1]||'Sin motivo'; porMotivo[m]=(porMotivo[m]||0)+1;
+    });
+    res.json({
+      ok:true,
+      resumen:{ totalLeads:(leads||[]).length, totalPerdidos:(perdidos||[]).length, totalEtapas:(stages||[]).length },
+      porEtapa, porUsuario, porMotivo,
+      ultimosLeads:(leads||[]).slice(0,10),
+      stages:stages||[], reasons:reasons||[], tags:tags||[]
+    });
+  } catch (err) { res.status(500).json({ ok:false, error:err.message }); }
+});
 
 // ===== ODOO PRODUCCIÓN — CAPOUILLIEZ =====
 const { testConexion, getLeads, getLeadsPerdidos, getStages, getTeams, getLostReasons, getTags, getUsuarios } = require('./odoo.service');
