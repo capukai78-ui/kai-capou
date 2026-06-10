@@ -618,6 +618,28 @@ Conoce instalaciones, habla con maestros y descubre por qué somos la mejor opci
         </div>
       </div>
     </div>
+
+    <div class="page" id="p-marketing">
+      <div class="ph">
+        <div><div class="ph-title">Marketing &amp; Rendimiento</div><div class="ph-sub">Pipeline real · Equipo · Motivos de pérdida — Odoo producción</div></div>
+        <button class="rpill" onclick="loadMarketing()">↻ Actualizar</button>
+      </div>
+      <div class="dash-metrics" id="mkt-kpis">
+        <div class="mc"><div class="mc-lbl">Cargando...</div><div class="mc-val">⏳</div></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+        <div class="tw"><div class="tw-h"><div class="tw-t">📊 Pipeline por etapa</div></div><div id="mkt-pipeline" style="padding:12px 16px"></div></div>
+        <div class="tw"><div class="tw-h"><div class="tw-t">❌ Top motivos de pérdida</div></div><div id="mkt-perdidos" style="padding:12px 16px"></div></div>
+      </div>
+      <div class="tw" style="margin-bottom:16px">
+        <div class="tw-h"><div class="tw-t">👥 Rendimiento del equipo</div></div>
+        <div id="mkt-equipo" style="padding:12px 16px"></div>
+      </div>
+      <div class="tw">
+        <div class="tw-h"><div class="tw-t">🕐 Últimos leads en Odoo</div><div style="font-size:11px;color:var(--text3)">Tiempo real · Producción</div></div>
+        <div id="mkt-leads"></div>
+      </div>
+    </div>
   </main>
 </div>
 <div class="toast" id="toast"></div>
