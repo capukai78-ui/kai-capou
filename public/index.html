@@ -8,17 +8,17 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <style>
 :root{
-  --g:#F5A800;--g2:#D4900A;--g3:rgba(245,168,0,.12);--g4:rgba(245,168,0,.06);
-  --bg:#06103a;--bg2:#0c1a4a;--bg3:#112058;--bg4:#162464;
-  --border:rgba(255,255,255,.07);--border2:rgba(245,168,0,.35);
-  --text:#f0f4ff;--text2:rgba(200,210,255,.55);--text3:rgba(200,210,255,.28);
-  --red:#FF4B4B;--amber:#F5A623;--blue:#4B9EFF;--purple:#A855F7;
+  --g:#0FCF7A;--g2:#0BAF67;--g3:rgba(15,207,122,.12);--g4:rgba(15,207,122,.06);
+  --bg:#04140D;--bg2:#071A10;--bg3:#0B2318;--bg4:#0F2E1E;
+  --border:rgba(255,255,255,.08);--border2:rgba(15,207,122,.35);
+  --text:#E8F5EE;--text2:rgba(180,220,195,.60);--text3:rgba(180,220,195,.32);
+  --red:#FF5C5C;--amber:#FFB830;--blue:#38C5FF;--purple:#C084FC;--green:#0FCF7A;
   --font-h:'Outfit',sans-serif;--font:'Plus Jakarta Sans',sans-serif;--r:14px;--r2:10px;
 }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-font-smoothing:antialiased}
-body{font-family:var(--font);background:linear-gradient(135deg,#06103a 0%,#0c1a4a 40%,#0f1f5a 70%,#1a1060 100%);color:var(--text);min-height:100vh}
+body{font-family:var(--font);background:linear-gradient(135deg,#04140D 0%,#071A10 40%,#0B2318 70%,#0D2B1C 100%);color:var(--text);min-height:100vh}
 body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
-  background-image:linear-gradient(rgba(245,168,0,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(245,168,0,.04) 1px,transparent 1px);background-size:56px 56px;}
+  background-image:linear-gradient(rgba(15,207,122,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(15,207,122,.04) 1px,transparent 1px);background-size:56px 56px;}
 .app{display:flex;min-height:100vh;position:relative;z-index:1}
 .sb{width:228px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;position:fixed;height:100vh;z-index:50;overflow-y:auto}
 .main{margin-left:228px;flex:1;padding:26px 30px}
@@ -35,7 +35,7 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
 .ns{font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.12em;padding:0 20px 5px;margin-top:4px}
 .nl{display:flex;align-items:center;gap:10px;padding:9px 20px;font-size:13px;color:var(--text2);cursor:pointer;transition:all .15s;border-left:2px solid transparent;text-decoration:none}
 .nl:hover{color:var(--text);background:var(--g4)}
-.nl.active{color:var(--g);background:var(--g3);border-left-color:var(--g);font-weight:500}
+.nl.active{color:var(--g);background:var(--g3);border-left-color:var(--g);font-weight:600;letter-spacing:-.01em}
 .nl svg{width:15px;height:15px;opacity:.7;flex-shrink:0}
 .nl.active svg{opacity:1}
 .sb-bot{margin-top:auto;padding:14px 16px;border-top:1px solid var(--border)}
@@ -55,12 +55,12 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
 /* METRICS */
 .mrow{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
 .mrow3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}
-.mc{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:18px 20px;position:relative;overflow:hidden;transition:border-color .2s,transform .2s}
+.mc{background:linear-gradient(135deg,var(--bg2),var(--bg3));border:1px solid var(--border);border-radius:var(--r);padding:18px 20px;position:relative;overflow:hidden;transition:border-color .2s,transform .2s;border-top:2px solid var(--g)}
 .mc:hover{border-color:var(--border2);transform:translateY(-2px)}
 .mc::after{content:'';position:absolute;top:0;left:0;right:0;height:1.5px;background:var(--ac,var(--g))}
-.mc.amber{--ac:var(--amber)}.mc.blue{--ac:var(--blue)}.mc.purple{--ac:var(--purple)}
+.mc.amber{--ac:#FFB830;border-top-color:#FFB830}.mc.blue{--ac:#38C5FF;border-top-color:#38C5FF}.mc.purple{--ac:#C084FC;border-top-color:#C084FC}.mc.red{--ac:#FF5C5C;border-top-color:#FF5C5C}
 .mc-lbl{font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.07em;font-weight:500;margin-bottom:8px}
-.mc-val{font-family:var(--font-h);font-size:26px;font-weight:800;letter-spacing:-1px;color:var(--ac,var(--g));line-height:1;margin-bottom:4px}
+.mc-val{font-family:var(--font-h);font-size:34px;font-weight:900;letter-spacing:-2px;color:var(--ac,var(--g));line-height:1;margin-bottom:4px}
 .mc-sub{font-size:11px;color:var(--text3)}
 /* TABLE */
 .tw{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:16px}
@@ -87,7 +87,7 @@ tr:hover td{background:var(--g4)}
 .fs{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 13px;font-size:13px;color:var(--text);outline:none;font-family:var(--font)}
 .fta{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 13px;font-size:13px;color:var(--text);outline:none;font-family:var(--font);resize:vertical;min-height:110px;transition:border-color .2s}
 .fta:focus{border-color:var(--border2)}
-.btn-p{background:linear-gradient(135deg,var(--g2),var(--g));color:#000;font-weight:700;font-size:13px;border:none;border-radius:8px;padding:10px 20px;cursor:pointer;font-family:var(--font-h);letter-spacing:.02em;transition:opacity .2s}
+.btn-p{background:linear-gradient(135deg,#0FCF7A,#0BAF67);color:#04140D;font-weight:800;font-size:13px;border:none;border-radius:8px;padding:10px 20px;cursor:pointer;font-family:var(--font-h);letter-spacing:.02em;transition:opacity .2s}
 .btn-p:hover{opacity:.88}
 .btn-g{background:var(--bg3);color:var(--text2);border:1px solid var(--border);font-size:13px;border-radius:8px;padding:10px 18px;cursor:pointer;font-family:var(--font);transition:all .15s}
 .btn-g:hover{color:var(--text);border-color:var(--border2)}
@@ -100,7 +100,7 @@ tr:hover td{background:var(--g4)}
 .kai-float{position:relative;z-index:2;animation:kf 3s ease-in-out infinite}
 @keyframes kf{0%,100%{transform:translateY(0) rotate(0deg)}25%{transform:translateY(-12px) rotate(1deg)}75%{transform:translateY(-6px) rotate(-1deg)}}
 .kai-img{width:200px;height:200px;object-fit:cover;object-position:top center;border-radius:50%;border:3px solid rgba(0,217,126,.4);box-shadow:0 0 40px rgba(0,217,126,.3)}
-.kai-ring{position:absolute;inset:-12px;border-radius:50%;border:2px solid transparent;background:conic-gradient(from 0deg,#00D97E,rgba(0,217,126,0),#00D97E) border-box;-webkit-mask:linear-gradient(#fff 0 0) padding-box,linear-gradient(#fff 0 0);-webkit-mask-composite:destination-out;mask-composite:exclude;animation:rs 6s linear infinite}
+.kai-ring{position:absolute;inset:-12px;border-radius:50%;border:2px solid transparent;background:conic-gradient(from 0deg,#0FCF7A,rgba(15,207,122,0),#0FCF7A) border-box;-webkit-mask:linear-gradient(#fff 0 0) padding-box,linear-gradient(#fff 0 0);-webkit-mask-composite:destination-out;mask-composite:exclude;animation:rs 6s linear infinite}
 .kai-ring2{position:absolute;inset:-22px;border-radius:50%;border:1px solid rgba(0,217,126,.15);animation:rs 10s linear infinite reverse}
 @keyframes rs{to{transform:rotate(360deg)}}
 .kai-bubble{position:absolute;z-index:3;background:rgba(10,25,15,.92);border:1px solid rgba(0,217,126,.3);border-radius:12px;padding:10px 14px;font-size:12px;max-width:170px;backdrop-filter:blur(10px);animation:bi .5s ease both}
@@ -336,6 +336,16 @@ tr:hover td{background:var(--g4)}
     <div id="p-leads" class="page">
       <div class="ph">
         <div><div class="ph-title" id="leads-title">Leads — Padres interesados</div><div class="ph-sub" id="leads-sub">Contactos capturados por Kai</div></div>
+        <select class="fs" id="filtro-grado" style="width:auto;padding:7px 12px;font-size:12px;margin-right:8px" onchange="renderLeads()">
+          <option value="">Todos los grados</option>
+          <option value="Infantil">Infantil</option>
+          <option value="Jardín">Jardín</option>
+          <option value="Kínder">Kínder</option>
+          <option value="Párvulos">Párvulos</option>
+          <option value="Primaria">Primaria</option>
+          <option value="Básicos">Básicos</option>
+          <option value="Bachillerato">Bachillerato</option>
+        </select>
         <select class="fs" id="filtro-estado" style="width:auto;padding:7px 12px;font-size:12px" onchange="renderLeads()">
           <option value="">Todos</option><option value="nuevo">Nuevo</option><option value="contactado">Contactado</option>
           <option value="visita_agendada">Visita agendada</option><option value="inscrito">Inscrito</option><option value="perdido">Perdido</option>
@@ -745,7 +755,7 @@ function nav(page,el){
   if(page==='usuarios'){loadUsuarios();loadSedes();}
   if(page==='faqs')loadFaqs();
   if(page==='docs')loadDocs();
-  if(page==='marketing')loadMarketing();
+  if(page==='marketing'){loadMarketing();}
 }
 
 async function loadMarketing(){
@@ -894,21 +904,68 @@ async function buildDash(){
 
 async function renderLeads(){
   const el=document.getElementById('t-leads');
-  el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text3)">Cargando...</div>';
+  const filtroEl=document.getElementById('filtro-estado');
+  const filtroGrado=document.getElementById('filtro-grado');
+  el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text3)">Cargando leads de Odoo...</div>';
   let odooLeads=[];
   try{
-    const r=await fetch(API+'/api/odoo/leads',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+    const r=await fetch(API+'/api/odoo/leads?limit=200',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
     if(r.ok) odooLeads=r.leads||[];
   }catch(e){}
   if(!odooLeads.length){el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text3)">Sin leads en Odoo</div>';return;}
-  el.innerHTML=`<table><thead><tr><th>Nombre</th><th>Teléfono</th><th>Correo</th><th>Etapa</th><th>Fecha</th></tr></thead><tbody>${odooLeads.map(l=>`<tr><td><div style="font-weight:500">${l.name||'Sin nombre'}</div></td><td style="font-size:12px;color:var(--text2)">${l.phone||'—'}</td><td style="font-size:12px;color:var(--text2)">${l.email_from||'—'}</td><td><span class="bx blue">${l.stage_id?.[1]||'—'}</span></td><td style="font-size:11px;color:var(--text3)">${l.create_date?l.create_date.substring(0,10):'—'}</td></tr>`).join('')}</tbody></table>`;
+
+  // Extraer grado del nombre (ej: "Luisa (Kínder)" → "Kínder")
+  const extraerGrado = n => {
+    const m = (n||'').match(/\(([^)]+)\)/);
+    return m ? m[1].trim() : 'Sin grado';
+  };
+
+  // Ordenar por grado
+  const gradoOrden = ['Infantil','Jardín','Kínder','Párvulos','Preprimaria','1ro Primaria','2do Primaria','3ro Primaria','4to Primaria','5to Primaria','6to Primaria','7mo','8vo','9no','10°','11°','Sin grado'];
+  let data = odooLeads.map(l=>({...l, _grado: extraerGrado(l.name)}));
+  data.sort((a,b)=>{
+    const ia=gradoOrden.findIndex(g=>a._grado.toLowerCase().includes(g.toLowerCase()));
+    const ib=gradoOrden.findIndex(g=>b._grado.toLowerCase().includes(g.toLowerCase()));
+    return (ia===-1?99:ia)-(ib===-1?99:ib);
+  });
+
+  // Filtrar por grado si se seleccionó
+  const gf = filtroGrado?.value||'';
+  if(gf) data=data.filter(l=>l._grado.toLowerCase().includes(gf.toLowerCase()));
+  const ef = filtroEl?.value||'';
+  if(ef) data=data.filter(l=>(l.stage_id?.[1]||'').toLowerCase().includes(ef.toLowerCase()));
+
+  const stageColor = s => {
+    if(/inscrit/i.test(s)) return 'background:rgba(15,207,122,.15);color:#0FCF7A';
+    if(/selecc/i.test(s)) return 'background:rgba(56,197,255,.12);color:#38C5FF';
+    if(/eval/i.test(s)) return 'background:rgba(192,132,252,.12);color:#C084FC';
+    if(/abono/i.test(s)) return 'background:rgba(56,197,255,.12);color:#38C5FF';
+    if(/open|tour|visit/i.test(s)) return 'background:rgba(255,184,48,.12);color:#FFB830';
+    return 'background:rgba(15,207,122,.08);color:rgba(15,207,122,.7)';
+  };
+
+  el.innerHTML=`<table><thead><tr>
+    <th>Nombre del padre/madre</th><th>Grado</th><th>Teléfono</th><th>Correo</th><th>Etapa</th><th>Fecha</th>
+  </tr></thead><tbody>${data.map(l=>`<tr>
+    <td style="font-weight:500">${(l.name||'Sin nombre').replace(/\s*\([^)]*\)/,'')}</td>
+    <td><span style="font-size:11px;padding:3px 8px;border-radius:6px;background:rgba(15,207,122,.1);color:var(--g)">${l._grado}</span></td>
+    <td style="font-size:12px;color:var(--text2)">${l.phone||'—'}</td>
+    <td style="font-size:11px;color:var(--text2)">${l.email_from&&l.email_from!=='No tiene'&&l.email_from!=='N/A'?l.email_from:'—'}</td>
+    <td><span style="font-size:10px;padding:3px 8px;border-radius:6px;${stageColor(l.stage_id?.[1]||'')}">${l.stage_id?.[1]||'—'}</span></td>
+    <td style="font-size:11px;color:var(--text3)">${l.create_date?l.create_date.substring(0,10):'—'}</td>
+  </tr>`).join('')}</tbody></table>`;
 }
 
 function sb(e){const m={nuevo:'<span class="bx blue">Nuevo</span>',contactado:'<span class="bx warn">Contactado</span>',visita_agendada:'<span class="bx purple">Visita agendada</span>',inscrito:'<span class="bx ok">Inscrito</span>',perdido:'<span class="bx red">Perdido</span>'};return m[e]||`<span class="bx">${e}</span>`;}
 
 let citasData=[...CITAS];
-function renderCitas(){
+async function renderCitas(){
   const el=document.getElementById('t-citas');if(!el)return;
+  // Intentar cargar citas reales del servidor
+  try{
+    const r=await fetch(API+'/api/citas',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+    if(r&&Array.isArray(r.citas)&&r.citas.length) citasData=r.citas;
+  }catch(e){}
   if(!citasData.length){el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text3)">Sin citas agendadas</div>';return;}
   const hoy=new Date().toISOString().substring(0,10);
   el.innerHTML=`<table><thead><tr><th>Padre/Madre</th><th>Fecha</th><th>Hora</th><th>Grado</th><th>Sede</th><th>Estado</th></tr></thead><tbody>${[...citasData].sort((a,b)=>a.fecha.localeCompare(b.fecha)).map(c=>`<tr><td><div style="font-weight:500">${c.nombre}</div><div style="font-size:11px;color:var(--text2)">${c.tel}</div></td><td style="font-size:12px;${c.fecha===hoy?'color:var(--g);font-weight:600':''}">${c.fecha}${c.fecha===hoy?' (hoy)':''}</td><td style="font-size:12px">${c.hora}</td><td style="font-size:12px">${c.grado}</td><td style="font-size:12px;color:var(--text2)">${c.sede||'Sede Central'}</td><td><span class="bx ${c.estado==='confirmada'?'ok':'warn'}">${c.estado}</span></td></tr>`).join('')}</tbody></table>`;
