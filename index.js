@@ -1,5 +1,5 @@
 const express = require('express');
-const { procesarMensajeWhatsApp } = require('./odoo.service');
+const { procesarMensajeWhatsApp, testConexion, getLeads, getLeadsPerdidos, getStages, getTeams, getLostReasons, getTags, getUsuarios } = require('./odoo.service');
 const mongoose = require('mongoose');
 const https = require('https');
 const dotenv = require('dotenv');
@@ -833,8 +833,6 @@ app.get('/api/admin/limites', async (req, res) => {
 app.get('/test', (req, res) => res.send('OK'));
 
 // ===== ODOO PRODUCCIÓN — CAPOUILLIEZ =====
-const { testConexion, getLeads, getLeadsPerdidos, getStages, getTeams, getLostReasons, getTags, getUsuarios } = require('./odoo.service');
-
 app.get('/api/odoo/test', authMiddleware, async (req, res) => {
   try {
     const info = await testConexion();
@@ -918,8 +916,6 @@ app.get('/api/odoo/dashboard', authMiddleware, async (req, res) => {
 });
 
 // ===== ODOO PRODUCCIÓN — CAPOUILLIEZ =====
-const { testConexion, getLeads, getLeadsPerdidos, getStages, getTeams, getLostReasons, getTags, getUsuarios } = require('./odoo.service');
-
 app.get('/api/odoo/test', authMiddleware, async (req, res) => {
   try {
     const info = await testConexion();
