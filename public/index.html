@@ -890,27 +890,36 @@ function initApp(){
   setTimeout(prevMsg,100);
 }
 
+// Leads globales para filtrar desde el pastel
+let _dashLeads = [];
+
 async function buildDash(){
   let odooLeads=[], odooStages=[];
   try {
     const [rL,rS]=await Promise.all([
-      fetch(API+'/api/odoo/leads',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json()),
+      fetch(API+'/api/odoo/leads?limit=500',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json()),
       fetch(API+'/api/odoo/stages',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json())
     ]);
     if(rL.ok) odooLeads=rL.leads||[];
     if(rS.ok) odooStages=rS.stages||[];
   } catch(e){ console.warn('Odoo no disponible'); }
+
+  _dashLeads = odooLeads; // guardar para filtrar desde el pastel
+
   const total=odooLeads.length;
   const inscritos=odooLeads.filter(l=>/inscrit/i.test(l.stage_id?.[1]||'')).length;
   const visitas=odooLeads.filter(l=>/visita|visit/i.test(l.stage_id?.[1]||'')).length;
-  const nuevos=odooLeads.filter(l=>/nuevo|new/i.test(l.stage_id?.[1]||'')).length;
+  const nuevos=odooLeads.filter(l=>/nuevo|new|intere/i.test(l.stage_id?.[1]||'')).length;
   const contactados=odooLeads.filter(l=>/contactad/i.test(l.stage_id?.[1]||'')).length;
   const perdidos=odooLeads.filter(l=>/perdid|lost/i.test(l.stage_id?.[1]||'')).length;
+
   document.getElementById('dash-metrics').innerHTML=`
     <div class="mc"><div class="mc-lbl">Total leads Odoo</div><div class="mc-val">${total}</div><div class="mc-sub">datos en tiempo real</div></div>
     <div class="mc amber"><div class="mc-lbl">Visitas agendadas</div><div class="mc-val">${visitas}</div><div class="mc-sub">este mes</div></div>
     <div class="mc blue"><div class="mc-lbl">Inscritos</div><div class="mc-val">${inscritos}</div><div class="mc-sub">confirmados</div></div>
     <div class="mc purple"><div class="mc-lbl">Etapas activas</div><div class="mc-val">${odooStages.length}</div><div class="mc-sub">en CRM</div></div>`;
+
+  // Gráfica de barras semanal — igual que antes
   const dias=['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
   const hI=new Date().getDay();
   const lb=[],dt=[];
@@ -918,10 +927,65 @@ async function buildDash(){
   const gc='rgba(0,217,126,.06)',tc='rgba(238,242,238,.3)';
   if(cDash)cDash.destroy();
   cDash=new Chart(document.getElementById('c-dash'),{type:'bar',data:{labels:lb,datasets:[{data:dt,backgroundColor:dt.map((_,i)=>i===6?'rgba(0,217,126,.8)':'rgba(0,217,126,.2)'),borderColor:dt.map((_,i)=>i===6?'#00D97E':'rgba(0,217,126,.4)'),borderWidth:1,borderRadius:8,borderSkipped:false}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{color:gc},ticks:{color:tc,font:{size:11}}},y:{grid:{color:gc},ticks:{color:tc,font:{size:11},precision:0}}}}});
+
+  // Pastel con etapas REALES de Odoo + clic para filtrar tabla
+  const porEtapa={};
+  odooLeads.forEach(l=>{const e=l.stage_id?.[1]||'Sin etapa';porEtapa[e]=(porEtapa[e]||0)+1;});
+  const top=Object.entries(porEtapa).sort((a,b)=>b[1]-a[1]).slice(0,7);
+  const pLabels=top.map(([e])=>e);
+  const pValues=top.map(([,v])=>v);
+  const COLORS=['rgba(75,158,255,.8)','rgba(245,166,35,.8)','rgba(168,85,247,.8)','rgba(0,217,126,.85)','rgba(255,75,75,.6)','rgba(56,189,248,.8)','rgba(251,191,36,.8)'];
+  const BORDERS=['#4B9EFF','#F5A623','#A855F7','#00D97E','#FF4B4B','#38BDF8','#FBBF24'];
+
   if(cPipe)cPipe.destroy();
-  cPipe=new Chart(document.getElementById('c-pipe'),{type:'doughnut',data:{labels:['Nuevo','Contactado','Visita','Inscrito','Perdido'],datasets:[{data:[nuevos||1,contactados||1,visitas||1,inscritos||1,perdidos||1],backgroundColor:['rgba(75,158,255,.7)','rgba(245,166,35,.7)','rgba(168,85,247,.7)','rgba(0,217,126,.8)','rgba(255,75,75,.5)'],borderColor:['#4B9EFF','#F5A623','#A855F7','#00D97E','#FF4B4B'],borderWidth:2}]},options:{responsive:true,maintainAspectRatio:false,cutout:'65%',plugins:{legend:{position:'bottom',labels:{color:'rgba(238,242,238,.4)',font:{size:10},padding:10,usePointStyle:true}}}}});
-  const rec=odooLeads.slice(0,5);
-  document.getElementById('t-dash').innerHTML=rec.length?`<table><thead><tr><th>Nombre</th><th>Teléfono</th><th>Etapa</th><th>Fecha</th></tr></thead><tbody>${rec.map(l=>`<tr><td><div style="font-weight:500">${l.name||'Sin nombre'}</div></td><td style="font-size:12px;color:var(--text2)">${l.phone||'—'}</td><td><span class="bx blue">${l.stage_id?.[1]||'—'}</span></td><td style="font-size:11px;color:var(--text3)">${l.create_date?l.create_date.substring(0,10):'—'}</td></tr>`).join('')}</tbody></table>`:'<div style="text-align:center;padding:20px;color:var(--text3)">Sin leads en Odoo</div>';
+  cPipe=new Chart(document.getElementById('c-pipe'),{
+    type:'doughnut',
+    data:{labels:pLabels,datasets:[{data:pValues,backgroundColor:COLORS.slice(0,pLabels.length),borderColor:BORDERS.slice(0,pLabels.length),borderWidth:2,hoverOffset:10}]},
+    options:{
+      responsive:true,maintainAspectRatio:false,cutout:'65%',
+      onClick(evt,elements){
+        if(!elements.length)return;
+        const etapa=pLabels[elements[0].index];
+        const filtrados=_dashLeads.filter(l=>l.stage_id?.[1]===etapa);
+        renderDashTable(filtrados,etapa);
+      },
+      plugins:{legend:{position:'bottom',labels:{color:'rgba(238,242,238,.4)',font:{size:10},padding:10,usePointStyle:true,
+        generateLabels(c){return c.data.labels.map((l,i)=>({text:`${l.length>16?l.slice(0,16)+'…':l} (${c.data.datasets[0].data[i]})`,fillStyle:c.data.datasets[0].backgroundColor[i],strokeStyle:c.data.datasets[0].borderColor[i],lineWidth:1,index:i,datasetIndex:0}));}
+      }},tooltip:{callbacks:{label(ctx){return ` ${ctx.label}: ${ctx.parsed} leads`;}}}}
+    }
+  });
+
+  // Tabla inicial — últimos 10
+  renderDashTable(odooLeads.slice(0,10), null);
+}
+
+function renderDashTable(leads, etapaFiltro){
+  const tEl=document.getElementById('t-dash');
+  const tw=tEl?.closest('.tw');
+  if(tw){
+    const title=tw.querySelector('.tw-t');
+    if(title) title.textContent = etapaFiltro ? etapaFiltro : 'Últimos leads';
+  }
+  // Botón reset
+  let resetBtn=document.getElementById('dash-reset-btn');
+  if(!resetBtn && etapaFiltro){
+    resetBtn=document.createElement('button');
+    resetBtn.id='dash-reset-btn';
+    resetBtn.style.cssText='margin:0 20px 12px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:11px;color:var(--text2);cursor:pointer';
+    resetBtn.textContent='✕ Ver todos los leads';
+    resetBtn.onclick=()=>{renderDashTable(_dashLeads.slice(0,10),null);resetBtn.remove();};
+    tEl.parentNode.insertBefore(resetBtn, tEl);
+  } else if(resetBtn && !etapaFiltro){
+    resetBtn.remove();
+  }
+  tEl.innerHTML=leads.length
+    ?`<table><thead><tr><th>Nombre</th><th>Teléfono</th><th>Etapa</th><th>Fecha</th></tr></thead><tbody>${leads.map(l=>`<tr>
+      <td><div style="font-weight:500">${(l.name||'Sin nombre').replace(/\s*[-–].*tour.*|inside tour.*\d+\s*[-–]\s*/gi,'').trim()}</div></td>
+      <td style="font-size:12px;color:var(--text2)">${l.phone||'—'}</td>
+      <td><span class="bx blue" style="font-size:10px">${l.stage_id?.[1]||'—'}</span></td>
+      <td style="font-size:11px;color:var(--text3)">${l.create_date?l.create_date.substring(0,10):'—'}</td>
+    </tr>`).join('')}</tbody></table>`
+    :'<div style="text-align:center;padding:20px;color:var(--text3)">Sin leads en esta etapa</div>';
 }
 
 async function renderLeads(){
