@@ -1424,67 +1424,27 @@ app.get('/api/odoo/dashboard', authMiddleware, async (req, res) => {
   } catch (err) { res.status(500).json({ ok:false, error:err.message }); }
 });
 
-// ===== ODOO PRODUCCIÓN — CAPOUILLIEZ =====
-app.get('/api/odoo/test', authMiddleware, async (req, res) => {
+// Endpoint de prueba — crea un lead de prueba directo en Odoo para confirmar permisos de escritura
+app.post('/api/odoo/test-escritura', authMiddleware, async (req, res) => {
   try {
-    const info = await testConexion();
-    if (!info) return res.status(500).json({ ok: false, error: 'No se pudo conectar a Odoo' });
-    res.json({ ok: true, version: info.server_version, serie: info.server_serie });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+    const teamId = 1;
+    const leadId = await odooCallLocal('crm.lead', 'create', [{
+      name: `PRUEBA ESCRITURA KAI — ${new Date().toLocaleString('es-GT')}`,
+      phone: '00000000',
+      description: 'Lead de prueba para confirmar que el usuario de Odoo tiene permisos de escritura. Puede eliminarse.',
+      team_id: teamId,
+      type: 'opportunity'
+    }]);
+    if (leadId) {
+      res.json({ ok: true, mensaje: 'Escritura exitosa en Odoo', lead_id: leadId });
+    } else {
+      res.json({ ok: false, error: 'odooCallLocal no devolvió un ID — revisa logs del servidor' });
+    }
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
-app.get('/api/odoo/leads', authMiddleware, async (req, res) => {
-  try {
-    const limit = parseInt(req.query.limit) || 200;
-    const leads = await getLeads(limit);
-    if (!leads) return res.status(500).json({ ok: false, error: 'Error al traer leads' });
-    res.json({ ok: true, total: leads.length, leads });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
-});
-
-app.get('/api/odoo/leads/perdidos', authMiddleware, async (req, res) => {
-  try {
-    const leads = await getLeadsPerdidos(500);
-    res.json({ ok: true, total: leads?.length || 0, leads: leads || [] });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
-});
-
-app.get('/api/odoo/stages', authMiddleware, async (req, res) => {
-  try {
-    const stages = await getStages();
-    res.json({ ok: true, stages: stages || [] });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
-});
-
-app.get('/api/odoo/teams', authMiddleware, async (req, res) => {
-  try {
-    const teams = await getTeams();
-    res.json({ ok: true, teams: teams || [] });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
-});
-
-app.get('/api/odoo/lost-reasons', authMiddleware, async (req, res) => {
-  try {
-    const reasons = await getLostReasons();
-    res.json({ ok: true, reasons: reasons || [] });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
-});
-
-app.get('/api/odoo/tags', authMiddleware, async (req, res) => {
-  try {
-    const tags = await getTags();
-    res.json({ ok: true, tags: tags || [] });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
-});
-
-app.get('/api/odoo/usuarios', authMiddleware, async (req, res) => {
-  try {
-    const usuarios = await getUsuarios();
-    res.json({ ok: true, usuarios: usuarios || [] });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
-});
-
-// Dashboard marketing — un solo endpoint
 app.get('/', (req, res) => res.sendFile('index.html', { root: 'public' }));
 
 app.listen(PORT, () => {
