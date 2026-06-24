@@ -219,6 +219,20 @@ function enviarWhatsAppDirecto(numero, mensaje) {
 }
 
 const conversaciones = new Map();
+const MAX_CONVERSACIONES = 5000;
+const TIMEOUT_INACTIVIDAD_MS = 3 * 60 * 60 * 1000; // 3 horas
+
+// Limpieza periódica de conversaciones viejas
+setInterval(() => {
+  const ahora = Date.now();
+  for (const [key, val] of conversaciones.entries()) {
+    if (ahora - (val.ultimaActividad || 0) > 2 * 60 * 60 * 1000 * 3) conversaciones.delete(key);
+  }
+  if (conversaciones.size > MAX_CONVERSACIONES) {
+    const entries = [...conversaciones.entries()].sort((a,b) => (a[1].ultimaActividad||0)-(b[1].ultimaActividad||0));
+    entries.slice(0, conversaciones.size - MAX_CONVERSACIONES).forEach(([k]) => conversaciones.delete(k));
+  }
+}, 60 * 60 * 1000);
 
 function llamarClaude(systemPrompt, messages, maxTokens = 400) {
   return new Promise((resolve) => {
@@ -248,7 +262,7 @@ function detectarIndustria(nombreTenant, bienvenida) {
 function buildSystemPrompt(tenant) {
   const industria = detectarIndustria(tenant.nombre, tenant.config?.bienvenida);
   const base = `Eres el asistente virtual oficial de "${tenant.nombre}", una institución de prestigio en Guatemala.\n\nSOBRE ESTE NEGOCIO:\n${tenant.config?.bienvenida || ''}\n\nSERVICIOS:\n${(tenant.config?.menu || []).map(m => `▸ ${m.opcion}: ${m.respuesta}`).join('\n')}\n\nUBICACIONES:\n${(tenant.config?.sedes || []).map(s => `📍 ${s.nombre}: ${s.direccion} | Tel: ${s.telefono} | Horario: ${s.horario}`).join('\n')}`;
-  const instruccionesColegio = `\nERES: Kai, asistente virtual de admisiones. Cálido, profesional, orientado a resultados.\nMISIÓN: Convertir cada conversación en una visita o inscripción.\nFLUJO: 1)Saluda y pregunta grado 2)Explica beneficios 3)Captura: nombre padre, alumno, grado, zona, colegio actual, correo 4)Ofrece visita o Open House\nREGLAS: Responde de forma natural y cálida como WhatsApp, no como un correo. Si preguntan precios da solo el dato específico que pidieron. Nunca des listas largas ni tablas completas — si quieren más info ellos preguntan. Español guatemalteco. NUNCA inventes datos. NUNCA menciones Claude.`;
+  const instruccionesColegio = `\nERES: Kai, asistente virtual de admisiones. Cálido, profesional, orientado a resultados.\nMISIÓN: Convertir cada conversación en una visita o inscripción.\n\nFLUJO INICIAL:\n1) Saluda y pregunta el nivel ofreciendo un menú numerado:\n   "¿En qué nivel está interesado? Marca el número:\n   1. Preprimaria\n   2. Primaria\n   3. Básico\n   4. Bachillerato en Ciencias y Letras"\n2) Si elige Preprimaria (1): solicita la fecha de nacimiento del niño/a y, con esa fecha, comparte la tabla de edades para confirmar el grado exacto que le corresponde.\n3) Explica beneficios relevantes al nivel elegido.\n4) Captura: nombre del padre/madre, nombre del alumno, grado, zona, colegio actual, correo.\n5) Ofrece agendar una visita o invita al próximo Open House (sin mencionar que es "el primer sábado de cada mes" — la fecha puede variar, siempre confirma la fecha exacta vigente).\n\nCONTACTO Y ASESORES:\n- Números de contacto vigentes: PBX 2429-1999 y 2429-1908.\n- Siempre que el padre quiera ser atendido por un asesor humano, primero comparte la información de cuotas/datos que tengas disponible, y luego ofrece pasarlo con un asesor.\n- NUNCA uses la palabra "mientras tanto" — está prohibida, suena repetitiva. Usa alternativas naturales o reformula sin esa frase.\n\nINACTIVIDAD:\n- Si la conversación lleva más de 3 horas sin actividad ni respuesta del padre, antes de cerrar pregúntale si desea comunicarse con un asesor.\n- Si no responde, informa que se terminará la comunicación por inactividad pero que sigues a las órdenes y que pueden volver a escribir cuando quieran.\n\nLEDS (Liderazgo, Expresión, Deportes y Salud):\n- Alumnos de Primaria y Secundaria reciben 1 vez a la semana un período doble de actividades extracurriculares dentro del horario escolar, sin costo adicional.\n- Actividades disponibles: Fútbol, Baloncesto, Tenis de Mesa, Natación, Artes Visuales, Marimba, Teatro Musical.\n- Los alumnos son quienes eligen a qué actividad inscribirse, y participan en ella durante todo el ciclo escolar (la oferta puede variar cada año).\n\nREGLAS GENERALES:\nResponde de forma natural y cálida como WhatsApp, no como un correo. Si preguntan precios da solo el dato específico que pidieron. Nunca des listas largas ni tablas completas — si quieren más info ellos preguntan. Español guatemalteco. NUNCA inventes datos. NUNCA menciones Claude.`;
   const instruccionesGeneral = `\nINSTRUCCIONES: Responde en español guatemalteco natural. Máximo 4 líneas. Usa emojis con moderación. NUNCA inventes precios. Eres cálido y profesional.`;
   return base + (industria === 'colegio' ? instruccionesColegio : instruccionesGeneral);
 }
@@ -269,12 +283,19 @@ function buildDocsContext(docs) {
   return ctx;
 }
 async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
-  if (!conversaciones.has(numeroOrigen)) conversaciones.set(numeroOrigen, []);
-  const historial = conversaciones.get(numeroOrigen);
+  if (!conversaciones.has(numeroOrigen)) conversaciones.set(numeroOrigen, { historial: [], ultimaActividad: Date.now() });
+  const conv = conversaciones.get(numeroOrigen);
+  const inactivoPor = Date.now() - (conv.ultimaActividad || Date.now());
+  const llevaInactivo3h = inactivoPor >= (3 * 60 * 60 * 1000) && conv.historial.length > 0;
+  conv.ultimaActividad = Date.now();
+  const historial = conv.historial;
   historial.push({ role: 'user', content: mensajeUsuario });
   if (historial.length > 16) historial.splice(0, 2);
   const systemPrompt = buildSystemPrompt(tenant);
   let contextoExtra = '';
+  if (llevaInactivo3h) {
+    contextoExtra += '\n\n⏰ CONTEXTO: Esta conversación estuvo inactiva por más de 3 horas. El padre/madre acaba de volver a escribir. Salúdalo con calidez retomando la conversación, sin mencionar el tiempo de inactividad de forma incómoda.';
+  }
   try {
     const [faqs, docs] = await Promise.all([
       FAQ.find({ tenant_id: tenant._id, activo: true }).limit(20),
