@@ -203,7 +203,7 @@ tr:hover td{background:var(--g4)}
 <div id="app" class="app" style="display:none">
   <aside class="sb">
     <div class="logo"><div class="logo-pulse"></div>KAI</div>
-    <div style="font-size:9px;color:var(--text3);margin:-8px 0 10px 2px;letter-spacing:.05em">v2026.06.24-azul</div>
+    <div style="font-size:9px;color:var(--text3);margin:-8px 0 10px 2px;letter-spacing:.05em">v2026.06.24-resumen</div>
     <div id="plan-tag" class="plan-tag">Plan Profesional</div>
     <div id="role-badge" class="role-badge ra">👑 Administrador</div>
 
@@ -365,6 +365,9 @@ tr:hover td{background:var(--g4)}
                 <div id="cl-chat-numero" style="font-size:11px;color:var(--text3)"></div>
               </div>
               <button class="btn-g" onclick="devolverAKai()" style="font-size:11px;padding:6px 12px">✓ Devolver a KAI</button>
+            </div>
+            <div id="cl-resumen-kai" style="display:none;margin-top:10px;background:var(--g4);border:1px solid var(--border2);border-radius:8px;padding:10px 12px;font-size:11px;color:var(--text2);line-height:1.5">
+              <span style="font-weight:600;color:var(--g)">📋 Resumen de KAI:</span> <span id="cl-resumen-kai-texto"></span>
             </div>
           </div>
           <div id="cl-mensajes" style="flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:10px">
@@ -894,6 +897,14 @@ async function abrirChat(id){
     document.getElementById('cl-chat-nombre').textContent = conv.nombre || 'Sin nombre';
     document.getElementById('cl-chat-numero').textContent = conv.numero;
 
+    const resumenEl = document.getElementById('cl-resumen-kai');
+    if(conv.resumen_kai){
+      document.getElementById('cl-resumen-kai-texto').textContent = conv.resumen_kai;
+      resumenEl.style.display='block';
+    } else {
+      resumenEl.style.display='none';
+    }
+
     mensajesEl.innerHTML = (conv.mensajes||[]).map(m=>{
       const esPadre = m.de==='padre';
       const esAgente = m.de==='agente';
@@ -933,12 +944,13 @@ async function enviarMensajeAgente(){
 
 async function devolverAKai(){
   if(!_chatActivoId) return;
-  if(!confirm('¿Devolver esta conversación a KAI? El bot retomará el control.')) return;
+  if(!confirm('¿Devolver esta conversación a KAI? El bot retomará el control con un resumen de lo que hablaron.')) return;
   try {
-    await fetch(API+'/api/conversaciones/'+_chatActivoId+'/devolver-a-kai',{
+    showToast('Generando resumen para KAI...','ok');
+    const r = await fetch(API+'/api/conversaciones/'+_chatActivoId+'/devolver-a-kai',{
       method:'POST', headers:{'Authorization':'Bearer '+TOKEN}
-    });
-    showToast('Conversación devuelta a KAI ✓','ok');
+    }).then(r=>r.json());
+    showToast(r.resumen_agente ? 'KAI retoma con contexto ✓' : 'Conversación devuelta a KAI ✓','ok');
     _chatActivoId = null;
     document.getElementById('cl-chat-header').style.display='none';
     document.getElementById('cl-input-area').style.display='none';
