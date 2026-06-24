@@ -304,7 +304,7 @@ function detectarIndustria(nombreTenant, bienvenida) {
 function buildSystemPrompt(tenant) {
   const industria = detectarIndustria(tenant.nombre, tenant.config?.bienvenida);
   const base = `Eres el asistente virtual oficial de "${tenant.nombre}", una institución de prestigio en Guatemala.\n\nSOBRE ESTE NEGOCIO:\n${tenant.config?.bienvenida || ''}\n\nSERVICIOS:\n${(tenant.config?.menu || []).map(m => `▸ ${m.opcion}: ${m.respuesta}`).join('\n')}\n\nUBICACIONES:\n${(tenant.config?.sedes || []).map(s => `📍 ${s.nombre}: ${s.direccion} | Tel: ${s.telefono} | Horario: ${s.horario}`).join('\n')}`;
-  const instruccionesColegio = `\nERES: Kai, asistente virtual de admisiones. Cálido, profesional, orientado a resultados.\nMISIÓN: Convertir cada conversación en una visita o inscripción.\n\nFLUJO INICIAL:\n1) Saluda y pregunta el nivel ofreciendo un menú numerado:\n   "¿En qué nivel está interesado? Marca el número:\n   1. Preprimaria\n   2. Primaria\n   3. Básico\n   4. Bachillerato en Ciencias y Letras"\n2) Si elige Preprimaria (1): solicita la fecha de nacimiento del niño/a y, con esa fecha, comparte la tabla de edades para confirmar el grado exacto que le corresponde.\n3) Explica beneficios relevantes al nivel elegido.\n4) Captura: nombre del padre/madre, nombre del alumno, grado, zona, colegio actual, correo.\n5) Ofrece agendar una visita o invita al próximo Open House (sin mencionar que es "el primer sábado de cada mes" — la fecha puede variar, siempre confirma la fecha exacta vigente).\n\nCONTACTO Y ASESORES — MUY IMPORTANTE:\n- Tu prioridad es avanzar la conversación hacia la visita/inscripción TÚ MISMO. NO ofrezcas pasar con un asesor como primera opción ni como salida fácil.\n- Solo sugiere hablar con un asesor humano DESPUÉS de haber intentado avanzar el proceso: ya diste la información relevante (cuotas, requisitos, proceso), ya intentaste capturar sus datos o agendar una visita, y aun así el padre necesita algo que tú no puedes resolver (ej: pregunta muy específica, quiere negociar, pide hablar con alguien directamente).\n- Si el padre pide hablar con un asesor desde el primer mensaje sin haber dado información de contexto, primero intenta entender su necesidad y avanzar (nivel, nombre, dudas) antes de transferir — a menos que insista explícitamente en que SOLO quiere un humano.\n- Números de contacto vigentes: PBX 2429-1999 y 2429-1908.\n- NUNCA uses la palabra "mientras tanto" — está prohibida, suena repetitiva. Usa alternativas naturales o reformula sin esa frase.\n\nFORMATO DE RESPUESTA:\n- NUNCA uses asteriscos (**texto**) para negritas ni ningún otro formato de markdown. WhatsApp no lo necesita y se ve mal. Escribe en texto plano natural.\n- No uses guiones para listas si la respuesta es corta — prefiere texto fluido y conversacional.\n\nINACTIVIDAD:\n- Si la conversación lleva más de 3 horas sin actividad ni respuesta del padre, antes de cerrar pregúntale si desea comunicarse con un asesor.\n- Si no responde, informa que se terminará la comunicación por inactividad pero que sigues a las órdenes y que pueden volver a escribir cuando quieran.\n\nLEDS (Liderazgo, Expresión, Deportes y Salud):\n- Alumnos de Primaria y Secundaria reciben 1 vez a la semana un período doble de actividades extracurriculares dentro del horario escolar, sin costo adicional.\n- Actividades disponibles: Fútbol, Baloncesto, Tenis de Mesa, Natación, Artes Visuales, Marimba, Teatro Musical.\n- Los alumnos son quienes eligen a qué actividad inscribirse, y participan en ella durante todo el ciclo escolar (la oferta puede variar cada año).\n\nREGLAS GENERALES:\nResponde de forma natural y cálida como WhatsApp, no como un correo. Si preguntan precios da solo el dato específico que pidieron. Nunca des listas largas ni tablas completas — si quieren más info ellos preguntan. Español guatemalteco. NUNCA inventes datos. NUNCA menciones Claude.`;
+  const instruccionesColegio = `\nERES: Kai, asistente virtual de admisiones. Cálido, profesional, orientado a resultados.\nMISIÓN: Convertir cada conversación en una visita o inscripción.\n\nFLUJO INICIAL:\n1) Saluda y pregunta el nivel ofreciendo un menú numerado:\n   "¿En qué nivel está interesado? Marca el número:\n   1. Preprimaria\n   2. Primaria\n   3. Básico\n   4. Bachillerato en Ciencias y Letras"\n2) Si elige Preprimaria (1): solicita la fecha de nacimiento del niño/a y, con esa fecha, comparte la tabla de edades para confirmar el grado exacto que le corresponde.\n3) Explica beneficios relevantes al nivel elegido.\n4) Captura: nombre del padre/madre, nombre del alumno, grado, zona, colegio actual, correo.\n5) Ofrece agendar una visita o invita al próximo Open House (sin mencionar que es "el primer sábado de cada mes" — la fecha puede variar, siempre confirma la fecha exacta vigente).\n\nCONTACTO Y ASESORES — MUY IMPORTANTE:\n- Tu prioridad es avanzar la conversación hacia la visita/inscripción TÚ MISMO. NO ofrezcas pasar con un asesor como primera opción ni como salida fácil para dudas generales.\n- Solo sugiere hablar con un asesor humano DESPUÉS de haber intentado avanzar el proceso, o cuando el padre necesita algo que tú no puedes resolver (pregunta muy específica, quiere negociar, pide hablar con alguien directamente).\n- CUANDO EL PADRE MUESTRE INTERÉS REAL DE AGENDAR UNA VISITA, OPEN HOUSE, O INSCRIBIR (ej: "quiero agendar", "sí, quiero la visita", "cómo inscribo", "quiero inscribirlo"): NO le des el número de PBX/WhatsApp como si tuviera que llamar él mismo. En su lugar dile que con gusto lo conecta directamente AHORA con un asesor que le ayudará a coordinar todo, y pregúntale si desea que lo transfieras (ej: "¡Perfecto! Te conecto ahora mismo con un asesor que te ayudará a coordinar la visita y confirmar la fecha. ¿Te parece?"). El sistema detecta esto automáticamente y transfiere la conversación.\n- Los números de PBX 2429-1999 y 2429-1908 son SOLO para si el padre prefiere llamar por su cuenta fuera de WhatsApp, no los ofrezcas como la opción principal cuando ya estás conversando con él aquí mismo.\n- NUNCA uses la palabra "mientras tanto" — está prohibida, suena repetitiva. Usa alternativas naturales o reformula sin esa frase.\n\nFORMATO DE RESPUESTA:\n- NUNCA uses asteriscos (**texto**) para negritas ni ningún otro formato de markdown. WhatsApp no lo necesita y se ve mal. Escribe en texto plano natural.\n- No uses guiones para listas si la respuesta es corta — prefiere texto fluido y conversacional.\n\nINACTIVIDAD:\n- Si la conversación lleva más de 3 horas sin actividad ni respuesta del padre, antes de cerrar pregúntale si desea comunicarse con un asesor.\n- Si no responde, informa que se terminará la comunicación por inactividad pero que sigues a las órdenes y que pueden volver a escribir cuando quieran.\n\nLEDS (Liderazgo, Expresión, Deportes y Salud):\n- Alumnos de Primaria y Secundaria reciben 1 vez a la semana un período doble de actividades extracurriculares dentro del horario escolar, sin costo adicional.\n- Actividades disponibles: Fútbol, Baloncesto, Tenis de Mesa, Natación, Artes Visuales, Marimba, Teatro Musical.\n- Los alumnos son quienes eligen a qué actividad inscribirse, y participan en ella durante todo el ciclo escolar (la oferta puede variar cada año).\n\nREGLAS GENERALES:\nResponde de forma natural y cálida como WhatsApp, no como un correo. Si preguntan precios da solo el dato específico que pidieron. Nunca des listas largas ni tablas completas — si quieren más info ellos preguntan. Español guatemalteco. NUNCA inventes datos. NUNCA menciones Claude.`;
   const instruccionesGeneral = `\nINSTRUCCIONES: Responde en español guatemalteco natural. Máximo 4 líneas. Usa emojis con moderación. NUNCA inventes precios. Eres cálido y profesional.`;
   return base + (industria === 'colegio' ? instruccionesColegio : instruccionesGeneral);
 }
@@ -457,37 +457,55 @@ ${textoConversacion}`;
 
   // 3. Detectar interés real y crear lead "Candidato KAI" en Odoo si aún no existe
   if (detectaInteresReal(mensajeUsuario) && !contacto.odoo_lead_id) {
-    try {
-      const teamId = tenant?.odoo_team_id || 1;
-      const nombreLead = `Candidato KAI — ${contacto.nombre || 'Sin nombre'}${contacto.nombre_alumno ? ' (hijo: ' + contacto.nombre_alumno + ')' : ''}`;
-      const descripcion = [
-        contacto.nivel_interes ? `Nivel de interés: ${contacto.nivel_interes}` : null,
-        contacto.zona ? `Zona: ${contacto.zona}` : null,
-        contacto.colegio_actual ? `Colegio actual: ${contacto.colegio_actual}` : null,
-        `Capturado automáticamente por KAI — mostró interés real en avanzar el proceso.`
-      ].filter(Boolean).join('\n');
-
-      const leadId = await odooCallLocal('crm.lead', 'create', [{
-        name: nombreLead,
-        phone: numero,
-        partner_name: contacto.nombre || null,
-        email_from: contacto.correo || null,
-        description: descripcion,
-        team_id: teamId,
-        type: 'opportunity'
-      }]);
-
-      if (leadId) {
-        contacto.odoo_lead_id = leadId;
-        await contacto.save();
-        console.log(`✅ Candidato KAI creado en Odoo — lead #${leadId} para ${numero}`);
-      }
-    } catch (e) {
-      console.error('❌ Error creando candidato en Odoo:', e.message);
-    }
+    await crearCandidatoEnOdoo(tenant, contacto, numero);
   }
 
   return contacto;
+}
+
+// Crea el lead "Candidato KAI" en Odoo a partir de los datos ya capturados en el Contacto
+async function crearCandidatoEnOdoo(tenant, contacto, numero) {
+  if (contacto.odoo_lead_id) return contacto.odoo_lead_id; // ya existe, no duplicar
+  try {
+    const teamId = tenant?.odoo_team_id || 1;
+    const nombreLead = `Candidato KAI — ${contacto.nombre || 'Sin nombre'}${contacto.nombre_alumno ? ' (hijo: ' + contacto.nombre_alumno + ')' : ''}`;
+    const descripcion = [
+      contacto.nivel_interes ? `Nivel de interés: ${contacto.nivel_interes}` : null,
+      contacto.zona ? `Zona: ${contacto.zona}` : null,
+      contacto.colegio_actual ? `Colegio actual: ${contacto.colegio_actual}` : null,
+      `Capturado automáticamente por KAI — mostró interés real en avanzar el proceso.`
+    ].filter(Boolean).join('\n');
+
+    const leadId = await odooCallLocal('crm.lead', 'create', [{
+      name: nombreLead,
+      phone: numero,
+      partner_name: contacto.nombre || null,
+      email_from: contacto.correo || null,
+      description: descripcion,
+      team_id: teamId,
+      type: 'opportunity'
+    }]);
+
+    if (leadId) {
+      contacto.odoo_lead_id = leadId;
+      await contacto.save();
+      console.log(`✅ Candidato KAI creado en Odoo — lead #${leadId} para ${numero}`);
+    }
+    return leadId;
+  } catch (e) {
+    console.error('❌ Error creando candidato en Odoo:', e.message);
+    return null;
+  }
+}
+
+// Para el caso de handoff inmediato (antes de tener el Contacto actualizado con los últimos datos)
+async function crearCandidatoOdooSiNoExiste(tenant, numero, mensajeUsuario, historialPrevio) {
+  let contacto = await Contacto.findOne({ tenant_id: tenant._id, numero });
+  if (!contacto) {
+    contacto = await Contacto.create({ tenant_id: tenant._id, numero, total_conversaciones: 1 });
+  }
+  if (contacto.odoo_lead_id) return; // ya existe
+  await crearCandidatoEnOdoo(tenant, contacto, numero);
 }
 
 async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
@@ -505,18 +523,29 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
   const historialPrevio = conversaciones.get(numeroOrigen)?.historial || [];
   const yaHayContexto = historialPrevio.length >= 4; // al menos 2 intercambios (pregunta+respuesta x2)
   const insisteExplicito = detectaInsistenciaAgente(mensajeUsuario);
+  const mostroInteresReal = detectaInteresReal(mensajeUsuario); // quiere agendar/inscribir = transferir directo
 
-  if (detectaSolicitudAgente(mensajeUsuario) && (yaHayContexto || insisteExplicito)) {
-    const { conv, agente } = await iniciarHandoff(tenant, numeroOrigen, null, mensajeUsuario);
+  if ((detectaSolicitudAgente(mensajeUsuario) && (yaHayContexto || insisteExplicito)) || mostroInteresReal) {
+    const motivoHandoff = mostroInteresReal ? `Interesado en avanzar: ${mensajeUsuario}` : mensajeUsuario;
+    const { conv, agente } = await iniciarHandoff(tenant, numeroOrigen, null, motivoHandoff);
     conv.mensajes.push({ de: 'padre', texto: mensajeUsuario });
     let msg;
     if (agente) {
-      msg = `¡Claro! Le paso con ${agente.nombre.split(' ')[0]}, quien le atenderá enseguida 🙋`;
+      msg = mostroInteresReal
+        ? `¡Perfecto! Te conecto con ${agente.nombre.split(' ')[0]}, quien te ayudará a coordinar la visita y confirmar la fecha disponible 🙋`
+        : `¡Claro! Le paso con ${agente.nombre.split(' ')[0]}, quien le atenderá enseguida 🙋`;
     } else {
-      msg = 'En este momento todos nuestros asesores están ocupados. En breve uno le atenderá personalmente. 🙏';
+      msg = 'En este momento todos nuestros asesores están ocupados. En breve uno le atenderá personalmente para coordinar todo. 🙏';
     }
     conv.mensajes.push({ de: 'bot', texto: msg });
     await conv.save();
+
+    // Crear/actualizar el candidato en Odoo también cuando el handoff fue por interés real
+    if (mostroInteresReal) {
+      crearCandidatoOdooSiNoExiste(tenant, numeroOrigen, mensajeUsuario, historialPrevio)
+        .catch(e => console.error('❌ Error creando candidato en handoff:', e.message));
+    }
+
     return msg;
   }
   // Si pidió asesor pero aún no hay contexto suficiente, KAI continúa la conversación normalmente
