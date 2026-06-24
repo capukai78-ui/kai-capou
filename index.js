@@ -411,9 +411,16 @@ async function iniciarHandoff(tenant, numero, nombre, motivoMsg) {
 }
 
 // Frases que indican interés real de avanzar el proceso (no solo curiosidad)
-function detectaInteresReal(texto) {
-  const t = (texto || '').toLowerCase();
-  return /quiero (inscribir|agendar|una visita|el open house|que mi hijo|que mi hija)|s[ií],?\s*(agendar|quiero la visita|me interesa)|deseo (inscribir|agendar)|c[oó]mo (inscribo|agendo)|quiero inscribirlo|quiero inscribirla|aparta(me)? (un cupo|lugar)/.test(t);
+function detectaInteresReal(texto, ultimoMensajeBot) {
+  const t = (texto || '').toLowerCase().trim();
+  const tieneFraseDirecta = /quiero (inscribir|agendar|una visita|el open house|que mi hijo|que mi hija)|deseo (inscribir|agendar)|c[oó]mo (inscribo|agendo)|quiero inscribirlo|quiero inscribirla|aparta(me)? (un cupo|lugar)/.test(t);
+
+  // Si el mensaje es una simple afirmación ("sí", "sí por favor", "claro", "dale", "ok")
+  // Y el último mensaje de KAI le preguntaba sobre agendar visita/asesor — también cuenta como interés real
+  const esAfirmacionSimple = /^(s[ií]|s[ií] por favor|s[ií] claro|claro|dale|ok|okay|de acuerdo|perfecto|me parece bien|s[ií] me interesa)\.?!?$/.test(t);
+  const botPreguntoAgendar = /agendar|visita|asesor|coordinar|conectar(te)? con un asesor/.test((ultimoMensajeBot || '').toLowerCase());
+
+  return tieneFraseDirecta || (esAfirmacionSimple && botPreguntoAgendar);
 }
 
 // Extrae datos del padre/alumno del historial usando IA, actualiza Contacto, y crea lead en Odoo si hay interés real
@@ -456,7 +463,8 @@ ${textoConversacion}`;
   );
 
   // 3. Detectar interés real y crear lead "Candidato KAI" en Odoo si aún no existe
-  if (detectaInteresReal(mensajeUsuario) && !contacto.odoo_lead_id) {
+  const ultimoMsgBotPrevio = [...historial].reverse().find(m => m.role === 'assistant')?.content || respuestaBot;
+  if (detectaInteresReal(mensajeUsuario, ultimoMsgBotPrevio) && !contacto.odoo_lead_id) {
     await crearCandidatoEnOdoo(tenant, contacto, numero);
   }
 
@@ -523,7 +531,8 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
   const historialPrevio = conversaciones.get(numeroOrigen)?.historial || [];
   const yaHayContexto = historialPrevio.length >= 4; // al menos 2 intercambios (pregunta+respuesta x2)
   const insisteExplicito = detectaInsistenciaAgente(mensajeUsuario);
-  const mostroInteresReal = detectaInteresReal(mensajeUsuario); // quiere agendar/inscribir = transferir directo
+  const ultimoMsgBot = [...historialPrevio].reverse().find(m => m.role === 'assistant')?.content || '';
+  const mostroInteresReal = detectaInteresReal(mensajeUsuario, ultimoMsgBot); // quiere agendar/inscribir = transferir directo
 
   if ((detectaSolicitudAgente(mensajeUsuario) && (yaHayContexto || insisteExplicito)) || mostroInteresReal) {
     const motivoHandoff = mostroInteresReal ? `Interesado en avanzar: ${mensajeUsuario}` : mensajeUsuario;
