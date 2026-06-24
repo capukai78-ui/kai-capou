@@ -440,11 +440,11 @@ async function iniciarHandoff(tenant, numero, nombre, motivoMsg) {
 // Frases que indican interés real de avanzar el proceso (no solo curiosidad)
 function detectaInteresReal(texto, ultimoMensajeBot) {
   const t = (texto || '').toLowerCase().trim();
-  const tieneFraseDirecta = /quiero (inscribir|agendar|una visita|el open house|que mi hijo|que mi hija)|deseo (inscribir|agendar)|c[oó]mo (inscribo|agendo)|quiero inscribirlo|quiero inscribirla|aparta(me)? (un cupo|lugar)/.test(t);
+  const tieneFraseDirecta = /(quiero|quisiera|deseo|me gustar[ií]a|necesito|estoy interesad[oa] en|me interesa)\s+(inscribir|agendar|una visita|el open house|que mi hijo|que mi hija|que (mi|el|la)\s*\w+\s*(estudie|entre|vaya))|c[oó]mo (inscribo|agendo|hago para inscribir)|quiero inscribirlo|quiero inscribirla|aparta(me)? (un cupo|lugar)|inscribir(lo|la)?\s*(a mi hijo|a mi hija)?$/.test(t);
 
   // Si el mensaje es una simple afirmación ("sí", "sí por favor", "claro", "dale", "ok")
   // Y el último mensaje de KAI le preguntaba sobre agendar visita/asesor — también cuenta como interés real
-  const esAfirmacionSimple = /^(s[ií]|s[ií] por favor|s[ií] claro|claro|dale|ok|okay|de acuerdo|perfecto|me parece bien|s[ií] me interesa)\.?!?$/.test(t);
+  const esAfirmacionSimple = /^(s[ií]|s[ií] por favor|s[ií] claro|claro|dale|ok|okay|de acuerdo|perfecto|me parece bien|s[ií] me interesa|correcto|exacto|as[ií] es)\.?!?$/.test(t);
   const botPreguntoAgendar = /agendar|visita|asesor|coordinar|conectar(te)? con un asesor/.test((ultimoMensajeBot || '').toLowerCase());
 
   return tieneFraseDirecta || (esAfirmacionSimple && botPreguntoAgendar);
