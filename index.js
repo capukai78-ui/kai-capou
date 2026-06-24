@@ -124,9 +124,29 @@ const usuarioPanelSchema = new mongoose.Schema({
   tenant_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Tenant' },
   sedes:     [String],  // nombres de sedes asignadas, o ['todas']
   activo:    { type: Boolean, default: true },
+  disponible: { type: Boolean, default: true }, // si puede recibir chats en vivo asignados
   lastLogin: Date,
   creado:    { type: Date, default: Date.now }
 });
+
+// ===== MODELO CONVERSACIÓN — para handoff a humano =====
+const conversacionSchema = new mongoose.Schema({
+  tenant_id:     { type: mongoose.Schema.Types.ObjectId, ref: 'Tenant' },
+  numero:        { type: String, required: true }, // WhatsApp del padre/madre
+  nombre:        String,
+  estado:        { type: String, enum: ['bot', 'esperando_agente', 'humano', 'cerrado'], default: 'bot' },
+  agente_id:     { type: mongoose.Schema.Types.ObjectId, ref: 'UsuarioPanel', default: null },
+  agente_nombre: { type: String, default: null },
+  motivo:        { type: String, default: null }, // por qué pidió hablar con humano
+  mensajes:      [{
+    de:     { type: String, enum: ['padre', 'bot', 'agente'] },
+    texto:  String,
+    fecha:  { type: Date, default: Date.now }
+  }],
+  ultimaActividad: { type: Date, default: Date.now },
+  creado:        { type: Date, default: Date.now }
+});
+const Conversacion = mongoose.model('Conversacion', conversacionSchema);
 
 const Tenant        = mongoose.model('Tenant', tenantSchema);
 const User          = mongoose.model('User', userSchema);
@@ -262,7 +282,7 @@ function detectarIndustria(nombreTenant, bienvenida) {
 function buildSystemPrompt(tenant) {
   const industria = detectarIndustria(tenant.nombre, tenant.config?.bienvenida);
   const base = `Eres el asistente virtual oficial de "${tenant.nombre}", una institución de prestigio en Guatemala.\n\nSOBRE ESTE NEGOCIO:\n${tenant.config?.bienvenida || ''}\n\nSERVICIOS:\n${(tenant.config?.menu || []).map(m => `▸ ${m.opcion}: ${m.respuesta}`).join('\n')}\n\nUBICACIONES:\n${(tenant.config?.sedes || []).map(s => `📍 ${s.nombre}: ${s.direccion} | Tel: ${s.telefono} | Horario: ${s.horario}`).join('\n')}`;
-  const instruccionesColegio = `\nERES: Kai, asistente virtual de admisiones. Cálido, profesional, orientado a resultados.\nMISIÓN: Convertir cada conversación en una visita o inscripción.\n\nFLUJO INICIAL:\n1) Saluda y pregunta el nivel ofreciendo un menú numerado:\n   "¿En qué nivel está interesado? Marca el número:\n   1. Preprimaria\n   2. Primaria\n   3. Básico\n   4. Bachillerato en Ciencias y Letras"\n2) Si elige Preprimaria (1): solicita la fecha de nacimiento del niño/a y, con esa fecha, comparte la tabla de edades para confirmar el grado exacto que le corresponde.\n3) Explica beneficios relevantes al nivel elegido.\n4) Captura: nombre del padre/madre, nombre del alumno, grado, zona, colegio actual, correo.\n5) Ofrece agendar una visita o invita al próximo Open House (sin mencionar que es "el primer sábado de cada mes" — la fecha puede variar, siempre confirma la fecha exacta vigente).\n\nCONTACTO Y ASESORES:\n- Números de contacto vigentes: PBX 2429-1999 y 2429-1908.\n- Siempre que el padre quiera ser atendido por un asesor humano, primero comparte la información de cuotas/datos que tengas disponible, y luego ofrece pasarlo con un asesor.\n- NUNCA uses la palabra "mientras tanto" — está prohibida, suena repetitiva. Usa alternativas naturales o reformula sin esa frase.\n\nINACTIVIDAD:\n- Si la conversación lleva más de 3 horas sin actividad ni respuesta del padre, antes de cerrar pregúntale si desea comunicarse con un asesor.\n- Si no responde, informa que se terminará la comunicación por inactividad pero que sigues a las órdenes y que pueden volver a escribir cuando quieran.\n\nLEDS (Liderazgo, Expresión, Deportes y Salud):\n- Alumnos de Primaria y Secundaria reciben 1 vez a la semana un período doble de actividades extracurriculares dentro del horario escolar, sin costo adicional.\n- Actividades disponibles: Fútbol, Baloncesto, Tenis de Mesa, Natación, Artes Visuales, Marimba, Teatro Musical.\n- Los alumnos son quienes eligen a qué actividad inscribirse, y participan en ella durante todo el ciclo escolar (la oferta puede variar cada año).\n\nREGLAS GENERALES:\nResponde de forma natural y cálida como WhatsApp, no como un correo. Si preguntan precios da solo el dato específico que pidieron. Nunca des listas largas ni tablas completas — si quieren más info ellos preguntan. Español guatemalteco. NUNCA inventes datos. NUNCA menciones Claude.`;
+  const instruccionesColegio = `\nERES: Kai, asistente virtual de admisiones. Cálido, profesional, orientado a resultados.\nMISIÓN: Convertir cada conversación en una visita o inscripción.\n\nFLUJO INICIAL:\n1) Saluda y pregunta el nivel ofreciendo un menú numerado:\n   "¿En qué nivel está interesado? Marca el número:\n   1. Preprimaria\n   2. Primaria\n   3. Básico\n   4. Bachillerato en Ciencias y Letras"\n2) Si elige Preprimaria (1): solicita la fecha de nacimiento del niño/a y, con esa fecha, comparte la tabla de edades para confirmar el grado exacto que le corresponde.\n3) Explica beneficios relevantes al nivel elegido.\n4) Captura: nombre del padre/madre, nombre del alumno, grado, zona, colegio actual, correo.\n5) Ofrece agendar una visita o invita al próximo Open House (sin mencionar que es "el primer sábado de cada mes" — la fecha puede variar, siempre confirma la fecha exacta vigente).\n\nCONTACTO Y ASESORES — MUY IMPORTANTE:\n- Tu prioridad es avanzar la conversación hacia la visita/inscripción TÚ MISMO. NO ofrezcas pasar con un asesor como primera opción ni como salida fácil.\n- Solo sugiere hablar con un asesor humano DESPUÉS de haber intentado avanzar el proceso: ya diste la información relevante (cuotas, requisitos, proceso), ya intentaste capturar sus datos o agendar una visita, y aun así el padre necesita algo que tú no puedes resolver (ej: pregunta muy específica, quiere negociar, pide hablar con alguien directamente).\n- Si el padre pide hablar con un asesor desde el primer mensaje sin haber dado información de contexto, primero intenta entender su necesidad y avanzar (nivel, nombre, dudas) antes de transferir — a menos que insista explícitamente en que SOLO quiere un humano.\n- Números de contacto vigentes: PBX 2429-1999 y 2429-1908.\n- NUNCA uses la palabra "mientras tanto" — está prohibida, suena repetitiva. Usa alternativas naturales o reformula sin esa frase.\n\nFORMATO DE RESPUESTA:\n- NUNCA uses asteriscos (**texto**) para negritas ni ningún otro formato de markdown. WhatsApp no lo necesita y se ve mal. Escribe en texto plano natural.\n- No uses guiones para listas si la respuesta es corta — prefiere texto fluido y conversacional.\n\nINACTIVIDAD:\n- Si la conversación lleva más de 3 horas sin actividad ni respuesta del padre, antes de cerrar pregúntale si desea comunicarse con un asesor.\n- Si no responde, informa que se terminará la comunicación por inactividad pero que sigues a las órdenes y que pueden volver a escribir cuando quieran.\n\nLEDS (Liderazgo, Expresión, Deportes y Salud):\n- Alumnos de Primaria y Secundaria reciben 1 vez a la semana un período doble de actividades extracurriculares dentro del horario escolar, sin costo adicional.\n- Actividades disponibles: Fútbol, Baloncesto, Tenis de Mesa, Natación, Artes Visuales, Marimba, Teatro Musical.\n- Los alumnos son quienes eligen a qué actividad inscribirse, y participan en ella durante todo el ciclo escolar (la oferta puede variar cada año).\n\nREGLAS GENERALES:\nResponde de forma natural y cálida como WhatsApp, no como un correo. Si preguntan precios da solo el dato específico que pidieron. Nunca des listas largas ni tablas completas — si quieren más info ellos preguntan. Español guatemalteco. NUNCA inventes datos. NUNCA menciones Claude.`;
   const instruccionesGeneral = `\nINSTRUCCIONES: Responde en español guatemalteco natural. Máximo 4 líneas. Usa emojis con moderación. NUNCA inventes precios. Eres cálido y profesional.`;
   return base + (industria === 'colegio' ? instruccionesColegio : instruccionesGeneral);
 }
@@ -282,7 +302,96 @@ function buildDocsContext(docs) {
   });
   return ctx;
 }
+// ===== HANDOFF A HUMANO =====
+
+// Frases que detectan intención de hablar con un agente humano
+function detectaSolicitudAgente(texto) {
+  const t = (texto || '').toLowerCase();
+  return /asesor|agente|persona real|hablar con (alguien|un humano)|atenci[oó]n humana|hablar con alguien/.test(t);
+}
+
+// Frases de insistencia — el padre quiere humano YA, sin importar el contexto
+function detectaInsistenciaAgente(texto) {
+  const t = (texto || '').toLowerCase();
+  return /solo (quiero|necesito) (hablar|que me atienda)|no (quiero|m[aá]s) (bot|robot)|ya (te|le) dije que quiero (un asesor|hablar con alguien)|comun[ií]queme con|p[aá]seme con/.test(t);
+}
+
+// Busca un agente disponible (round-robin simple: el que tenga menos chats activos)
+async function asignarAgenteLibre(tenantId) {
+  const agentes = await UsuarioPanel.find({
+    tenant_id: tenantId,
+    role: { $in: ['vendedor', 'admin'] },
+    activo: true,
+    disponible: true
+  });
+  if (!agentes.length) return null;
+
+  // Contar chats activos por agente
+  const counts = await Conversacion.aggregate([
+    { $match: { tenant_id: tenantId, estado: 'humano', agente_id: { $ne: null } } },
+    { $group: { _id: '$agente_id', total: { $sum: 1 } } }
+  ]);
+  const countMap = {};
+  counts.forEach(c => countMap[c._id.toString()] = c.total);
+
+  // Elegir el agente con menos chats activos
+  agentes.sort((a, b) => (countMap[a._id.toString()] || 0) - (countMap[b._id.toString()] || 0));
+  return agentes[0];
+}
+
+// Pasa una conversación a estado "esperando_agente" y le asigna uno si hay disponible
+async function iniciarHandoff(tenant, numero, nombre, motivoMsg) {
+  let conv = await Conversacion.findOne({ tenant_id: tenant._id, numero, estado: { $ne: 'cerrado' } });
+  if (!conv) {
+    conv = await Conversacion.create({ tenant_id: tenant._id, numero, nombre, estado: 'esperando_agente', motivo: motivoMsg });
+  } else {
+    conv.estado = 'esperando_agente';
+    conv.motivo = motivoMsg;
+    conv.ultimaActividad = new Date();
+  }
+
+  const agente = await asignarAgenteLibre(tenant._id);
+  if (agente) {
+    conv.estado = 'humano';
+    conv.agente_id = agente._id;
+    conv.agente_nombre = agente.nombre;
+  }
+  await conv.save();
+  return { conv, agente };
+}
+
 async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
+  // ===== VERIFICAR SI YA HAY HANDOFF ACTIVO =====
+  const convActiva = await Conversacion.findOne({ tenant_id: tenant._id, numero: numeroOrigen, estado: { $in: ['humano', 'esperando_agente'] } });
+  if (convActiva) {
+    // KAI está pausado en esta conversación — un humano la está atendiendo
+    convActiva.mensajes.push({ de: 'padre', texto: mensajeUsuario });
+    convActiva.ultimaActividad = new Date();
+    await convActiva.save();
+    return null; // null = no enviar respuesta automática, el agente responde manualmente
+  }
+
+  // ===== DETECTAR SOLICITUD DE AGENTE — solo transferir si ya hay contexto o el padre insiste =====
+  const historialPrevio = conversaciones.get(numeroOrigen)?.historial || [];
+  const yaHayContexto = historialPrevio.length >= 4; // al menos 2 intercambios (pregunta+respuesta x2)
+  const insisteExplicito = detectaInsistenciaAgente(mensajeUsuario);
+
+  if (detectaSolicitudAgente(mensajeUsuario) && (yaHayContexto || insisteExplicito)) {
+    const { conv, agente } = await iniciarHandoff(tenant, numeroOrigen, null, mensajeUsuario);
+    conv.mensajes.push({ de: 'padre', texto: mensajeUsuario });
+    let msg;
+    if (agente) {
+      msg = `¡Claro! Le paso con ${agente.nombre.split(' ')[0]}, quien le atenderá enseguida 🙋`;
+    } else {
+      msg = 'En este momento todos nuestros asesores están ocupados. En breve uno le atenderá personalmente. 🙏';
+    }
+    conv.mensajes.push({ de: 'bot', texto: msg });
+    await conv.save();
+    return msg;
+  }
+  // Si pidió asesor pero aún no hay contexto suficiente, KAI continúa la conversación normalmente
+  // intentando avanzar el proceso (esto se maneja en el system prompt de buildSystemPrompt)
+
   if (!conversaciones.has(numeroOrigen)) conversaciones.set(numeroOrigen, { historial: [], ultimaActividad: Date.now() });
   const conv = conversaciones.get(numeroOrigen);
   const inactivoPor = Date.now() - (conv.ultimaActividad || Date.now());
@@ -305,7 +414,8 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
     contextoExtra += buildDocsContext(docs);
   } catch (e) {}
   const reply = await llamarClaude(systemPrompt + contextoExtra, historial, 600);
-  const respuesta = reply || 'Disculpe, tuve un problema técnico. Por favor llámenos directamente. 📞';
+  const respuestaLimpia = reply ? reply.replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1') : null;
+  const respuesta = respuestaLimpia || 'Disculpe, tuve un problema técnico. Por favor llámenos directamente. 📞';
   historial.push({ role: 'assistant', content: respuesta });
   return respuesta;
 }
@@ -321,21 +431,11 @@ app.get('/webhook', (req, res) => {
   const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 
   if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+    console.log('✅ Webhook de Meta verificado correctamente');
     return res.status(200).send(challenge);
   }
-
-  // DEBUG temporal: mostrar la info directamente en la respuesta para diagnosticar
-  return res.status(403).json({
-    error: 'Forbidden',
-    debug: {
-      mode_recibido: mode || null,
-      token_recibido: token || null,
-      verify_token_en_railway: VERIFY_TOKEN || null,
-      verify_token_existe: VERIFY_TOKEN !== undefined,
-      coinciden: token === VERIFY_TOKEN,
-      mode_es_subscribe: mode === 'subscribe'
-    }
-  });
+  console.error('❌ Verificación de webhook fallida — token no coincide');
+  res.sendStatus(403);
 });
 
 // Enviar mensaje de texto vía Meta WhatsApp Cloud API
@@ -364,21 +464,11 @@ function enviarWhatsAppMeta(numeroDestino, texto) {
     }, (r) => {
       let d = '';
       r.on('data', c => d += c);
-      r.on('end', () => {
-        try {
-          const parsed = JSON.parse(d);
-          console.log('📤 Meta respondió:', JSON.stringify(parsed));
-          resolve(parsed);
-        } catch(e) {
-          console.log('📤 Meta raw:', d);
-          resolve({ raw: d });
-        }
-      });
+      r.on('end', () => { try { resolve(JSON.parse(d)); } catch(e) { resolve({ raw: d }); } });
     });
     req2.on('error', (e) => { console.error('❌ Error enviando WhatsApp:', e.message); resolve(null); });
     req2.write(body);
     req2.end();
-
   });
 }
 
@@ -425,8 +515,14 @@ app.post('/webhook', async (req, res) => {
     await procesarMensajeWhatsApp(numeroOrigen, nombreCliente, mensajeUsuario, teamId, tenantNombre).catch(e => console.error('Odoo:', e.message));
 
     const respuesta = await responderConIA(tenant, mensajeUsuario, numeroOrigen);
-    await MessageLog.create({ tenant_id: tenant._id, from: numeroOrigen, message: mensajeUsuario, response: respuesta });
 
+    if (respuesta === null) {
+      // Conversación en manos de un agente humano — KAI no responde
+      console.log(`⏸️  KAI pausado para ${numeroOrigen} — esperando respuesta de agente`);
+      return;
+    }
+
+    await MessageLog.create({ tenant_id: tenant._id, from: numeroOrigen, message: mensajeUsuario, response: respuesta });
     await enviarWhatsAppMeta(numeroOrigen, respuesta);
     console.log(`✅ Respuesta enviada a ${numeroOrigen}`);
 
@@ -1004,6 +1100,74 @@ app.get('/api/odoo/usuarios', authMiddleware, async (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// ===== CHATS EN VIVO — handoff a humano =====
+
+// Listar conversaciones (todas si admin, o asignadas a mí si vendedor)
+app.get('/api/conversaciones', authMiddleware, async (req, res) => {
+  try {
+    const filtro = { tenant_id: req.user.tenant_id, estado: { $ne: 'cerrado' } };
+    if (req.user.role === 'vendedor') filtro.agente_id = req.user.id;
+    const convs = await Conversacion.find(filtro).sort({ ultimaActividad: -1 }).limit(100);
+    res.json({ ok: true, conversaciones: convs });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// Ver una conversación específica con su historial completo
+app.get('/api/conversaciones/:id', authMiddleware, async (req, res) => {
+  try {
+    const conv = await Conversacion.findOne({ _id: req.params.id, tenant_id: req.user.tenant_id });
+    if (!conv) return res.status(404).json({ ok: false, error: 'No encontrada' });
+    res.json({ ok: true, conversacion: conv });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// Agente toma/responde manualmente una conversación
+app.post('/api/conversaciones/:id/responder', authMiddleware, async (req, res) => {
+  try {
+    const { mensaje } = req.body;
+    if (!mensaje) return res.status(400).json({ ok: false, error: 'Mensaje requerido' });
+
+    const conv = await Conversacion.findOne({ _id: req.params.id, tenant_id: req.user.tenant_id });
+    if (!conv) return res.status(404).json({ ok: false, error: 'No encontrada' });
+
+    // Si nadie la había tomado, este agente la toma ahora
+    if (!conv.agente_id) {
+      conv.agente_id = req.user.id;
+      conv.agente_nombre = req.user.nombre || req.user.email;
+      conv.estado = 'humano';
+    }
+
+    conv.mensajes.push({ de: 'agente', texto: mensaje });
+    conv.ultimaActividad = new Date();
+    await conv.save();
+
+    const resultado = await enviarWhatsAppMeta(conv.numero, mensaje);
+    res.json({ ok: true, conversacion: conv, whatsapp: resultado });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// Devolver la conversación a KAI (el bot retoma el control)
+app.post('/api/conversaciones/:id/devolver-a-kai', authMiddleware, async (req, res) => {
+  try {
+    const conv = await Conversacion.findOneAndUpdate(
+      { _id: req.params.id, tenant_id: req.user.tenant_id },
+      { estado: 'cerrado' },
+      { new: true }
+    );
+    if (!conv) return res.status(404).json({ ok: false, error: 'No encontrada' });
+    res.json({ ok: true, mensaje: 'KAI retoma esta conversación', conversacion: conv });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// Marcar mi disponibilidad para recibir chats asignados
+app.post('/api/mi-disponibilidad', authMiddleware, async (req, res) => {
+  try {
+    const { disponible } = req.body;
+    await UsuarioPanel.findByIdAndUpdate(req.user.id, { disponible: !!disponible });
+    res.json({ ok: true, disponible: !!disponible });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 app.get('/api/odoo/dashboard', authMiddleware, async (req, res) => {
   try {
     const [leads, perdidos, stages, reasons, tags] = await Promise.all([
@@ -1088,32 +1252,6 @@ app.get('/api/odoo/usuarios', authMiddleware, async (req, res) => {
 });
 
 // Dashboard marketing — un solo endpoint
-app.get('/api/odoo/dashboard', authMiddleware, async (req, res) => {
-  try {
-    const [leads, perdidos, stages, reasons, tags, usuarios] = await Promise.all([
-      getLeads(500), getLeadsPerdidos(500), getStages(),
-      getLostReasons(), getTags(), getUsuarios()
-    ]);
-    const porEtapa = {}, porUsuario = {}, porMotivo = {};
-    (leads||[]).forEach(l => {
-      const e = l.stage_id?.[1]||'Sin etapa';
-      porEtapa[e] = (porEtapa[e]||0)+1;
-      const u = l.user_id?.[1]||'Sin asignar';
-      porUsuario[u] = (porUsuario[u]||0)+1;
-    });
-    (perdidos||[]).forEach(l => {
-      const m = l.lost_reason_id?.[1]||'Sin motivo';
-      porMotivo[m] = (porMotivo[m]||0)+1;
-    });
-    res.json({
-      ok: true,
-      resumen: { totalLeads:(leads||[]).length, totalPerdidos:(perdidos||[]).length, totalEtapas:(stages||[]).length },
-      porEtapa, porUsuario, porMotivo,
-      ultimosLeads: (leads||[]).slice(0,10),
-      stages: stages||[], reasons: reasons||[], tags: tags||[]
-    });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
-});
 app.get('/', (req, res) => res.sendFile('index.html', { root: 'public' }));
 
 app.listen(PORT, () => {
