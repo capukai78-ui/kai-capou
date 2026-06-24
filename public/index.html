@@ -8,24 +8,24 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <style>
 :root{
-  --g:#0FCF7A;--g2:#0BAF67;--g3:rgba(15,207,122,.12);--g4:rgba(15,207,122,.06);
-  --bg:#04140D;--bg2:#071A10;--bg3:#0B2318;--bg4:#0F2E1E;
-  --border:rgba(255,255,255,.08);--border2:rgba(15,207,122,.35);
-  --text:#E8F5EE;--text2:rgba(180,220,195,.60);--text3:rgba(180,220,195,.32);
-  --red:#FF5C5C;--amber:#FFB830;--blue:#38C5FF;--purple:#C084FC;--green:#0FCF7A;
+  --g:#5BA8F5;--g2:#3D8FE0;--g3:rgba(91,168,245,.12);--g4:rgba(91,168,245,.06);
+  --bg:#0B1120;--bg2:#111827;--bg3:#1A2233;--bg4:#212B3D;
+  --border:rgba(255,255,255,.08);--border2:rgba(91,168,245,.32);
+  --text:#E5EAF2;--text2:rgba(180,195,220,.62);--text3:rgba(180,195,220,.34);
+  --red:#F76C6C;--amber:#F5B860;--blue:#5BA8F5;--purple:#B89AE8;--green:#5FC79E;
   --font-h:'Outfit',sans-serif;--font:'Plus Jakarta Sans',sans-serif;--r:14px;--r2:10px;
 }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-font-smoothing:antialiased}
-body{font-family:var(--font);background:linear-gradient(135deg,#04140D 0%,#071A10 40%,#0B2318 70%,#0D2B1C 100%);color:var(--text);min-height:100vh}
+body{font-family:var(--font);background:linear-gradient(135deg,#0B1120 0%,#111827 40%,#1A2233 70%,#1E2940 100%);color:var(--text);min-height:100vh}
 body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
-  background-image:linear-gradient(rgba(15,207,122,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(15,207,122,.04) 1px,transparent 1px);background-size:56px 56px;}
+  background-image:linear-gradient(rgba(91,168,245,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(91,168,245,.04) 1px,transparent 1px);background-size:56px 56px;}
 .app{display:flex;min-height:100vh;position:relative;z-index:1}
 .sb{width:228px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;position:fixed;height:100vh;z-index:50;overflow-y:auto}
 .main{margin-left:228px;flex:1;padding:26px 30px}
 /* SIDEBAR */
 .logo{padding:22px 20px 6px;font-family:var(--font-h);font-size:24px;font-weight:800;color:var(--g);letter-spacing:-1.5px;display:flex;align-items:center;gap:7px}
 .logo-pulse{width:7px;height:7px;border-radius:50%;background:var(--g);animation:gp 2.5s ease infinite;flex-shrink:0}
-@keyframes gp{0%,100%{box-shadow:0 0 0 0 rgba(0,217,126,.5)}60%{box-shadow:0 0 0 8px rgba(0,217,126,0)}}
+@keyframes gp{0%,100%{box-shadow:0 0 0 0 rgba(91,168,245,.5)}60%{box-shadow:0 0 0 8px rgba(91,168,245,0)}}
 .plan-tag{margin:8px 16px 14px;background:var(--g3);border:1px solid var(--border2);border-radius:6px;padding:4px 12px;font-size:11px;font-weight:600;color:var(--g);text-transform:uppercase;letter-spacing:.08em;display:inline-flex;align-items:center;gap:5px}
 .plan-tag::before{content:'';width:5px;height:5px;border-radius:50%;background:var(--g);animation:gp 2s ease infinite}
 .role-badge{display:inline-block;padding:2px 10px;border-radius:4px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;margin:0 16px 14px}
@@ -68,11 +68,11 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
 .tw-t{font-family:var(--font-h);font-size:13px;font-weight:700;letter-spacing:-.2px}
 table{width:100%;border-collapse:collapse}
 th{font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;padding:9px 20px;text-align:left;border-bottom:1px solid var(--border)}
-td{padding:11px 20px;font-size:13px;border-bottom:1px solid rgba(0,217,126,.04)}
+td{padding:11px 20px;font-size:13px;border-bottom:1px solid rgba(91,168,245,.04)}
 tr:last-child td{border-bottom:none}
 tr:hover td{background:var(--g4)}
 .bx{display:inline-flex;align-items:center;padding:3px 10px;border-radius:100px;font-size:10px;font-weight:700;text-transform:uppercase}
-.bx.ok{background:rgba(0,217,126,.12);color:var(--g)}
+.bx.ok{background:rgba(91,168,245,.12);color:var(--g)}
 .bx.warn{background:rgba(245,166,35,.12);color:var(--amber)}
 .bx.blue{background:rgba(75,158,255,.12);color:var(--blue)}
 .bx.purple{background:rgba(168,85,247,.12);color:var(--purple)}
@@ -87,30 +87,30 @@ tr:hover td{background:var(--g4)}
 .fs{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 13px;font-size:13px;color:var(--text);outline:none;font-family:var(--font)}
 .fta{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 13px;font-size:13px;color:var(--text);outline:none;font-family:var(--font);resize:vertical;min-height:110px;transition:border-color .2s}
 .fta:focus{border-color:var(--border2)}
-.btn-p{background:linear-gradient(135deg,#0FCF7A,#0BAF67);color:#04140D;font-weight:800;font-size:13px;border:none;border-radius:8px;padding:10px 20px;cursor:pointer;font-family:var(--font-h);letter-spacing:.02em;transition:opacity .2s}
+.btn-p{background:linear-gradient(135deg,#5BA8F5,#3D8FE0);color:#0B1120;font-weight:800;font-size:13px;border:none;border-radius:8px;padding:10px 20px;cursor:pointer;font-family:var(--font-h);letter-spacing:.02em;transition:opacity .2s}
 .btn-p:hover{opacity:.88}
 .btn-g{background:var(--bg3);color:var(--text2);border:1px solid var(--border);font-size:13px;border-radius:8px;padding:10px 18px;cursor:pointer;font-family:var(--font);transition:all .15s}
 .btn-g:hover{color:var(--text);border-color:var(--border2)}
 .frow{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
 /* KAI ANIMADO */
 .kai-stage{position:relative;width:100%;height:320px;overflow:hidden;border-radius:var(--r);background:linear-gradient(135deg,#030a04,#071208);border:1px solid var(--border2);margin-bottom:20px;display:flex;align-items:center;justify-content:center}
-.kai-grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(0,217,126,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(0,217,126,.04) 1px,transparent 1px);background-size:40px 40px}
-.kai-glow{position:absolute;width:280px;height:280px;border-radius:50%;background:radial-gradient(circle,rgba(0,217,126,.15) 0%,transparent 70%);animation:glow-p 4s ease infinite}
+.kai-grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(91,168,245,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(91,168,245,.04) 1px,transparent 1px);background-size:40px 40px}
+.kai-glow{position:absolute;width:280px;height:280px;border-radius:50%;background:radial-gradient(circle,rgba(91,168,245,.15) 0%,transparent 70%);animation:glow-p 4s ease infinite}
 @keyframes glow-p{0%,100%{transform:scale(1);opacity:.6}50%{transform:scale(1.2);opacity:1}}
 .kai-float{position:relative;z-index:2;animation:kf 3s ease-in-out infinite}
 @keyframes kf{0%,100%{transform:translateY(0) rotate(0deg)}25%{transform:translateY(-12px) rotate(1deg)}75%{transform:translateY(-6px) rotate(-1deg)}}
-.kai-img{width:200px;height:200px;object-fit:cover;object-position:top center;border-radius:50%;border:3px solid rgba(0,217,126,.4);box-shadow:0 0 40px rgba(0,217,126,.3)}
-.kai-ring{position:absolute;inset:-12px;border-radius:50%;border:2px solid transparent;background:conic-gradient(from 0deg,#0FCF7A,rgba(15,207,122,0),#0FCF7A) border-box;-webkit-mask:linear-gradient(#fff 0 0) padding-box,linear-gradient(#fff 0 0);-webkit-mask-composite:destination-out;mask-composite:exclude;animation:rs 6s linear infinite}
-.kai-ring2{position:absolute;inset:-22px;border-radius:50%;border:1px solid rgba(0,217,126,.15);animation:rs 10s linear infinite reverse}
+.kai-img{width:200px;height:200px;object-fit:cover;object-position:top center;border-radius:50%;border:3px solid rgba(91,168,245,.4);box-shadow:0 0 40px rgba(91,168,245,.3)}
+.kai-ring{position:absolute;inset:-12px;border-radius:50%;border:2px solid transparent;background:conic-gradient(from 0deg,#5BA8F5,rgba(91,168,245,0),#5BA8F5) border-box;-webkit-mask:linear-gradient(#fff 0 0) padding-box,linear-gradient(#fff 0 0);-webkit-mask-composite:destination-out;mask-composite:exclude;animation:rs 6s linear infinite}
+.kai-ring2{position:absolute;inset:-22px;border-radius:50%;border:1px solid rgba(91,168,245,.15);animation:rs 10s linear infinite reverse}
 @keyframes rs{to{transform:rotate(360deg)}}
-.kai-bubble{position:absolute;z-index:3;background:rgba(10,25,15,.92);border:1px solid rgba(0,217,126,.3);border-radius:12px;padding:10px 14px;font-size:12px;max-width:170px;backdrop-filter:blur(10px);animation:bi .5s ease both}
+.kai-bubble{position:absolute;z-index:3;background:rgba(10,25,15,.92);border:1px solid rgba(91,168,245,.3);border-radius:12px;padding:10px 14px;font-size:12px;max-width:170px;backdrop-filter:blur(10px);animation:bi .5s ease both}
 .kai-bubble.left{left:24px;top:50%;transform:translateY(-50%)}
 .kai-bubble.right{right:24px;top:50%;transform:translateY(-50%);animation-delay:.3s}
 @keyframes bi{from{opacity:0;transform:translateY(-40%) scale(.8)}to{opacity:1;transform:translateY(-50%) scale(1)}}
 .kb-icon{font-size:18px;margin-bottom:4px}
 .kb-t{font-size:10px;font-weight:700;color:var(--g);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px}
 .kb-b{font-size:11px;color:var(--text2);line-height:1.5}
-.kai-nametag{position:absolute;bottom:18px;left:50%;transform:translateX(-50%);z-index:3;background:linear-gradient(135deg,rgba(0,217,126,.9),rgba(0,184,101,.9));color:#000;font-family:var(--font-h);font-size:13px;font-weight:800;padding:7px 22px;border-radius:100px;letter-spacing:.04em;white-space:nowrap;box-shadow:0 4px 20px rgba(0,217,126,.4)}
+.kai-nametag{position:absolute;bottom:18px;left:50%;transform:translateX(-50%);z-index:3;background:linear-gradient(135deg,rgba(91,168,245,.9),rgba(61,143,224,.9));color:#000;font-family:var(--font-h);font-size:13px;font-weight:800;padding:7px 22px;border-radius:100px;letter-spacing:.04em;white-space:nowrap;box-shadow:0 4px 20px rgba(91,168,245,.4)}
 /* PHONE */
 .phone-wrap{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden}
 .ph-hdr{background:linear-gradient(135deg,#075e54,#128c7e);padding:13px 16px;display:flex;align-items:center;gap:10px}
@@ -168,7 +168,7 @@ tr:hover td{background:var(--g4)}
 /* LOGIN */
 .login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);position:relative;z-index:10;padding:20px}
 .login-card{background:var(--bg2);border:1px solid var(--border2);border-radius:20px;padding:40px;width:100%;max-width:380px;position:relative;overflow:hidden}
-.login-card::before{content:'';position:absolute;top:-60px;right:-60px;width:200px;height:200px;border-radius:50%;background:radial-gradient(circle,rgba(0,217,126,.08) 0%,transparent 70%);pointer-events:none}
+.login-card::before{content:'';position:absolute;top:-60px;right:-60px;width:200px;height:200px;border-radius:50%;background:radial-gradient(circle,rgba(91,168,245,.08) 0%,transparent 70%);pointer-events:none}
 .login-logo{font-family:var(--font-h);font-size:30px;font-weight:800;color:var(--g);letter-spacing:-1.5px;margin-bottom:6px}
 .login-sub{font-size:14px;color:var(--text2);margin-bottom:24px}
 .login-btn{width:100%;background:linear-gradient(135deg,var(--g2),var(--g));color:#000;font-weight:700;font-size:14px;font-family:var(--font-h);border:none;border-radius:8px;padding:13px;cursor:pointer;letter-spacing:.02em;transition:opacity .2s;margin-top:8px}
@@ -178,7 +178,7 @@ tr:hover td{background:var(--g4)}
 @keyframes fi{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 .toast{position:fixed;bottom:24px;right:24px;background:var(--bg2);border:1px solid var(--border2);border-radius:10px;padding:12px 18px;font-size:13px;color:var(--text);z-index:9999;transform:translateY(100px);opacity:0;transition:all .3s;box-shadow:0 8px 32px rgba(0,0,0,.5)}
 .toast.show{transform:translateY(0);opacity:1}
-.toast.ok{border-color:rgba(0,217,126,.5);color:var(--g)}
+.toast.ok{border-color:rgba(91,168,245,.5);color:var(--g)}
 .toast.err{border-color:rgba(255,75,75,.5);color:var(--red)}
 @media(max-width:900px){.sb{transform:translateX(-100%)}.main{margin-left:0;padding:16px}
 .mrow,.mrow3,.roles-grid,.plazos-grid,.camp-grid,.frow{grid-template-columns:1fr}}
@@ -203,6 +203,7 @@ tr:hover td{background:var(--g4)}
 <div id="app" class="app" style="display:none">
   <aside class="sb">
     <div class="logo"><div class="logo-pulse"></div>KAI</div>
+    <div style="font-size:9px;color:var(--text3);margin:-8px 0 10px 2px;letter-spacing:.05em">v2026.06.24-azul</div>
     <div id="plan-tag" class="plan-tag">Plan Profesional</div>
     <div id="role-badge" class="role-badge ra">👑 Administrador</div>
 
@@ -212,6 +213,10 @@ tr:hover td{background:var(--g4)}
     </a>
     <a class="nl" onclick="nav('kai',this)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M6 20v-2a4 4 0 014-4h4a4 4 0 014 4v2"/></svg>Kai — Agente IA
+    </a>
+    <a class="nl" id="nav-chatslive" onclick="nav('chatslive',this)" style="position:relative">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z"/></svg>Chats en Vivo
+      <span id="badge-chatslive" style="display:none;position:absolute;right:12px;top:50%;transform:translateY(-50%);background:var(--red);color:#fff;font-size:10px;font-weight:700;padding:1px 6px;border-radius:10px;min-width:18px;text-align:center"></span>
     </a>
     <a class="nl" onclick="nav('leads',this)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>Leads / Alumnos
@@ -332,6 +337,49 @@ tr:hover td{background:var(--g4)}
       </div>
     </div>
 
+    <!-- CHATS EN VIVO -->
+    <div id="p-chatslive" class="page">
+      <div class="ph">
+        <div><div class="ph-title">Chats en Vivo</div><div class="ph-sub" id="cl-sub">Conversaciones que requieren atención humana</div></div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);cursor:pointer">
+            <input type="checkbox" id="cl-disponible" onchange="toggleDisponibilidad()" style="width:16px;height:16px;accent-color:var(--g)">
+            Disponible para recibir chats
+          </label>
+          <button class="rpill" onclick="loadChatsLive()">↻ Actualizar</button>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:300px 1fr;gap:14px;height:calc(100vh - 180px)">
+        <!-- Lista de conversaciones -->
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);overflow-y:auto">
+          <div id="cl-lista" style="padding:8px"></div>
+        </div>
+
+        <!-- Panel de chat activo -->
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);display:flex;flex-direction:column;overflow:hidden">
+          <div id="cl-chat-header" style="padding:14px 18px;border-bottom:1px solid var(--border);display:none">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <div>
+                <div id="cl-chat-nombre" style="font-weight:600;font-size:14px"></div>
+                <div id="cl-chat-numero" style="font-size:11px;color:var(--text3)"></div>
+              </div>
+              <button class="btn-g" onclick="devolverAKai()" style="font-size:11px;padding:6px 12px">✓ Devolver a KAI</button>
+            </div>
+          </div>
+          <div id="cl-mensajes" style="flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:10px">
+            <div style="text-align:center;color:var(--text3);margin-top:40px;font-size:13px">Selecciona una conversación de la lista</div>
+          </div>
+          <div id="cl-input-area" style="padding:14px 18px;border-top:1px solid var(--border);display:none">
+            <div style="display:flex;gap:10px">
+              <input type="text" id="cl-input-msg" placeholder="Escribe tu respuesta..." style="flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px 14px;color:var(--text);font-size:13px;outline:none" onkeypress="if(event.key==='Enter')enviarMensajeAgente()">
+              <button class="btn-p" onclick="enviarMensajeAgente()">Enviar</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- LEADS -->
     <div id="p-leads" class="page">
       <div class="ph">
@@ -387,7 +435,7 @@ tr:hover td{background:var(--g4)}
     <!-- COMISIONES -->
     <div id="p-comisiones" class="page">
       <div class="ph"><div><div class="ph-title">Mis Comisiones</div><div class="ph-sub" id="com-sub">Estructura de incentivos KAI</div></div></div>
-      <div style="background:linear-gradient(135deg,rgba(0,217,126,.08),rgba(0,184,101,.04));border:1px solid var(--border2);border-radius:var(--r);padding:24px;margin-bottom:16px">
+      <div style="background:linear-gradient(135deg,rgba(91,168,245,.08),rgba(61,143,224,.04));border:1px solid var(--border2);border-radius:var(--r);padding:24px;margin-bottom:16px">
         <div style="font-family:var(--font-h);font-size:18px;font-weight:800;letter-spacing:-.5px;margin-bottom:4px">💰 Cuanto más largo el contrato, más ganas</div>
         <div style="font-size:13px;color:var(--text2);margin-bottom:20px">El vendedor decide qué contrato ofrecer — los contratos largos benefician a todos</div>
         <div class="plazos-grid">
@@ -778,6 +826,137 @@ function nav(page,el){
   if(page==='faqs')loadFaqs();
   if(page==='docs')loadDocs();
   if(page==='marketing'){loadMarketing();}
+  if(page==='chatslive'){loadChatsLive();}
+}
+
+// ===== CHATS EN VIVO =====
+let _chatActivoId = null;
+let _chatsLivePollInterval = null;
+
+async function loadChatsLive(){
+  const lista = document.getElementById('cl-lista');
+  lista.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text3);font-size:12px">Cargando...</div>';
+  try {
+    const r = await fetch(API+'/api/conversaciones',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+    const convs = r.ok ? r.conversaciones : [];
+    pintarListaChats(convs);
+    actualizarBadge(convs);
+  } catch(e) {
+    lista.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text3);font-size:12px">Error al cargar</div>';
+  }
+  // Polling cada 8 segundos para ver mensajes nuevos
+  if(_chatsLivePollInterval) clearInterval(_chatsLivePollInterval);
+  _chatsLivePollInterval = setInterval(()=>{
+    if(document.getElementById('p-chatslive')?.classList.contains('active')) loadChatsLive();
+  }, 8000);
+}
+
+function actualizarBadge(convs){
+  const esperando = convs.filter(c=>c.estado==='esperando_agente').length;
+  const badge = document.getElementById('badge-chatslive');
+  if(esperando>0){ badge.style.display='block'; badge.textContent=esperando; }
+  else { badge.style.display='none'; }
+}
+
+function pintarListaChats(convs){
+  const lista = document.getElementById('cl-lista');
+  if(!convs.length){
+    lista.innerHTML = '<div style="text-align:center;padding:30px 14px;color:var(--text3);font-size:12px">No hay chats activos</div>';
+    return;
+  }
+  const estadoColor = e => e==='esperando_agente' ? 'var(--amber)' : e==='humano' ? 'var(--g)' : 'var(--text3)';
+  const estadoTxt = e => e==='esperando_agente' ? 'Esperando' : e==='humano' ? 'En atención' : 'Cerrado';
+
+  lista.innerHTML = convs.map(c => `
+    <div onclick="abrirChat('${c._id}')" style="padding:12px;border-radius:10px;cursor:pointer;margin-bottom:6px;background:${_chatActivoId===c._id?'var(--bg3)':'transparent'};border:1px solid ${_chatActivoId===c._id?'var(--border2)':'transparent'}" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='${_chatActivoId===c._id?'var(--bg3)':'transparent'}'">
+      <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:4px">
+        <div style="font-weight:600;font-size:13px">${c.nombre || c.numero}</div>
+        <span style="font-size:9px;padding:2px 6px;border-radius:5px;background:${estadoColor(c.estado)}22;color:${estadoColor(c.estado)};white-space:nowrap">${estadoTxt(c.estado)}</span>
+      </div>
+      <div style="font-size:11px;color:var(--text3)">${c.numero}</div>
+      <div style="font-size:11px;color:var(--text2);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.mensajes?.length?c.mensajes[c.mensajes.length-1].texto:''}</div>
+      ${c.agente_nombre?`<div style="font-size:10px;color:var(--g);margin-top:4px">👤 ${c.agente_nombre}</div>`:''}
+    </div>
+  `).join('');
+}
+
+async function abrirChat(id){
+  _chatActivoId = id;
+  document.getElementById('cl-chat-header').style.display='block';
+  document.getElementById('cl-input-area').style.display='block';
+  const mensajesEl = document.getElementById('cl-mensajes');
+  mensajesEl.innerHTML = '<div style="text-align:center;color:var(--text3);font-size:12px">Cargando...</div>';
+
+  try {
+    const r = await fetch(API+'/api/conversaciones/'+id,{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+    if(!r.ok) return;
+    const conv = r.conversacion;
+    document.getElementById('cl-chat-nombre').textContent = conv.nombre || 'Sin nombre';
+    document.getElementById('cl-chat-numero').textContent = conv.numero;
+
+    mensajesEl.innerHTML = (conv.mensajes||[]).map(m=>{
+      const esPadre = m.de==='padre';
+      const esAgente = m.de==='agente';
+      const bg = esPadre ? 'var(--bg3)' : esAgente ? 'var(--g)' : 'var(--bg4)';
+      const color = esAgente ? '#0B1120' : 'var(--text)';
+      const align = esPadre ? 'flex-start' : 'flex-end';
+      return `<div style="display:flex;justify-content:${align}">
+        <div style="max-width:70%;background:${bg};color:${color};padding:10px 14px;border-radius:12px;font-size:13px;line-height:1.4">
+          ${m.texto}
+          <div style="font-size:9px;opacity:.6;margin-top:4px">${esPadre?'Padre/Madre':esAgente?'Tú':'KAI'}</div>
+        </div>
+      </div>`;
+    }).join('');
+    mensajesEl.scrollTop = mensajesEl.scrollHeight;
+
+    // Refrescar lista para marcar el seleccionado
+    const rl = await fetch(API+'/api/conversaciones',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+    if(rl.ok) pintarListaChats(rl.conversaciones);
+  } catch(e) { console.error(e); }
+}
+
+async function enviarMensajeAgente(){
+  const input = document.getElementById('cl-input-msg');
+  const mensaje = input.value.trim();
+  if(!mensaje || !_chatActivoId) return;
+  input.value = '';
+  try {
+    const r = await fetch(API+'/api/conversaciones/'+_chatActivoId+'/responder',{
+      method:'POST',
+      headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'},
+      body: JSON.stringify({ mensaje })
+    }).then(r=>r.json());
+    if(r.ok){ abrirChat(_chatActivoId); showToast('Mensaje enviado ✓','ok'); }
+    else { showToast(r.error||'Error al enviar','error'); }
+  } catch(e) { showToast('Error de conexión','error'); }
+}
+
+async function devolverAKai(){
+  if(!_chatActivoId) return;
+  if(!confirm('¿Devolver esta conversación a KAI? El bot retomará el control.')) return;
+  try {
+    await fetch(API+'/api/conversaciones/'+_chatActivoId+'/devolver-a-kai',{
+      method:'POST', headers:{'Authorization':'Bearer '+TOKEN}
+    });
+    showToast('Conversación devuelta a KAI ✓','ok');
+    _chatActivoId = null;
+    document.getElementById('cl-chat-header').style.display='none';
+    document.getElementById('cl-input-area').style.display='none';
+    document.getElementById('cl-mensajes').innerHTML = '<div style="text-align:center;color:var(--text3);margin-top:40px;font-size:13px">Selecciona una conversación de la lista</div>';
+    loadChatsLive();
+  } catch(e) { showToast('Error','error'); }
+}
+
+async function toggleDisponibilidad(){
+  const checked = document.getElementById('cl-disponible').checked;
+  try {
+    await fetch(API+'/api/mi-disponibilidad',{
+      method:'POST',
+      headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'},
+      body: JSON.stringify({ disponible: checked })
+    });
+    showToast(checked?'Ahora estás disponible para chats ✓':'Ya no recibirás chats nuevos','ok');
+  } catch(e) {}
 }
 
 async function loadMarketing(){
@@ -803,7 +982,7 @@ async function loadMarketing(){
   kpisEl.innerHTML=`
     <div class="mc"><div class="mc-lbl">Leads activos</div><div class="mc-val">${totalLeads}</div><div class="mc-sub">en Odoo producción</div></div>
     <div class="mc" style="border-top:2px solid var(--red,#E24B4A)"><div class="mc-lbl">Leads perdidos</div><div class="mc-val" style="color:var(--red,#E24B4A)">${totalPerdidos}</div><div class="mc-sub">requieren análisis</div></div>
-    <div class="mc" style="border-top:2px solid var(--green,#00D97E)"><div class="mc-lbl">Inscritos</div><div class="mc-val" style="color:var(--green,#00D97E)">${inscritos}</div><div class="mc-sub">confirmados</div></div>
+    <div class="mc" style="border-top:2px solid var(--green,#5BA8F5)"><div class="mc-lbl">Inscritos</div><div class="mc-val" style="color:var(--green,#5BA8F5)">${inscritos}</div><div class="mc-sub">confirmados</div></div>
     <div class="mc" style="border-top:2px solid var(--purple,#A855F7)"><div class="mc-lbl">Conversión</div><div class="mc-val" style="color:var(--purple,#A855F7)">${conv}%</div><div class="mc-sub">leads → inscritos</div></div>`;
 
   // Pipeline
@@ -813,7 +992,7 @@ async function loadMarketing(){
     .sort((a,b)=>b[1]-a[1]).slice(0,10)
     .map(([etapa,n])=>{
       const pct=Math.round((n/maxPipe)*100);
-      const color=(/inscrit/i.test(etapa)?'var(--green,#00D97E)':/selecc/i.test(etapa)?'var(--amber,#F5A623)':/eval/i.test(etapa)?'var(--purple,#A855F7)':/abono/i.test(etapa)?'var(--blue,#4B9EFF)':'var(--blue,#4B9EFF)');
+      const color=(/inscrit/i.test(etapa)?'var(--green,#5BA8F5)':/selecc/i.test(etapa)?'var(--amber,#F5A623)':/eval/i.test(etapa)?'var(--purple,#A855F7)':/abono/i.test(etapa)?'var(--blue,#4B9EFF)':'var(--blue,#4B9EFF)');
       return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12px">
         <div style="min-width:160px;color:var(--text2);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${etapa}">${etapa}</div>
         <div style="flex:1;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden">
@@ -924,9 +1103,9 @@ async function buildDash(){
   const hI=new Date().getDay();
   const lb=[],dt=[];
   [3,5,4,7,6,8,5].forEach((v,i)=>{lb.push(dias[(hI-6+i+7)%7]);dt.push(v);});
-  const gc='rgba(0,217,126,.06)',tc='rgba(238,242,238,.3)';
+  const gc='rgba(91,168,245,.06)',tc='rgba(238,242,238,.3)';
   if(cDash)cDash.destroy();
-  cDash=new Chart(document.getElementById('c-dash'),{type:'bar',data:{labels:lb,datasets:[{data:dt,backgroundColor:dt.map((_,i)=>i===6?'rgba(0,217,126,.8)':'rgba(0,217,126,.2)'),borderColor:dt.map((_,i)=>i===6?'#00D97E':'rgba(0,217,126,.4)'),borderWidth:1,borderRadius:8,borderSkipped:false}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{color:gc},ticks:{color:tc,font:{size:11}}},y:{grid:{color:gc},ticks:{color:tc,font:{size:11},precision:0}}}}});
+  cDash=new Chart(document.getElementById('c-dash'),{type:'bar',data:{labels:lb,datasets:[{data:dt,backgroundColor:dt.map((_,i)=>i===6?'rgba(91,168,245,.8)':'rgba(91,168,245,.2)'),borderColor:dt.map((_,i)=>i===6?'#5BA8F5':'rgba(91,168,245,.4)'),borderWidth:1,borderRadius:8,borderSkipped:false}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{color:gc},ticks:{color:tc,font:{size:11}}},y:{grid:{color:gc},ticks:{color:tc,font:{size:11},precision:0}}}}});
 
   // Pastel con etapas REALES de Odoo + clic para filtrar tabla
   const porEtapa={};
@@ -934,8 +1113,8 @@ async function buildDash(){
   const top=Object.entries(porEtapa).sort((a,b)=>b[1]-a[1]).slice(0,7);
   const pLabels=top.map(([e])=>e);
   const pValues=top.map(([,v])=>v);
-  const COLORS=['rgba(75,158,255,.8)','rgba(245,166,35,.8)','rgba(168,85,247,.8)','rgba(0,217,126,.85)','rgba(255,75,75,.6)','rgba(56,189,248,.8)','rgba(251,191,36,.8)'];
-  const BORDERS=['#4B9EFF','#F5A623','#A855F7','#00D97E','#FF4B4B','#38BDF8','#FBBF24'];
+  const COLORS=['rgba(75,158,255,.8)','rgba(245,166,35,.8)','rgba(168,85,247,.8)','rgba(91,168,245,.85)','rgba(255,75,75,.6)','rgba(56,189,248,.8)','rgba(251,191,36,.8)'];
+  const BORDERS=['#4B9EFF','#F5A623','#A855F7','#5BA8F5','#FF4B4B','#38BDF8','#FBBF24'];
 
   if(cPipe)cPipe.destroy();
   cPipe=new Chart(document.getElementById('c-pipe'),{
@@ -1022,19 +1201,19 @@ async function renderLeads(){
   if(ef) data=data.filter(l=>(l.stage_id?.[1]||'').toLowerCase().includes(ef.toLowerCase()));
 
   const stageColor = s => {
-    if(/inscrit/i.test(s)) return 'background:rgba(15,207,122,.15);color:#0FCF7A';
+    if(/inscrit/i.test(s)) return 'background:rgba(95,199,158,.15);color:#5FC79E';
     if(/selecc/i.test(s)) return 'background:rgba(56,197,255,.12);color:#38C5FF';
     if(/eval/i.test(s)) return 'background:rgba(192,132,252,.12);color:#C084FC';
     if(/abono/i.test(s)) return 'background:rgba(56,197,255,.12);color:#38C5FF';
     if(/open|tour|visit/i.test(s)) return 'background:rgba(255,184,48,.12);color:#FFB830';
-    return 'background:rgba(15,207,122,.08);color:rgba(15,207,122,.7)';
+    return 'background:rgba(91,168,245,.08);color:rgba(91,168,245,.7)';
   };
 
   el.innerHTML=`<table><thead><tr>
     <th>Nombre del padre/madre</th><th>Grado</th><th>Teléfono</th><th>Correo</th><th>Etapa</th><th>Fecha</th>
   </tr></thead><tbody>${data.map(l=>`<tr>
     <td style="font-weight:500">${(l.name||'Sin nombre').replace(/\s*\([^)]*\)/,'')}</td>
-    <td><span style="font-size:11px;padding:3px 8px;border-radius:6px;background:rgba(15,207,122,.1);color:var(--g)">${l._grado}</span></td>
+    <td><span style="font-size:11px;padding:3px 8px;border-radius:6px;background:rgba(91,168,245,.1);color:var(--g)">${l._grado}</span></td>
     <td style="font-size:12px;color:var(--text2)">${l.phone||'—'}</td>
     <td style="font-size:11px;color:var(--text2)">${l.email_from&&l.email_from!=='No tiene'&&l.email_from!=='N/A'?l.email_from:'—'}</td>
     <td><span style="font-size:10px;padding:3px 8px;border-radius:6px;${stageColor(l.stage_id?.[1]||'')}">${l.stage_id?.[1]||'—'}</span></td>
