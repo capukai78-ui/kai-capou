@@ -150,6 +150,26 @@ const conversacionSchema = new mongoose.Schema({
 });
 const Conversacion = mongoose.model('Conversacion', conversacionSchema);
 
+// ===== MODELO CONTACTO — memoria persistente del padre/madre =====
+const contactoSchema = new mongoose.Schema({
+  tenant_id:      { type: mongoose.Schema.Types.ObjectId, ref: 'Tenant' },
+  numero:         { type: String, required: true },
+  nombre:         { type: String, default: null },
+  nombre_alumno:  { type: String, default: null },
+  nivel_interes:  { type: String, default: null }, // Preprimaria/Primaria/Básico/Bachillerato
+  fecha_nacimiento_alumno: { type: String, default: null },
+  zona:           { type: String, default: null },
+  colegio_actual: { type: String, default: null },
+  correo:         { type: String, default: null },
+  resumen_ultimo_contacto: { type: String, default: null }, // qué se habló la última vez
+  odoo_lead_id:   { type: Number, default: null }, // si ya se creó como candidato en Odoo
+  total_conversaciones: { type: Number, default: 0 },
+  primer_contacto: { type: Date, default: Date.now },
+  ultimo_contacto: { type: Date, default: Date.now }
+}, { timestamps: true });
+contactoSchema.index({ tenant_id: 1, numero: 1 }, { unique: true });
+const Contacto = mongoose.model('Contacto', contactoSchema);
+
 const Tenant        = mongoose.model('Tenant', tenantSchema);
 const User          = mongoose.model('User', userSchema);
 const MessageLog    = mongoose.model('MessageLog', messageLogSchema);
@@ -390,6 +410,86 @@ async function iniciarHandoff(tenant, numero, nombre, motivoMsg) {
   return { conv, agente };
 }
 
+// Frases que indican interés real de avanzar el proceso (no solo curiosidad)
+function detectaInteresReal(texto) {
+  const t = (texto || '').toLowerCase();
+  return /quiero (inscribir|agendar|una visita|el open house|que mi hijo|que mi hija)|s[ií],?\s*(agendar|quiero la visita|me interesa)|deseo (inscribir|agendar)|c[oó]mo (inscribo|agendo)|quiero inscribirlo|quiero inscribirla|aparta(me)? (un cupo|lugar)/.test(t);
+}
+
+// Extrae datos del padre/alumno del historial usando IA, actualiza Contacto, y crea lead en Odoo si hay interés real
+async function actualizarContactoYDetectarInteres(tenant, numero, mensajeUsuario, respuestaBot, historial, contactoExistente) {
+  // 1. Extraer datos estructurados con IA (nombre, alumno, nivel, zona, colegio, correo)
+  const textoConversacion = historial.map(m => `${m.role === 'user' ? 'Padre' : 'KAI'}: ${m.content}`).join('\n');
+  const promptExtraccion = `De esta conversación de WhatsApp entre un padre/madre y un asistente de admisiones escolar, extrae SOLO estos datos si están presentes (responde ÚNICAMENTE un JSON válido, sin texto adicional, sin markdown):
+{"nombre":"nombre del padre/madre o null","nombre_alumno":"nombre del hijo/a o null","nivel_interes":"Preprimaria/Primaria/Básico/Bachillerato o null","fecha_nacimiento_alumno":"fecha si la dio o null","zona":"zona o null","colegio_actual":"colegio actual o null","correo":"correo o null"}
+
+Conversación:
+${textoConversacion}`;
+
+  let datosExtraidos = {};
+  try {
+    const respuestaIA = await llamarClaude('Extraes datos estructurados de conversaciones. Respondes solo JSON válido.', [{ role: 'user', content: promptExtraccion }], 300);
+    if (respuestaIA) {
+      const jsonLimpio = respuestaIA.replace(/```json|```/g, '').trim();
+      datosExtraidos = JSON.parse(jsonLimpio);
+    }
+  } catch (e) { console.warn('⚠️ No se pudo extraer datos del contacto:', e.message); }
+
+  // 2. Actualizar o crear el Contacto en MongoDB (memoria persistente)
+  const update = { ultimo_contacto: new Date(), $inc: { total_conversaciones: contactoExistente ? 0 : 1 } };
+  const setFields = {};
+  Object.keys(datosExtraidos).forEach(k => {
+    if (datosExtraidos[k] && datosExtraidos[k] !== 'null') setFields[k] = datosExtraidos[k];
+  });
+  if (Object.keys(setFields).length) update.$set = setFields;
+  if (!update.$set) update.$set = {};
+  // Generar resumen corto de en qué quedó la conversación
+  try {
+    const resumenCorto = await llamarClaude('Resumes en una sola frase corta (máximo 15 palabras) en qué quedó una conversación de atención al cliente.', [{ role: 'user', content: `Última pregunta del padre: "${mensajeUsuario}". Última respuesta de KAI: "${respuestaBot}". Resume en una frase qué se habló.` }], 60);
+    if (resumenCorto) update.$set.resumen_ultimo_contacto = resumenCorto.replace(/\*\*/g, '').trim();
+  } catch (e) {}
+
+  const contacto = await Contacto.findOneAndUpdate(
+    { tenant_id: tenant._id, numero },
+    update,
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+
+  // 3. Detectar interés real y crear lead "Candidato KAI" en Odoo si aún no existe
+  if (detectaInteresReal(mensajeUsuario) && !contacto.odoo_lead_id) {
+    try {
+      const teamId = tenant?.odoo_team_id || 1;
+      const nombreLead = `Candidato KAI — ${contacto.nombre || 'Sin nombre'}${contacto.nombre_alumno ? ' (hijo: ' + contacto.nombre_alumno + ')' : ''}`;
+      const descripcion = [
+        contacto.nivel_interes ? `Nivel de interés: ${contacto.nivel_interes}` : null,
+        contacto.zona ? `Zona: ${contacto.zona}` : null,
+        contacto.colegio_actual ? `Colegio actual: ${contacto.colegio_actual}` : null,
+        `Capturado automáticamente por KAI — mostró interés real en avanzar el proceso.`
+      ].filter(Boolean).join('\n');
+
+      const leadId = await odooCallLocal('crm.lead', 'create', [{
+        name: nombreLead,
+        phone: numero,
+        partner_name: contacto.nombre || null,
+        email_from: contacto.correo || null,
+        description: descripcion,
+        team_id: teamId,
+        type: 'opportunity'
+      }]);
+
+      if (leadId) {
+        contacto.odoo_lead_id = leadId;
+        await contacto.save();
+        console.log(`✅ Candidato KAI creado en Odoo — lead #${leadId} para ${numero}`);
+      }
+    } catch (e) {
+      console.error('❌ Error creando candidato en Odoo:', e.message);
+    }
+  }
+
+  return contacto;
+}
+
 async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
   // ===== VERIFICAR SI YA HAY HANDOFF ACTIVO =====
   const convActiva = await Conversacion.findOne({ tenant_id: tenant._id, numero: numeroOrigen, estado: { $in: ['humano', 'esperando_agente'] } });
@@ -435,6 +535,22 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
   if (llevaInactivo3h) {
     contextoExtra += '\n\n⏰ CONTEXTO: Esta conversación estuvo inactiva por más de 3 horas. El padre/madre acaba de volver a escribir. Salúdalo con calidez retomando la conversación, sin mencionar el tiempo de inactividad de forma incómoda.';
   }
+
+  // ===== MEMORIA PERSISTENTE — cargar contacto de la BD =====
+  let contacto = await Contacto.findOne({ tenant_id: tenant._id, numero: numeroOrigen });
+  const esPrimeraVezEnEstaSesion = historial.length === 1; // primer mensaje del usuario en esta sesión de memoria
+  if (contacto && esPrimeraVezEnEstaSesion) {
+    const diasDesdeUltimo = (Date.now() - new Date(contacto.ultimo_contacto).getTime()) / (1000*60*60*24);
+    if (diasDesdeUltimo > 0.1) { // si pasó tiempo real desde el último contacto (no la misma sesión activa)
+      contextoExtra += `\n\n🧠 MEMORIA DEL CONTACTO: Este número ya escribió antes (${contacto.total_conversaciones} veces). `;
+      if (contacto.nombre) contextoExtra += `Se llama ${contacto.nombre}. `;
+      if (contacto.nombre_alumno) contextoExtra += `Pregunta por su hijo/a ${contacto.nombre_alumno}. `;
+      if (contacto.nivel_interes) contextoExtra += `Interesado en nivel ${contacto.nivel_interes}. `;
+      if (contacto.resumen_ultimo_contacto) contextoExtra += `Última vez se habló de: ${contacto.resumen_ultimo_contacto}. `;
+      contextoExtra += 'Salúdalo reconociendo que ya hablaron antes, por su nombre si lo sabes, y continúa desde donde quedaron sin repetir preguntas que ya respondió.';
+    }
+  }
+
   try {
     const [faqs, docs] = await Promise.all([
       FAQ.find({ tenant_id: tenant._id, activo: true }).limit(20),
@@ -447,6 +563,11 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
   const respuestaLimpia = reply ? reply.replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1') : null;
   const respuesta = respuestaLimpia || 'Disculpe, tuve un problema técnico. Por favor llámenos directamente. 📞';
   historial.push({ role: 'assistant', content: respuesta });
+
+  // ===== ACTUALIZAR/CREAR CONTACTO Y DETECTAR INTERÉS REAL (async, no bloquea respuesta) =====
+  actualizarContactoYDetectarInteres(tenant, numeroOrigen, mensajeUsuario, respuesta, historial, contacto)
+    .catch(e => console.error('❌ Error actualizando contacto:', e.message));
+
   return respuesta;
 }
 
