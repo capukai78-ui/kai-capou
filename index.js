@@ -311,36 +311,107 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
 }
 
 // ===== WEBHOOK TWILIO =====
-app.post('/webhook', async (req, res) => {
-  try {
-    const mensajeUsuario = req.body.Body || '';
-    const numeroDestino  = req.body.To || '';
-    const numeroOrigen   = req.body.From || '';
-    const nombreCliente  = req.body.ProfileName || null;
-    const numero  = numeroDestino.replace('whatsapp:', '');
-    const tenant  = await Tenant.findOne({ numero_whatsapp: numero, activo: true });
-    if (tenant) {
-      const limite_info = await verificarLimite(tenant._id, tenant.plan);
-      if (limite_info.agotado) {
-        await enviarWhatsAppDirecto(process.env.OWNER_WHATSAPP, `🚫 BOTLY: "${tenant.nombre}" agotó su plan.`).catch(() => {});
-        return res.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?><Response><Message>Nuestro asistente está en mantenimiento. Contáctanos directamente. 🙏</Message></Response>`);
+// ===== WEBHOOK META WHATSAPP CLOUD API =====
+
+// GET — verificación inicial que pide Meta al guardar el webhook
+app.get('/webhook', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+  const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+
+  if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+    console.log('✅ Webhook de Meta verificado correctamente');
+    return res.status(200).send(challenge);
+  }
+  console.error('❌ Verificación de webhook fallida — token no coincide');
+  res.sendStatus(403);
+});
+
+// Enviar mensaje de texto vía Meta WhatsApp Cloud API
+function enviarWhatsAppMeta(numeroDestino, texto) {
+  return new Promise((resolve) => {
+    const PHONE_ID = process.env.WHATSAPP_PHONE_ID;
+    const TOKEN_WA = process.env.WHATSAPP_TOKEN;
+    if (!PHONE_ID || !TOKEN_WA) { console.error('❌ Falta WHATSAPP_PHONE_ID o WHATSAPP_TOKEN'); return resolve(null); }
+
+    const body = JSON.stringify({
+      messaging_product: 'whatsapp',
+      to: numeroDestino.replace(/\D/g, ''),
+      type: 'text',
+      text: { body: texto }
+    });
+
+    const req2 = https.request({
+      hostname: 'graph.facebook.com',
+      path: `/v22.0/${PHONE_ID}/messages`,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${TOKEN_WA}`,
+        'Content-Length': Buffer.byteLength(body)
       }
-      await notificarAdminSiNecesario(tenant, limite_info);
-    }
-    const teamId      = tenant?.odoo_team_id || 1;
-    const tenantNombre = tenant?.nombre || 'General';
-    await procesarMensajeWhatsApp(numeroOrigen.replace('whatsapp:', ''), nombreCliente, mensajeUsuario, teamId, tenantNombre).catch(e => console.error('Odoo:', e.message));
-    let respuesta;
+    }, (r) => {
+      let d = '';
+      r.on('data', c => d += c);
+      r.on('end', () => { try { resolve(JSON.parse(d)); } catch(e) { resolve({ raw: d }); } });
+    });
+    req2.on('error', (e) => { console.error('❌ Error enviando WhatsApp:', e.message); resolve(null); });
+    req2.write(body);
+    req2.end();
+  });
+}
+
+// POST — mensajes entrantes reales de WhatsApp
+app.post('/webhook', async (req, res) => {
+  res.sendStatus(200); // Responder rápido a Meta, procesar después
+
+  try {
+    const entry = req.body.entry?.[0];
+    const changes = entry?.changes?.[0];
+    const value = changes?.value;
+    const mensaje = value?.messages?.[0];
+
+    if (!mensaje) return; // Puede ser un evento de "status" (entregado/leído), lo ignoramos
+
+    const numeroOrigen = mensaje.from; // ej: "50212345678"
+    const mensajeUsuario = mensaje.text?.body || '';
+    const nombreCliente = value?.contacts?.[0]?.profile?.name || null;
+    const phoneIdRecibido = value?.metadata?.phone_number_id;
+
+    if (!mensajeUsuario) return; // Tipo de mensaje no soportado (audio, imagen, etc.)
+
+    console.log(`📩 WhatsApp de ${nombreCliente || numeroOrigen}: ${mensajeUsuario}`);
+
+    // Buscar el tenant configurado para este número de WhatsApp
+    const tenant = await Tenant.findOne({ whatsapp_phone_id: phoneIdRecibido, activo: true })
+                || await Tenant.findOne({ activo: true }); // fallback: primer tenant activo
+
     if (!tenant) {
-      respuesta = 'Gracias por escribirnos 🙌, pronto te atenderemos.';
-    } else {
-      respuesta = await responderConIA(tenant, mensajeUsuario, numeroOrigen);
-      await MessageLog.create({ tenant_id: tenant._id, from: numeroOrigen, message: mensajeUsuario, response: respuesta });
+      await enviarWhatsAppMeta(numeroOrigen, 'Gracias por escribirnos 🙌, pronto te atenderemos.');
+      return;
     }
-    res.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?><Response><Message>${respuesta}</Message></Response>`);
+
+    const limite_info = await verificarLimite(tenant._id, tenant.plan);
+    if (limite_info.agotado) {
+      await enviarWhatsAppMeta(process.env.OWNER_WHATSAPP || numeroOrigen, `🚫 BOTLY: "${tenant.nombre}" agotó su plan.`).catch(() => {});
+      await enviarWhatsAppMeta(numeroOrigen, 'Nuestro asistente está en mantenimiento. Contáctanos directamente. 🙏');
+      return;
+    }
+    await notificarAdminSiNecesario(tenant, limite_info);
+
+    const teamId = tenant?.odoo_team_id || 1;
+    const tenantNombre = tenant?.nombre || 'General';
+    await procesarMensajeWhatsApp(numeroOrigen, nombreCliente, mensajeUsuario, teamId, tenantNombre).catch(e => console.error('Odoo:', e.message));
+
+    const respuesta = await responderConIA(tenant, mensajeUsuario, numeroOrigen);
+    await MessageLog.create({ tenant_id: tenant._id, from: numeroOrigen, message: mensajeUsuario, response: respuesta });
+
+    await enviarWhatsAppMeta(numeroOrigen, respuesta);
+    console.log(`✅ Respuesta enviada a ${numeroOrigen}`);
+
   } catch (err) {
-    console.error('❌ WEBHOOK:', err);
-    res.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?><Response><Message>Error interno.</Message></Response>`);
+    console.error('❌ WEBHOOK error:', err);
   }
 });
 
