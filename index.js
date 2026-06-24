@@ -138,6 +138,8 @@ const conversacionSchema = new mongoose.Schema({
   agente_id:     { type: mongoose.Schema.Types.ObjectId, ref: 'UsuarioPanel', default: null },
   agente_nombre: { type: String, default: null },
   motivo:        { type: String, default: null }, // por qué pidió hablar con humano
+  resumen_kai:   { type: String, default: null }, // resumen de KAI para el agente al recibir el chat
+  resumen_agente:{ type: String, default: null }, // resumen del agente para KAI al devolver el chat
   mensajes:      [{
     de:     { type: String, enum: ['padre', 'bot', 'agente'] },
     texto:  String,
@@ -340,6 +342,31 @@ async function asignarAgenteLibre(tenantId) {
 }
 
 // Pasa una conversación a estado "esperando_agente" y le asigna uno si hay disponible
+// Genera un resumen breve usando IA del historial de conversación con KAI
+async function generarResumenParaAgente(numeroOrigen) {
+  const conv = conversaciones.get(numeroOrigen);
+  const historial = conv?.historial || [];
+  if (!historial.length) return 'El padre/madre acaba de iniciar la conversación, aún no ha compartido información.';
+
+  const textoConversacion = historial.map(m => `${m.role === 'user' ? 'Padre' : 'KAI'}: ${m.content}`).join('\n');
+  const promptResumen = `Resume en máximo 3 líneas, en texto plano sin asteriscos, lo que este padre/madre ya preguntó o compartió en la conversación con KAI, para que un asesor humano pueda continuar sin repetir preguntas. Incluye nombre del alumno/nivel si se mencionó, y cuál fue la última duda sin resolver. Conversación:\n\n${textoConversacion}`;
+
+  const resumen = await llamarClaude('Eres un asistente que resume conversaciones de atención al cliente de forma breve y útil.', [{ role: 'user', content: promptResumen }], 200);
+  return resumen || 'No se pudo generar resumen automático. Revisa el historial completo del chat.';
+}
+
+// Genera un resumen breve usando IA del historial de mensajes con el agente humano
+async function generarResumenParaKai(conv) {
+  const mensajesAgente = (conv.mensajes || []).filter(m => m.de === 'agente' || m.de === 'padre');
+  if (!mensajesAgente.length) return null;
+
+  const textoConversacion = mensajesAgente.map(m => `${m.de === 'padre' ? 'Padre' : 'Asesor'}: ${m.texto}`).join('\n');
+  const promptResumen = `Resume en máximo 3 líneas, en texto plano sin asteriscos, lo que ocurrió en esta conversación entre un asesor humano y un padre de familia, para que el asistente KAI pueda retomar la conversación sin repetir lo ya resuelto. Conversación:\n\n${textoConversacion}`;
+
+  const resumen = await llamarClaude('Eres un asistente que resume conversaciones de atención al cliente de forma breve y útil.', [{ role: 'user', content: promptResumen }], 200);
+  return resumen || null;
+}
+
 async function iniciarHandoff(tenant, numero, nombre, motivoMsg) {
   let conv = await Conversacion.findOne({ tenant_id: tenant._id, numero, estado: { $ne: 'cerrado' } });
   if (!conv) {
@@ -349,6 +376,9 @@ async function iniciarHandoff(tenant, numero, nombre, motivoMsg) {
     conv.motivo = motivoMsg;
     conv.ultimaActividad = new Date();
   }
+
+  // Generar resumen de KAI para que el agente vea contexto al entrar
+  conv.resumen_kai = await generarResumenParaAgente(numero);
 
   const agente = await asignarAgenteLibre(tenant._id);
   if (agente) {
@@ -1149,13 +1179,24 @@ app.post('/api/conversaciones/:id/responder', authMiddleware, async (req, res) =
 // Devolver la conversación a KAI (el bot retoma el control)
 app.post('/api/conversaciones/:id/devolver-a-kai', authMiddleware, async (req, res) => {
   try {
-    const conv = await Conversacion.findOneAndUpdate(
-      { _id: req.params.id, tenant_id: req.user.tenant_id },
-      { estado: 'cerrado' },
-      { new: true }
-    );
+    const conv = await Conversacion.findOne({ _id: req.params.id, tenant_id: req.user.tenant_id });
     if (!conv) return res.status(404).json({ ok: false, error: 'No encontrada' });
-    res.json({ ok: true, mensaje: 'KAI retoma esta conversación', conversacion: conv });
+
+    // Generar resumen del agente para que KAI tenga contexto al retomar
+    const resumenAgente = await generarResumenParaKai(conv);
+    conv.resumen_agente = resumenAgente;
+    conv.estado = 'cerrado';
+    await conv.save();
+
+    // Inyectar el resumen en el historial de KAI para esa conversación, para que no repita preguntas
+    if (resumenAgente) {
+      if (!conversaciones.has(conv.numero)) conversaciones.set(conv.numero, { historial: [], ultimaActividad: Date.now() });
+      const ctx = conversaciones.get(conv.numero);
+      ctx.historial.push({ role: 'assistant', content: `(Contexto interno — no mostrar tal cual: mientras hablaba con un asesor humano, esto ocurrió: ${resumenAgente}. Retoma la conversación con naturalidad, sin mencionar este resumen explícitamente, solo úsalo para no preguntar lo que ya se resolvió.)` });
+      ctx.ultimaActividad = Date.now();
+    }
+
+    res.json({ ok: true, mensaje: 'KAI retoma esta conversación', conversacion: conv, resumen_agente: resumenAgente });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
