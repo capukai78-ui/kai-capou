@@ -125,6 +125,8 @@ const usuarioPanelSchema = new mongoose.Schema({
   sedes:     [String],  // nombres de sedes asignadas, o ['todas']
   activo:    { type: Boolean, default: true },
   disponible: { type: Boolean, default: true }, // si puede recibir chats en vivo asignados
+  disponible_manual: { type: Boolean, default: false }, // true si el agente lo apagó a propósito (no reactivar automático)
+  ultima_actividad: { type: Date, default: Date.now }, // última vez que usó el panel — para auto-disponibilidad
   lastLogin: Date,
   creado:    { type: Date, default: Date.now }
 });
@@ -202,11 +204,36 @@ function authMiddleware(req, res, next) {
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     req.user = decoded;
+    // Actualizar última actividad del agente (fire-and-forget, no bloquea la respuesta).
+    // Si estaba apagado por inactividad automática (no manual), se reactiva al volver al panel.
+    UsuarioPanel.findOne({ _id: decoded.id }).then(u => {
+      if (!u) return;
+      const update = { ultima_actividad: new Date() };
+      if (!u.disponible && !u.disponible_manual && ['vendedor','admin'].includes(u.role)) {
+        update.disponible = true; // se reactiva solo porque el apagado fue automático, no manual
+      }
+      UsuarioPanel.findByIdAndUpdate(decoded.id, update).exec();
+    }).catch(()=>{});
     next();
   } catch {
     res.status(401).json({ error: 'Token inválido' });
   }
 }
+
+// Verificador de inactividad — marca como no disponibles a agentes que no han usado el panel en 5 min
+const MINUTOS_INACTIVIDAD_AGENTE = 5;
+setInterval(async () => {
+  try {
+    const limite = new Date(Date.now() - MINUTOS_INACTIVIDAD_AGENTE * 60 * 1000);
+    const resultado = await UsuarioPanel.updateMany(
+      { role: { $in: ['vendedor', 'admin'] }, disponible: true, disponible_manual: false, ultima_actividad: { $lt: limite } },
+      { disponible: false }
+    );
+    if (resultado.modifiedCount > 0) {
+      console.log(`⏸️  ${resultado.modifiedCount} agente(s) marcados como no disponibles por inactividad (>${MINUTOS_INACTIVIDAD_AGENTE} min)`);
+    }
+  } catch (e) { console.error('❌ Error verificando inactividad de agentes:', e.message); }
+}, 60 * 1000); // revisa cada minuto
 
 // =============================================
 // ===== SISTEMA DE LÍMITES POR PLAN =====
@@ -1363,7 +1390,13 @@ app.post('/api/conversaciones/:id/devolver-a-kai', authMiddleware, async (req, r
 app.post('/api/mi-disponibilidad', authMiddleware, async (req, res) => {
   try {
     const { disponible } = req.body;
-    await UsuarioPanel.findByIdAndUpdate(req.user.id, { disponible: !!disponible });
+    // Si el agente lo apaga manualmente: queda marcado como apagado a propósito (no se reactiva solo).
+    // Si lo prende manualmente: vuelve al control automático normal del sistema de inactividad.
+    await UsuarioPanel.findByIdAndUpdate(req.user.id, {
+      disponible: !!disponible,
+      disponible_manual: !disponible, // true solo cuando se apaga manualmente
+      ultima_actividad: new Date()
+    });
     res.json({ ok: true, disponible: !!disponible });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
