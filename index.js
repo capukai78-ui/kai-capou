@@ -320,19 +320,22 @@ app.get('/webhook', (req, res) => {
   const challenge = req.query['hub.challenge'];
   const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 
-  console.log('🔍 DEBUG webhook GET:');
-  console.log('   mode recibido:', JSON.stringify(mode));
-  console.log('   token recibido:', JSON.stringify(token));
-  console.log('   VERIFY_TOKEN en Railway:', JSON.stringify(VERIFY_TOKEN));
-  console.log('   ¿VERIFY_TOKEN existe?:', VERIFY_TOKEN !== undefined);
-  console.log('   ¿Coinciden?:', token === VERIFY_TOKEN);
-
   if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-    console.log('✅ Webhook de Meta verificado correctamente');
     return res.status(200).send(challenge);
   }
-  console.error('❌ Verificación de webhook fallida — token no coincide');
-  res.sendStatus(403);
+
+  // DEBUG temporal: mostrar la info directamente en la respuesta para diagnosticar
+  return res.status(403).json({
+    error: 'Forbidden',
+    debug: {
+      mode_recibido: mode || null,
+      token_recibido: token || null,
+      verify_token_en_railway: VERIFY_TOKEN || null,
+      verify_token_existe: VERIFY_TOKEN !== undefined,
+      coinciden: token === VERIFY_TOKEN,
+      mode_es_subscribe: mode === 'subscribe'
+    }
+  });
 });
 
 // Enviar mensaje de texto vía Meta WhatsApp Cloud API
