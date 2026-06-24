@@ -364,11 +364,21 @@ function enviarWhatsAppMeta(numeroDestino, texto) {
     }, (r) => {
       let d = '';
       r.on('data', c => d += c);
-      r.on('end', () => { try { resolve(JSON.parse(d)); } catch(e) { resolve({ raw: d }); } });
+      r.on('end', () => {
+        try {
+          const parsed = JSON.parse(d);
+          console.log('📤 Meta respondió:', JSON.stringify(parsed));
+          resolve(parsed);
+        } catch(e) {
+          console.log('📤 Meta raw:', d);
+          resolve({ raw: d });
+        }
+      });
     });
     req2.on('error', (e) => { console.error('❌ Error enviando WhatsApp:', e.message); resolve(null); });
     req2.write(body);
     req2.end();
+
   });
 }
 
