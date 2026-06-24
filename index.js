@@ -320,6 +320,13 @@ app.get('/webhook', (req, res) => {
   const challenge = req.query['hub.challenge'];
   const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 
+  console.log('🔍 DEBUG webhook GET:');
+  console.log('   mode recibido:', JSON.stringify(mode));
+  console.log('   token recibido:', JSON.stringify(token));
+  console.log('   VERIFY_TOKEN en Railway:', JSON.stringify(VERIFY_TOKEN));
+  console.log('   ¿VERIFY_TOKEN existe?:', VERIFY_TOKEN !== undefined);
+  console.log('   ¿Coinciden?:', token === VERIFY_TOKEN);
+
   if (mode === 'subscribe' && token === VERIFY_TOKEN) {
     console.log('✅ Webhook de Meta verificado correctamente');
     return res.status(200).send(challenge);
