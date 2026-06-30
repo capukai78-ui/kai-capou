@@ -165,6 +165,8 @@ const contactoSchema = new mongoose.Schema({
   correo:         { type: String, default: null },
   resumen_ultimo_contacto: { type: String, default: null }, // qué se habló la última vez
   odoo_lead_id:   { type: Number, default: null }, // si ya se creó como candidato en Odoo
+  nivel_calor:    { type: Number, default: null, enum: [null, 1, 2, 3] }, // 1=Alta Intención, 2=Interesado, 3=Exploratorio
+  nivel_calor_etiqueta: { type: String, default: null }, // texto de la etiqueta aplicada en Odoo
   total_conversaciones: { type: Number, default: 0 },
   primer_contacto: { type: Date, default: Date.now },
   ultimo_contacto: { type: Date, default: Date.now }
@@ -438,16 +440,59 @@ async function iniciarHandoff(tenant, numero, nombre, motivoMsg) {
 }
 
 // Frases que indican interés real de avanzar el proceso (no solo curiosidad)
-function detectaInteresReal(texto, ultimoMensajeBot) {
+// ===== SISTEMA DE 3 NIVELES DE CALOR DEL LEAD =====
+// Nivel 1 — 🔴 Alta Intención: el padre quiere actuar YA (inscribir, agendar, confirmar)
+// Nivel 2 — 🟡 Interesado: ya dio datos del alumno y preguntó cuotas/proceso, pero no pidió agendar
+// Nivel 3 — ⚪ Exploratorio: solo hizo preguntas generales sin comprometerse a nada
+//
+// Esta función reemplaza al antiguo detector binario "detectaInteresReal".
+// Devuelve { nivel: 1|2|3, etiqueta: string } o null si no hay suficiente señal todavía.
+// Detector independiente de Nivel 1 (Alta Intención) — usado para decidir el handoff inmediato,
+// sin necesitar el objeto Contacto completo (se evalúa antes de tenerlo actualizado).
+function esAltaIntencion(texto, ultimoMensajeBot) {
   const t = (texto || '').toLowerCase().trim();
-  const tieneFraseDirecta = /(quiero|quisiera|deseo|me gustar[ií]a|necesito|estoy interesad[oa] en|me interesa)\s+(inscribir|agendar|una visita|el open house|que mi hijo|que mi hija|que (mi|el|la)\s*\w+\s*(estudie|entre|vaya))|c[oó]mo (inscribo|agendo|hago para inscribir)|quiero inscribirlo|quiero inscribirla|aparta(me)? (un cupo|lugar)|inscribir(lo|la)?\s*(a mi hijo|a mi hija)?$/.test(t);
-
-  // Si el mensaje es una simple afirmación ("sí", "sí por favor", "claro", "dale", "ok")
-  // Y el último mensaje de KAI le preguntaba sobre agendar visita/asesor — también cuenta como interés real
+  const fraseAltaIntencion = /(quiero|quisiera|deseo|me gustar[ií]a|necesito|estoy interesad[oa] en|me interesa)\s+(inscribir|agendar|una visita|el open house|que mi hijo|que mi hija|que (mi|el|la)\s*\w+\s*(estudie|entre|vaya))|c[oó]mo (inscribo|agendo|hago para inscribir)|quiero inscribirlo|quiero inscribirla|aparta(me)? (un cupo|lugar)|inscribir(lo|la)?\s*(a mi hijo|a mi hija)?$/.test(t);
   const esAfirmacionSimple = /^(s[ií]|s[ií] por favor|s[ií] claro|claro|dale|ok|okay|de acuerdo|perfecto|me parece bien|s[ií] me interesa|correcto|exacto|as[ií] es)\.?!?$/.test(t);
   const botPreguntoAgendar = /agendar|visita|asesor|coordinar|conectar(te)? con un asesor/.test((ultimoMensajeBot || '').toLowerCase());
+  return fraseAltaIntencion || (esAfirmacionSimple && botPreguntoAgendar);
+}
 
-  return tieneFraseDirecta || (esAfirmacionSimple && botPreguntoAgendar);
+function calcularNivelInteres(texto, ultimoMensajeBot, contacto) {
+  const t = (texto || '').toLowerCase().trim();
+
+  // ---- NIVEL 1 — ALTA INTENCIÓN ----
+  const fraseAltaIntencion = /(quiero|quisiera|deseo|me gustar[ií]a|necesito|estoy interesad[oa] en|me interesa)\s+(inscribir|agendar|una visita|el open house|que mi hijo|que mi hija|que (mi|el|la)\s*\w+\s*(estudie|entre|vaya))|c[oó]mo (inscribo|agendo|hago para inscribir)|quiero inscribirlo|quiero inscribirla|aparta(me)? (un cupo|lugar)|inscribir(lo|la)?\s*(a mi hijo|a mi hija)?$/.test(t);
+
+  const esAfirmacionSimple = /^(s[ií]|s[ií] por favor|s[ií] claro|claro|dale|ok|okay|de acuerdo|perfecto|me parece bien|s[ií] me interesa|correcto|exacto|as[ií] es)\.?!?$/.test(t);
+  const botPreguntoAgendar = /agendar|visita|asesor|coordinar|conectar(te)? con un asesor/.test((ultimoMensajeBot || '').toLowerCase());
+  const confirmacionAgendar = esAfirmacionSimple && botPreguntoAgendar;
+
+  if (fraseAltaIntencion || confirmacionAgendar) {
+    return { nivel: 1, etiqueta: 'Candidato KAI — Alta Intención' };
+  }
+
+  // ---- NIVEL 2 — INTERESADO ----
+  // Ya tiene datos clave del alumno capturados (nombre del alumno + nivel educativo)
+  // y preguntó sobre cuotas, requisitos o proceso de admisión — señal de interés serio sin urgencia de agendar.
+  const preguntoProcesoOcuotas = /cuota|colegiatura|precio|costo|requisito|inscripci[oó]n|proceso de admisi[oó]n|c[oó]mo es el proceso/.test(t);
+  const tieneDatosClave = !!(contacto?.nombre_alumno && contacto?.nivel_interes);
+
+  if (tieneDatosClave && preguntoProcesoOcuotas) {
+    return { nivel: 2, etiqueta: 'Candidato KAI — Interesado' };
+  }
+  // También cuenta como Nivel 2 si ya tiene nombre del alumno + nivel, aunque la pregunta actual sea otra cosa —
+  // refleja que ya pasó el filtro inicial de solo curiosear.
+  if (tieneDatosClave) {
+    return { nivel: 2, etiqueta: 'Candidato KAI — Interesado' };
+  }
+
+  // ---- NIVEL 3 — EXPLORATORIO ----
+  // Si ya dio AL MENOS el nivel educativo de interés, cuenta como lead exploratorio (no solo curiosidad anónima).
+  if (contacto?.nivel_interes) {
+    return { nivel: 3, etiqueta: 'Lead KAI — Exploratorio' };
+  }
+
+  return null; // Aún no hay suficiente señal para clasificar — no crear nada todavía
 }
 
 // Extrae datos del padre/alumno del historial usando IA, actualiza Contacto, y crea lead en Odoo si hay interés real
@@ -489,27 +534,62 @@ ${textoConversacion}`;
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
 
-  // 3. Detectar interés real y crear lead "Candidato KAI" en Odoo si aún no existe
+  // 3. Calcular nivel de calor del lead y crear/actualizar en Odoo según corresponda
   const ultimoMsgBotPrevio = [...historial].reverse().find(m => m.role === 'assistant')?.content || respuestaBot;
-  if (detectaInteresReal(mensajeUsuario, ultimoMsgBotPrevio) && !contacto.odoo_lead_id) {
-    await crearCandidatoEnOdoo(tenant, contacto, numero);
+  const resultado = calcularNivelInteres(mensajeUsuario, ultimoMsgBotPrevio, contacto);
+
+  if (resultado) {
+    const nivelMejoro = !contacto.nivel_calor || resultado.nivel < contacto.nivel_calor; // nivel 1 es "más caliente" que 3
+    if (!contacto.odoo_lead_id) {
+      // Primera vez que se detecta cualquier nivel — crear el lead en Odoo
+      await crearCandidatoEnOdoo(tenant, contacto, numero, resultado);
+    } else if (nivelMejoro) {
+      // Ya existe el lead pero subió de calor — actualizar etiqueta/nivel en Odoo sin duplicar
+      await actualizarNivelCandidatoEnOdoo(tenant, contacto, resultado);
+    }
   }
 
   return contacto;
 }
 
 // Crea el lead "Candidato KAI" en Odoo a partir de los datos ya capturados en el Contacto
-async function crearCandidatoEnOdoo(tenant, contacto, numero) {
+// Busca el ID de un tag de Odoo por nombre, o lo crea si no existe (cachea en memoria para no repetir consultas)
+const _cacheTagsOdoo = {};
+async function getOdooTagId(nombreTag) {
+  if (_cacheTagsOdoo[nombreTag]) return _cacheTagsOdoo[nombreTag];
+  try {
+    const existentes = await odooCallLocal('crm.tag', 'search_read', [[['name', '=', nombreTag]]], { fields: ['id'], limit: 1 });
+    if (existentes && existentes.length) {
+      _cacheTagsOdoo[nombreTag] = existentes[0].id;
+      return existentes[0].id;
+    }
+    const nuevoId = await odooCallLocal('crm.tag', 'create', [{ name: nombreTag }]);
+    _cacheTagsOdoo[nombreTag] = nuevoId;
+    return nuevoId;
+  } catch (e) {
+    console.error(`❌ Error obteniendo/creando tag "${nombreTag}":`, e.message);
+    return null;
+  }
+}
+
+// Crea el lead "Candidato KAI" en Odoo con la etiqueta correspondiente a su nivel de calor
+async function crearCandidatoEnOdoo(tenant, contacto, numero, resultadoNivel) {
   if (contacto.odoo_lead_id) return contacto.odoo_lead_id; // ya existe, no duplicar
   try {
     const teamId = tenant?.odoo_team_id || 1;
-    const nombreLead = `Candidato KAI — ${contacto.nombre || 'Sin nombre'}${contacto.nombre_alumno ? ' (hijo: ' + contacto.nombre_alumno + ')' : ''}`;
+    const etiqueta = resultadoNivel?.etiqueta || 'Lead KAI — Exploratorio';
+    const nivel = resultadoNivel?.nivel || 3;
+
+    const nombreLead = `${etiqueta.split(' — ')[0]} — ${contacto.nombre || 'Sin nombre'}${contacto.nombre_alumno ? ' (hijo: ' + contacto.nombre_alumno + ')' : ''}`;
     const descripcion = [
-      contacto.nivel_interes ? `Nivel de interés: ${contacto.nivel_interes}` : null,
+      `Nivel de calor: ${etiqueta}`,
+      contacto.nivel_interes ? `Nivel educativo de interés: ${contacto.nivel_interes}` : null,
       contacto.zona ? `Zona: ${contacto.zona}` : null,
       contacto.colegio_actual ? `Colegio actual: ${contacto.colegio_actual}` : null,
-      `Capturado automáticamente por KAI — mostró interés real en avanzar el proceso.`
+      `Capturado automáticamente por KAI vía WhatsApp.`
     ].filter(Boolean).join('\n');
+
+    const tagId = await getOdooTagId(etiqueta);
 
     const leadId = await odooCallLocal('crm.lead', 'create', [{
       name: nombreLead,
@@ -518,18 +598,49 @@ async function crearCandidatoEnOdoo(tenant, contacto, numero) {
       email_from: contacto.correo || null,
       description: descripcion,
       team_id: teamId,
-      type: 'opportunity'
+      type: 'opportunity',
+      tag_ids: tagId ? [[6, 0, [tagId]]] : undefined // formato Odoo many2many: reemplazar tags con [tagId]
     }]);
 
     if (leadId) {
       contacto.odoo_lead_id = leadId;
+      contacto.nivel_calor = nivel;
+      contacto.nivel_calor_etiqueta = etiqueta;
       await contacto.save();
-      console.log(`✅ Candidato KAI creado en Odoo — lead #${leadId} para ${numero}`);
+      console.log(`✅ ${etiqueta} creado en Odoo — lead #${leadId} para ${numero}`);
     }
     return leadId;
   } catch (e) {
     console.error('❌ Error creando candidato en Odoo:', e.message);
     return null;
+  }
+}
+
+// Cuando un contacto YA tiene lead en Odoo pero subió de nivel de calor (ej: de Exploratorio a Alta Intención),
+// actualiza la etiqueta y el nombre del lead existente sin crear uno nuevo.
+async function actualizarNivelCandidatoEnOdoo(tenant, contacto, resultadoNivel) {
+  if (!contacto.odoo_lead_id) return;
+  try {
+    const etiqueta = resultadoNivel.etiqueta;
+    const tagId = await getOdooTagId(etiqueta);
+    const nuevoNombre = `${etiqueta.split(' — ')[0]} — ${contacto.nombre || 'Sin nombre'}${contacto.nombre_alumno ? ' (hijo: ' + contacto.nombre_alumno + ')' : ''}`;
+
+    await odooCallLocal('crm.lead', 'write', [[contacto.odoo_lead_id], {
+      name: nuevoNombre,
+      tag_ids: tagId ? [[6, 0, [tagId]]] : undefined
+    }]);
+
+    // Dejar registro del cambio de nivel en el chatter del lead
+    await odooCallLocal('crm.lead', 'message_post', [[contacto.odoo_lead_id]], {
+      body: `🌡️ Nivel de calor actualizado por KAI: ${contacto.nivel_calor_etiqueta || 'Sin nivel previo'} → ${etiqueta}`
+    }).catch(()=>{});
+
+    contacto.nivel_calor = resultadoNivel.nivel;
+    contacto.nivel_calor_etiqueta = etiqueta;
+    await contacto.save();
+    console.log(`🌡️ Lead #${contacto.odoo_lead_id} subió de nivel a "${etiqueta}" para ${contacto.numero}`);
+  } catch (e) {
+    console.error('❌ Error actualizando nivel de candidato en Odoo:', e.message);
   }
 }
 
@@ -540,7 +651,8 @@ async function crearCandidatoOdooSiNoExiste(tenant, numero, mensajeUsuario, hist
     contacto = await Contacto.create({ tenant_id: tenant._id, numero, total_conversaciones: 1 });
   }
   if (contacto.odoo_lead_id) return; // ya existe
-  await crearCandidatoEnOdoo(tenant, contacto, numero);
+  // El handoff inmediato siempre implica Nivel 1 — Alta Intención (pidió agendar/inscribir)
+  await crearCandidatoEnOdoo(tenant, contacto, numero, { nivel: 1, etiqueta: 'Candidato KAI — Alta Intención' });
 }
 
 async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
@@ -559,7 +671,7 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
   const yaHayContexto = historialPrevio.length >= 4; // al menos 2 intercambios (pregunta+respuesta x2)
   const insisteExplicito = detectaInsistenciaAgente(mensajeUsuario);
   const ultimoMsgBot = [...historialPrevio].reverse().find(m => m.role === 'assistant')?.content || '';
-  const mostroInteresReal = detectaInteresReal(mensajeUsuario, ultimoMsgBot); // quiere agendar/inscribir = transferir directo
+  const mostroInteresReal = esAltaIntencion(mensajeUsuario, ultimoMsgBot); // Nivel 1 = quiere agendar/inscribir = transferir directo
 
   if ((detectaSolicitudAgente(mensajeUsuario) && (yaHayContexto || insisteExplicito)) || mostroInteresReal) {
     const motivoHandoff = mostroInteresReal ? `Interesado en avanzar: ${mensajeUsuario}` : mensajeUsuario;
