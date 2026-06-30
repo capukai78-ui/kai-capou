@@ -1648,6 +1648,36 @@ app.post('/api/odoo/test-escritura', authMiddleware, async (req, res) => {
   }
 });
 
+// Crea 3 leads de prueba — uno por cada nivel de calor — para verificar las etiquetas en Odoo
+app.post('/api/odoo/test-niveles-calor', authMiddleware, async (req, res) => {
+  try {
+    const teamId = 1;
+    const niveles = [
+      { nivel: 1, etiqueta: 'Candidato KAI — Alta Intención', nombre: 'PRUEBA Nivel 1 — Familia Pérez', telefono: '50211111111' },
+      { nivel: 2, etiqueta: 'Candidato KAI — Interesado', nombre: 'PRUEBA Nivel 2 — Familia Gómez', telefono: '50222222222' },
+      { nivel: 3, etiqueta: 'Lead KAI — Exploratorio', nombre: 'PRUEBA Nivel 3 — Familia López', telefono: '50233333333' },
+    ];
+
+    const resultados = [];
+    for (const n of niveles) {
+      const tagId = await getOdooTagId(n.etiqueta);
+      const leadId = await odooCallLocal('crm.lead', 'create', [{
+        name: `${n.etiqueta.split(' — ')[0]} — ${n.nombre}`,
+        phone: n.telefono,
+        description: `PRUEBA — Lead de demostración del nivel de calor: ${n.etiqueta}. Puede eliminarse, fue creado para validar el sistema de etiquetas.`,
+        team_id: teamId,
+        type: 'opportunity',
+        tag_ids: tagId ? [[6, 0, [tagId]]] : undefined
+      }]);
+      resultados.push({ nivel: n.nivel, etiqueta: n.etiqueta, lead_id: leadId, tag_id: tagId });
+    }
+
+    res.json({ ok: true, mensaje: '3 leads de prueba creados con sus etiquetas de nivel de calor', resultados });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 app.get('/', (req, res) => res.sendFile('index.html', { root: 'public' }));
 
 app.listen(PORT, () => {
