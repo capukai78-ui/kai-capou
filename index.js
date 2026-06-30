@@ -86,6 +86,22 @@ const documentoSchema = new mongoose.Schema({
   creado: { type: Date, default: Date.now }
 });
 
+// ===== MODELO IMAGEN MARKETING — fotos reales para enviar por WhatsApp =====
+const imagenMarketingSchema = new mongoose.Schema({
+  tenant_id:   { type: mongoose.Schema.Types.ObjectId, ref: 'Tenant' },
+  nombre:      { type: String, required: true }, // ej: "Fachada principal", "Laboratorio de ciencias"
+  categoria:   { type: String, enum: ['instalaciones','aulas','deportes','academia_aha','eventos','open_house','graduacion','general'], default: 'general' },
+  nivel_educativo: { type: String, enum: ['Jardín','Preprimaria','Kínder','Primaria','Básico','Bachillerato','Todos'], default: 'Todos' },
+  imagen_base64: { type: String, required: true }, // imagen codificada, se sube vía panel
+  mime_type:   { type: String, default: 'image/jpeg' },
+  subida_por:  { type: mongoose.Schema.Types.ObjectId, ref: 'UsuarioPanel' },
+  subida_por_nombre: { type: String },
+  activo:      { type: Boolean, default: true },
+  veces_enviada: { type: Number, default: 0 },
+  creado:      { type: Date, default: Date.now }
+});
+const ImagenMarketing = mongoose.model('ImagenMarketing', imagenMarketingSchema);
+
 const leadDetalladoSchema = new mongoose.Schema({
   tenant_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Tenant' },
   nombre: String,
@@ -856,6 +872,94 @@ function enviarWhatsAppMeta(numeroDestino, texto) {
   });
 }
 
+// Sube una imagen (base64) a los servidores de Meta y devuelve el media_id necesario para enviarla
+function subirImagenAMeta(imagenBase64, mimeType) {
+  return new Promise((resolve) => {
+    const PHONE_ID = process.env.WHATSAPP_PHONE_ID;
+    const TOKEN_WA = process.env.WHATSAPP_TOKEN;
+    if (!PHONE_ID || !TOKEN_WA) { console.error('❌ Falta WHATSAPP_PHONE_ID o WHATSAPP_TOKEN'); return resolve(null); }
+
+    const buffer = Buffer.from(imagenBase64, 'base64');
+    const boundary = '----KaiBoundary' + Date.now();
+    const parts = [];
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="messaging_product"\r\n\r\nwhatsapp\r\n`));
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="imagen.jpg"\r\nContent-Type: ${mimeType}\r\n\r\n`));
+    parts.push(buffer);
+    parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+    const body = Buffer.concat(parts);
+
+    const req2 = https.request({
+      hostname: 'graph.facebook.com',
+      path: `/v22.0/${PHONE_ID}/media`,
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${TOKEN_WA}`,
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        'Content-Length': body.length
+      }
+    }, (r) => {
+      let d = '';
+      r.on('data', c => d += c);
+      r.on('end', () => {
+        try {
+          const parsed = JSON.parse(d);
+          resolve(parsed.id || null);
+        } catch (e) { resolve(null); }
+      });
+    });
+    req2.on('error', (e) => { console.error('❌ Error subiendo imagen a Meta:', e.message); resolve(null); });
+    req2.write(body);
+    req2.end();
+  });
+}
+
+// Envía una imagen ya subida (media_id) a un número de WhatsApp, con texto opcional (caption)
+function enviarImagenWhatsAppMeta(numeroDestino, mediaId, caption) {
+  return new Promise((resolve) => {
+    const PHONE_ID = process.env.WHATSAPP_PHONE_ID;
+    const TOKEN_WA = process.env.WHATSAPP_TOKEN;
+    if (!PHONE_ID || !TOKEN_WA) { console.error('❌ Falta WHATSAPP_PHONE_ID o WHATSAPP_TOKEN'); return resolve(null); }
+
+    const body = JSON.stringify({
+      messaging_product: 'whatsapp',
+      to: numeroDestino.replace(/\D/g, ''),
+      type: 'image',
+      image: { id: mediaId, caption: caption || '' }
+    });
+
+    const req2 = https.request({
+      hostname: 'graph.facebook.com',
+      path: `/v22.0/${PHONE_ID}/messages`,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${TOKEN_WA}`,
+        'Content-Length': Buffer.byteLength(body)
+      }
+    }, (r) => {
+      let d = '';
+      r.on('data', c => d += c);
+      r.on('end', () => { try { resolve(JSON.parse(d)); } catch(e) { resolve({ raw: d }); } });
+    });
+    req2.on('error', (e) => { console.error('❌ Error enviando imagen WhatsApp:', e.message); resolve(null); });
+    req2.write(body);
+    req2.end();
+  });
+}
+
+// Función de conveniencia: sube + envía una imagen de la base de datos a un número, en un solo paso
+async function enviarImagenDesdeDB(imagenDoc, numeroDestino, caption) {
+  const mediaId = await subirImagenAMeta(imagenDoc.imagen_base64, imagenDoc.mime_type);
+  if (!mediaId) return { ok: false, error: 'No se pudo subir la imagen a Meta' };
+  const resultado = await enviarImagenWhatsAppMeta(numeroDestino, mediaId, caption);
+  if (resultado && resultado.messages) {
+    imagenDoc.veces_enviada = (imagenDoc.veces_enviada || 0) + 1;
+    await imagenDoc.save().catch(()=>{});
+    return { ok: true, mensaje_id: resultado.messages[0]?.id };
+  }
+  return { ok: false, error: resultado?.error?.message || 'Error desconocido al enviar imagen', detalle: resultado };
+}
+
 // ===== CIERRE PROACTIVO POR INACTIVIDAD (1 HORA) =====
 const MENSAJE_CIERRE_INACTIVIDAD = 'Gracias por escribirnos 😊 No tuvimos respuesta de tu parte, así que pausamos esta conversación, pero seguimos disponibles cuando quieras continuar — solo escríbenos de nuevo.\n\nMientras tanto, conoce más del Colegio Capouilliez en https://www.capouilliez.edu.gt y síguenos en Instagram y Facebook para no perderte nuestro próximo Open House.';
 const MINUTOS_CIERRE_INACTIVIDAD = 60; // 1 hora
@@ -1603,7 +1707,132 @@ app.get('/api/odoo/usuarios', authMiddleware, async (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
-// ===== CONTACTOS — segmentación para Marketing y Campañas =====
+// ===== IMÁGENES DE MARKETING — gestión y envío =====
+
+// Subir una imagen nueva (base64 enviado desde el panel)
+app.post('/api/imagenes', authMiddleware, async (req, res) => {
+  try {
+    if (!['admin', 'vendedor'].includes(req.user.role)) return res.status(403).json({ ok: false, error: 'Sin permisos' });
+    const { nombre, categoria, nivel_educativo, imagen_base64, mime_type } = req.body;
+    if (!nombre || !imagen_base64) return res.status(400).json({ ok: false, error: 'Nombre e imagen son requeridos' });
+
+    const img = await ImagenMarketing.create({
+      tenant_id: req.user.tenant_id,
+      nombre, categoria: categoria || 'general', nivel_educativo: nivel_educativo || 'Todos',
+      imagen_base64, mime_type: mime_type || 'image/jpeg',
+      subida_por: req.user.id, subida_por_nombre: req.user.nombre || req.user.email
+    });
+    res.json({ ok: true, imagen: { _id: img._id, nombre: img.nombre, categoria: img.categoria, nivel_educativo: img.nivel_educativo } });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// Listar imágenes (sin el base64 completo, para que la lista cargue rápido)
+app.get('/api/imagenes', authMiddleware, async (req, res) => {
+  try {
+    const { categoria, nivel_educativo } = req.query;
+    const filtro = { tenant_id: req.user.tenant_id, activo: true };
+    if (categoria) filtro.categoria = categoria;
+    if (nivel_educativo) filtro.nivel_educativo = nivel_educativo;
+    const imagenes = await ImagenMarketing.find(filtro).select('-imagen_base64').sort({ creado: -1 });
+    res.json({ ok: true, imagenes });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// Ver una imagen específica (con su base64, para previsualizar)
+app.get('/api/imagenes/:id', authMiddleware, async (req, res) => {
+  try {
+    const img = await ImagenMarketing.findOne({ _id: req.params.id, tenant_id: req.user.tenant_id });
+    if (!img) return res.status(404).json({ ok: false, error: 'No encontrada' });
+    res.json({ ok: true, imagen: img });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// Eliminar (desactivar) una imagen
+app.delete('/api/imagenes/:id', authMiddleware, async (req, res) => {
+  try {
+    if (!['admin', 'vendedor'].includes(req.user.role)) return res.status(403).json({ ok: false, error: 'Sin permisos' });
+    await ImagenMarketing.findOneAndUpdate({ _id: req.params.id, tenant_id: req.user.tenant_id }, { activo: false });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ===== ENVÍO DE PRUEBA — manda una imagen y/o texto a un número de prueba antes de la campaña real =====
+app.post('/api/campana/prueba-numero', authMiddleware, async (req, res) => {
+  try {
+    const { numero_prueba, mensaje, imagen_id } = req.body;
+    if (!numero_prueba) return res.status(400).json({ ok: false, error: 'Número de prueba requerido' });
+
+    const resultados = {};
+
+    if (mensaje) {
+      const r = await enviarWhatsAppMeta(numero_prueba, mensaje);
+      resultados.texto = r?.messages ? { ok: true, id: r.messages[0]?.id } : { ok: false, error: r?.error?.message || 'Error enviando texto' };
+    }
+
+    if (imagen_id) {
+      const img = await ImagenMarketing.findOne({ _id: imagen_id, tenant_id: req.user.tenant_id });
+      if (!img) {
+        resultados.imagen = { ok: false, error: 'Imagen no encontrada' };
+      } else {
+        resultados.imagen = await enviarImagenDesdeDB(img, numero_prueba, mensaje && !resultados.texto ? mensaje : '');
+      }
+    }
+
+    res.json({ ok: true, mensaje: 'Prueba enviada — revisa el WhatsApp del número de prueba', resultados });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ===== CAMPAÑA MASIVA REAL — envía a todos los contactos que cumplan los filtros =====
+app.post('/api/campana/enviar', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ ok: false, error: 'Solo administradores pueden enviar campañas masivas' });
+
+    const { mensaje, imagen_id, filtros, confirmar } = req.body;
+    if (!mensaje && !imagen_id) return res.status(400).json({ ok: false, error: 'Se requiere mensaje o imagen' });
+    if (!confirmar) return res.status(400).json({ ok: false, error: 'Debes confirmar el envío (confirmar:true) — esta acción no se puede deshacer' });
+
+    // Construir el filtro de destinatarios — SIEMPRE exige consentimiento de marketing
+    const filtroContactos = { tenant_id: req.user.tenant_id, acepta_marketing: true };
+    if (filtros?.nivel_calor) filtroContactos.nivel_calor = filtros.nivel_calor;
+    if (filtros?.segmento) filtroContactos.segmento_reactivacion = filtros.segmento;
+    if (filtros?.zona) filtroContactos.zona = new RegExp(filtros.zona, 'i');
+    if (filtros?.nivel_interes) filtroContactos.nivel_interes = new RegExp(filtros.nivel_interes, 'i');
+
+    const destinatarios = await Contacto.find(filtroContactos).limit(1000);
+    if (!destinatarios.length) return res.json({ ok: true, mensaje: 'No hay destinatarios que cumplan los filtros', total_enviados: 0 });
+
+    let imagenDoc = null;
+    if (imagen_id) {
+      imagenDoc = await ImagenMarketing.findOne({ _id: imagen_id, tenant_id: req.user.tenant_id });
+      if (!imagenDoc) return res.status(404).json({ ok: false, error: 'Imagen no encontrada' });
+    }
+
+    // Enviar en segundo plano para no bloquear la respuesta HTTP (puede tardar con muchos destinatarios)
+    res.json({ ok: true, mensaje: `Campaña iniciada — enviando a ${destinatarios.length} contacto(s) en segundo plano`, total_destinatarios: destinatarios.length });
+
+    (async () => {
+      let exitosos = 0, fallidos = 0;
+      for (const c of destinatarios) {
+        try {
+          if (imagenDoc) {
+            await enviarImagenDesdeDB(imagenDoc, c.numero, mensaje || '');
+          } else {
+            await enviarWhatsAppMeta(c.numero, mensaje);
+          }
+          c.ultima_campana_enviada = new Date();
+          c.campanas_recibidas = (c.campanas_recibidas || 0) + 1;
+          await c.save();
+          exitosos++;
+        } catch (e) { fallidos++; console.error(`❌ Error enviando campaña a ${c.numero}:`, e.message); }
+        await new Promise(r => setTimeout(r, 1200)); // pausa entre envíos para no saturar la API de Meta
+      }
+      console.log(`📣 Campaña finalizada — ${exitosos} exitosos, ${fallidos} fallidos de ${destinatarios.length} destinatarios`);
+    })();
+
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+
 
 // Listar contactos con filtros: nivel de calor, segmento de reactivación, zona, nivel educativo, consentimiento
 app.get('/api/contactos', authMiddleware, async (req, res) => {
@@ -1666,8 +1895,8 @@ app.get('/api/conversaciones/:id', authMiddleware, async (req, res) => {
 // Agente toma/responde manualmente una conversación
 app.post('/api/conversaciones/:id/responder', authMiddleware, async (req, res) => {
   try {
-    const { mensaje } = req.body;
-    if (!mensaje) return res.status(400).json({ ok: false, error: 'Mensaje requerido' });
+    const { mensaje, imagen_id } = req.body;
+    if (!mensaje && !imagen_id) return res.status(400).json({ ok: false, error: 'Mensaje o imagen requeridos' });
 
     const conv = await Conversacion.findOne({ _id: req.params.id, tenant_id: req.user.tenant_id });
     if (!conv) return res.status(404).json({ ok: false, error: 'No encontrada' });
@@ -1679,11 +1908,20 @@ app.post('/api/conversaciones/:id/responder', authMiddleware, async (req, res) =
       conv.estado = 'humano';
     }
 
-    conv.mensajes.push({ de: 'agente', texto: mensaje });
+    let resultado;
+    if (imagen_id) {
+      const img = await ImagenMarketing.findOne({ _id: imagen_id, tenant_id: req.user.tenant_id });
+      if (!img) return res.status(404).json({ ok: false, error: 'Imagen no encontrada' });
+      resultado = await enviarImagenDesdeDB(img, conv.numero, mensaje || '');
+      conv.mensajes.push({ de: 'agente', texto: mensaje ? `📷 ${img.nombre} — ${mensaje}` : `📷 ${img.nombre}` });
+    } else {
+      resultado = await enviarWhatsAppMeta(conv.numero, mensaje);
+      conv.mensajes.push({ de: 'agente', texto: mensaje });
+    }
+
     conv.ultimaActividad = new Date();
     await conv.save();
 
-    const resultado = await enviarWhatsAppMeta(conv.numero, mensaje);
     res.json({ ok: true, conversacion: conv, whatsapp: resultado });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
