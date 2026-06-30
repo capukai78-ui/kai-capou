@@ -589,8 +589,17 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
 
   if (!conversaciones.has(numeroOrigen)) conversaciones.set(numeroOrigen, { historial: [], ultimaActividad: Date.now() });
   const conv = conversaciones.get(numeroOrigen);
+
+  // Si la conversación había sido cerrada por inactividad (1h), reiniciar el historial activo
+  // pero la memoria persistente (Contacto) sigue intacta, así que KAI no pierde el contexto del padre.
+  const fueRecienCerrada = conv.cerrada === true;
+  if (fueRecienCerrada) {
+    conv.historial = [];
+    conv.cerrada = false;
+  }
+
   const inactivoPor = Date.now() - (conv.ultimaActividad || Date.now());
-  const llevaInactivo3h = inactivoPor >= (3 * 60 * 60 * 1000) && conv.historial.length > 0;
+  const llevaInactivo3h = !fueRecienCerrada && inactivoPor >= (3 * 60 * 60 * 1000) && conv.historial.length > 0;
   conv.ultimaActividad = Date.now();
   const historial = conv.historial;
   historial.push({ role: 'user', content: mensajeUsuario });
@@ -599,6 +608,9 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
   let contextoExtra = '';
   if (llevaInactivo3h) {
     contextoExtra += '\n\n⏰ CONTEXTO: Esta conversación estuvo inactiva por más de 3 horas. El padre/madre acaba de volver a escribir. Salúdalo con calidez retomando la conversación, sin mencionar el tiempo de inactividad de forma incómoda.';
+  }
+  if (fueRecienCerrada) {
+    contextoExtra += '\n\n🔄 CONTEXTO: La conversación anterior se cerró automáticamente porque el padre/madre no respondió en un tiempo. Ahora acaba de escribir de nuevo. Salúdalo con calidez como si retomaras la conversación, usando la memoria que tengas de él si aplica, sin mencionar el cierre automático.';
   }
 
   // ===== MEMORIA PERSISTENTE — cargar contacto de la BD =====
@@ -687,6 +699,48 @@ function enviarWhatsAppMeta(numeroDestino, texto) {
     req2.end();
   });
 }
+
+// ===== CIERRE PROACTIVO POR INACTIVIDAD (1 HORA) =====
+const MENSAJE_CIERRE_INACTIVIDAD = 'Gracias por escribirnos. No recibimos respuesta tuya, así que hemos dado por finalizada la conversación, pero estaremos encantados de atenderte cuando lo desees.\n\nConoce más de Colegio Capouilliez en nuestra página web https://www.capouilliez.edu.gt/ y síguenos en redes sociales para enterarte de nuestros próximos eventos.';
+const MINUTOS_CIERRE_INACTIVIDAD = 60; // 1 hora
+
+// Revisa cada 5 minutos las conversaciones activas con KAI (no las que ya están con un agente humano)
+// y cierra con un mensaje de despedida las que llevan 1 hora sin que el padre responda.
+setInterval(async () => {
+  try {
+    const ahora = Date.now();
+    const limiteMs = MINUTOS_CIERRE_INACTIVIDAD * 60 * 1000;
+
+    for (const [numero, conv] of conversaciones.entries()) {
+      if (conv.cerrada) continue; // ya se cerró, no volver a mandar el mensaje
+      if (!conv.historial || !conv.historial.length) continue; // nunca hubo conversación real
+      const inactivoPor = ahora - (conv.ultimaActividad || ahora);
+      if (inactivoPor < limiteMs) continue; // aún no pasa 1 hora
+
+      // No cerrar si la conversación está en manos de un agente humano (eso lo maneja el agente, no KAI)
+      const enHandoff = await Conversacion.findOne({ numero, estado: { $in: ['humano', 'esperando_agente'] } });
+      if (enHandoff) { conv.ultimaActividad = ahora; continue; } // reiniciar el contador mientras esté con humano
+
+      // Enviar mensaje de cierre y marcar como cerrada para no repetirlo
+      try {
+        const tenant = await Tenant.findOne({ activo: true }); // ajustar si hay multi-tenant real
+        await enviarWhatsAppMeta(numero, MENSAJE_CIERRE_INACTIVIDAD);
+        conv.cerrada = true;
+        console.log(`👋 Conversación cerrada por inactividad (${MINUTOS_CIERRE_INACTIVIDAD} min) — ${numero}`);
+
+        // Actualizar el contacto con el resumen de cierre
+        if (tenant) {
+          await Contacto.findOneAndUpdate(
+            { tenant_id: tenant._id, numero },
+            { $set: { resumen_ultimo_contacto: 'Conversación cerrada automáticamente por inactividad (1 hora sin respuesta).' } }
+          ).catch(()=>{});
+        }
+      } catch (e) {
+        console.error(`❌ Error cerrando conversación inactiva de ${numero}:`, e.message);
+      }
+    }
+  } catch (e) { console.error('❌ Error en verificador de cierre por inactividad:', e.message); }
+}, 5 * 60 * 1000); // revisa cada 5 minutos
 
 // POST — mensajes entrantes reales de WhatsApp
 app.post('/webhook', async (req, res) => {
@@ -889,6 +943,42 @@ app.put('/api/usuarios/:id', authMiddleware, async (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// Cambiar mi propia contraseña (cualquier usuario logueado, sin necesitar ser admin)
+app.post('/api/mi-cuenta/cambiar-password', authMiddleware, async (req, res) => {
+  try {
+    const { passwordActual, passwordNueva } = req.body;
+    if (!passwordActual || !passwordNueva) return res.status(400).json({ ok: false, error: 'Contraseña actual y nueva requeridas' });
+    if (passwordNueva.length < 6) return res.status(400).json({ ok: false, error: 'La nueva contraseña debe tener al menos 6 caracteres' });
+
+    const user = await UsuarioPanel.findById(req.user.id);
+    if (!user) return res.status(404).json({ ok: false, error: 'Usuario no encontrado' });
+
+    const valid = await bcrypt.compare(passwordActual, user.password);
+    if (!valid) return res.status(401).json({ ok: false, error: 'Contraseña actual incorrecta' });
+
+    user.password = await bcrypt.hash(passwordNueva, 10);
+    await user.save();
+    res.json({ ok: true, mensaje: 'Contraseña actualizada correctamente' });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// Admin resetea la contraseña de cualquier usuario de su tenant (para cuando un usuario olvida su clave)
+app.post('/api/usuarios/:id/resetear-password', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ ok: false, error: 'Solo administradores pueden resetear contraseñas' });
+    const { passwordNueva } = req.body;
+    if (!passwordNueva || passwordNueva.length < 6) return res.status(400).json({ ok: false, error: 'La nueva contraseña debe tener al menos 6 caracteres' });
+
+    const user = await UsuarioPanel.findOneAndUpdate(
+      { _id: req.params.id, tenant_id: req.user.tenant_id },
+      { password: await bcrypt.hash(passwordNueva, 10) },
+      { new: true }
+    );
+    if (!user) return res.status(404).json({ ok: false, error: 'Usuario no encontrado' });
+    res.json({ ok: true, mensaje: `Contraseña de ${user.nombre} reseteada correctamente` });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 // =============================================
 // ===== SEDES =====
 // =============================================
@@ -995,10 +1085,10 @@ app.get('/api/estadisticas', authMiddleware, async (req, res) => {
 // =============================================
 // ===== ODOO =====
 // =============================================
-const ODOO_URL  = 'odoo-botly.skysize.io';
-const ODOO_DB   = 'main-xv8crc';
-const ODOO_USER_ODOO = 'admin';
-const ODOO_PASS_ODOO = process.env.ODOO_PASSWORD || 'admin';
+const ODOO_URL  = process.env.ODOO_URL  || 'alba.capouilliez.edu.gt';
+const ODOO_DB   = process.env.ODOO_DB   || '';
+const ODOO_USER_ODOO = process.env.ODOO_USER || 'admin';
+const ODOO_PASS_ODOO = process.env.ODOO_PASSWORD || '';
 let odooUID = null;
 
 function odooRPC(path, params) {
@@ -1012,8 +1102,9 @@ function odooRPC(path, params) {
 
 async function getOdooUID() {
   if (odooUID) return odooUID;
-  odooUID = await odooRPC('/jsonrpc', { service: 'common', method: 'authenticate', args: [ODOO_DB, ODOO_USER_ODOO, ODOO_PASS_ODOO, {}] });
-  if (!odooUID) throw new Error('Odoo auth fallida');
+  const uid = await odooRPC('/jsonrpc', { service: 'common', method: 'authenticate', args: [ODOO_DB, ODOO_USER_ODOO, ODOO_PASS_ODOO, {}] });
+  if (!uid) throw new Error('Odoo auth fallida — revisa ODOO_DB, ODOO_USER y ODOO_PASSWORD en Railway');
+  odooUID = uid; // solo cachear si fue exitoso
   return odooUID;
 }
 
