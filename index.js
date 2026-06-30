@@ -168,6 +168,14 @@ const contactoSchema = new mongoose.Schema({
   nivel_calor:    { type: Number, default: null, enum: [null, 1, 2, 3] }, // 1=Alta Intención, 2=Interesado, 3=Exploratorio
   nivel_calor_etiqueta: { type: String, default: null }, // texto de la etiqueta aplicada en Odoo
   total_conversaciones: { type: Number, default: 0 },
+
+  // ===== MARKETING Y REACTIVACIÓN =====
+  acepta_marketing: { type: Boolean, default: null }, // null = no se le ha preguntado aún
+  acepta_marketing_fecha: { type: Date, default: null },
+  segmento_reactivacion: { type: String, enum: ['activo', 'seguimiento', 'reactivacion', 'frio'], default: 'activo' },
+  ultima_campana_enviada: { type: Date, default: null },
+  campanas_recibidas: { type: Number, default: 0 },
+
   primer_contacto: { type: Date, default: Date.now },
   ultimo_contacto: { type: Date, default: Date.now }
 }, { timestamps: true });
@@ -333,7 +341,7 @@ function detectarIndustria(nombreTenant, bienvenida) {
 function buildSystemPrompt(tenant) {
   const industria = detectarIndustria(tenant.nombre, tenant.config?.bienvenida);
   const base = `Eres el asistente virtual oficial de "${tenant.nombre}", una institución de prestigio en Guatemala.\n\nSOBRE ESTE NEGOCIO:\n${tenant.config?.bienvenida || ''}\n\nSERVICIOS:\n${(tenant.config?.menu || []).map(m => `▸ ${m.opcion}: ${m.respuesta}`).join('\n')}\n\nUBICACIONES:\n${(tenant.config?.sedes || []).map(s => `📍 ${s.nombre}: ${s.direccion} | Tel: ${s.telefono} | Horario: ${s.horario}`).join('\n')}`;
-  const instruccionesColegio = `\nERES: Kai, asistente virtual de admisiones. Cálido, profesional, orientado a resultados.\nMISIÓN: Convertir cada conversación en una visita o inscripción.\n\nFLUJO INICIAL:\n1) Saluda y pregunta el nivel ofreciendo un menú numerado:\n   "¿En qué nivel está interesado? Marca el número:\n   1. Preprimaria\n   2. Primaria\n   3. Básico\n   4. Bachillerato en Ciencias y Letras"\n2) Si elige Preprimaria (1): solicita la fecha de nacimiento del niño/a y, con esa fecha, comparte la tabla de edades para confirmar el grado exacto que le corresponde.\n3) Explica beneficios relevantes al nivel elegido.\n4) Captura: nombre del padre/madre, nombre del alumno, grado, zona, colegio actual, correo.\n5) Ofrece agendar una visita o invita al próximo Open House (sin mencionar que es "el primer sábado de cada mes" — la fecha puede variar, siempre confirma la fecha exacta vigente).\n\nCONTACTO Y ASESORES — MUY IMPORTANTE:\n- Tu prioridad es avanzar la conversación hacia la visita/inscripción TÚ MISMO. NO ofrezcas pasar con un asesor como primera opción ni como salida fácil para dudas generales.\n- Solo sugiere hablar con un asesor humano DESPUÉS de haber intentado avanzar el proceso, o cuando el padre necesita algo que tú no puedes resolver (pregunta muy específica, quiere negociar, pide hablar con alguien directamente).\n- CUANDO EL PADRE MUESTRE INTERÉS REAL DE AGENDAR UNA VISITA, OPEN HOUSE, O INSCRIBIR (ej: "quiero agendar", "sí, quiero la visita", "cómo inscribo", "quiero inscribirlo"): NO le des el número de PBX/WhatsApp como si tuviera que llamar él mismo. En su lugar dile que con gusto lo conecta directamente AHORA con un asesor que le ayudará a coordinar todo, y pregúntale si desea que lo transfieras (ej: "¡Perfecto! Te conecto ahora mismo con un asesor que te ayudará a coordinar la visita y confirmar la fecha. ¿Te parece?"). El sistema detecta esto automáticamente y transfiere la conversación.\n- Los números de PBX 2429-1999 y 2429-1908 son SOLO para si el padre prefiere llamar por su cuenta fuera de WhatsApp, no los ofrezcas como la opción principal cuando ya estás conversando con él aquí mismo.\n- NUNCA uses la palabra "mientras tanto" — está prohibida, suena repetitiva. Usa alternativas naturales o reformula sin esa frase.\n\nFORMATO DE RESPUESTA:\n- NUNCA uses asteriscos (**texto**) para negritas ni ningún otro formato de markdown. WhatsApp no lo necesita y se ve mal. Escribe en texto plano natural.\n- No uses guiones para listas si la respuesta es corta — prefiere texto fluido y conversacional.\n\nINACTIVIDAD:\n- Si la conversación lleva más de 3 horas sin actividad ni respuesta del padre, antes de cerrar pregúntale si desea comunicarse con un asesor.\n- Si no responde, informa que se terminará la comunicación por inactividad pero que sigues a las órdenes y que pueden volver a escribir cuando quieran.\n\nLEDS (Liderazgo, Expresión, Deportes y Salud):\n- Alumnos de Primaria y Secundaria reciben 1 vez a la semana un período doble de actividades extracurriculares dentro del horario escolar, sin costo adicional.\n- Actividades disponibles: Fútbol, Baloncesto, Tenis de Mesa, Natación, Artes Visuales, Marimba, Teatro Musical.\n- Los alumnos son quienes eligen a qué actividad inscribirse, y participan en ella durante todo el ciclo escolar (la oferta puede variar cada año).\n\nREGLAS GENERALES:\nResponde de forma natural y cálida como WhatsApp, no como un correo. Si preguntan precios da solo el dato específico que pidieron. Nunca des listas largas ni tablas completas — si quieren más info ellos preguntan. Español guatemalteco. NUNCA inventes datos. NUNCA menciones Claude.`;
+  const instruccionesColegio = `\nERES: Kai, asistente virtual de admisiones. Cálido, profesional, orientado a resultados.\nMISIÓN: Convertir cada conversación en una visita o inscripción.\n\nFLUJO INICIAL:\n1) Saluda y pregunta el nivel ofreciendo un menú numerado:\n   "¿En qué nivel está interesado? Marca el número:\n   1. Preprimaria\n   2. Primaria\n   3. Básico\n   4. Bachillerato en Ciencias y Letras"\n2) Si elige Preprimaria (1): solicita la fecha de nacimiento del niño/a y, con esa fecha, comparte la tabla de edades para confirmar el grado exacto que le corresponde.\n3) Explica beneficios relevantes al nivel elegido.\n4) Captura: nombre del padre/madre, nombre del alumno, grado, zona, colegio actual, correo.\n5) Ofrece agendar una visita o invita al próximo Open House (sin mencionar que es "el primer sábado de cada mes" — la fecha puede variar, siempre confirma la fecha exacta vigente).\n6) Una sola vez por conversación, después de tener el correo o nombre del alumno, pregunta de forma natural y breve si desea recibir noticias del colegio (ej: "¿Te gustaría que te avisemos de nuestro próximo Open House y noticias del colegio? 📩"). Respeta la respuesta — si dice que no, no insistas ni lo vuelvas a preguntar en esta conversación.\n\nCONTACTO Y ASESORES — MUY IMPORTANTE:\n- Tu prioridad es avanzar la conversación hacia la visita/inscripción TÚ MISMO. NO ofrezcas pasar con un asesor como primera opción ni como salida fácil para dudas generales.\n- Solo sugiere hablar con un asesor humano DESPUÉS de haber intentado avanzar el proceso, o cuando el padre necesita algo que tú no puedes resolver (pregunta muy específica, quiere negociar, pide hablar con alguien directamente).\n- CUANDO EL PADRE MUESTRE INTERÉS REAL DE AGENDAR UNA VISITA, OPEN HOUSE, O INSCRIBIR (ej: "quiero agendar", "sí, quiero la visita", "cómo inscribo", "quiero inscribirlo"): NO le des el número de PBX/WhatsApp como si tuviera que llamar él mismo. En su lugar dile que con gusto lo conecta directamente AHORA con un asesor que le ayudará a coordinar todo, y pregúntale si desea que lo transfieras (ej: "¡Perfecto! Te conecto ahora mismo con un asesor que te ayudará a coordinar la visita y confirmar la fecha. ¿Te parece?"). El sistema detecta esto automáticamente y transfiere la conversación.\n- Los números de PBX 2429-1999 y 2429-1908 son SOLO para si el padre prefiere llamar por su cuenta fuera de WhatsApp, no los ofrezcas como la opción principal cuando ya estás conversando con él aquí mismo.\n- NUNCA uses la palabra "mientras tanto" — está prohibida, suena repetitiva. Usa alternativas naturales o reformula sin esa frase.\n\nFORMATO DE RESPUESTA:\n- NUNCA uses asteriscos (**texto**) para negritas ni ningún otro formato de markdown. WhatsApp no lo necesita y se ve mal. Escribe en texto plano natural.\n- No uses guiones para listas si la respuesta es corta — prefiere texto fluido y conversacional.\n\nINACTIVIDAD:\n- Si la conversación lleva más de 3 horas sin actividad ni respuesta del padre, antes de cerrar pregúntale si desea comunicarse con un asesor.\n- Si no responde, informa que se terminará la comunicación por inactividad pero que sigues a las órdenes y que pueden volver a escribir cuando quieran.\n\nLEDS (Liderazgo, Expresión, Deportes y Salud):\n- Alumnos de Primaria y Secundaria reciben 1 vez a la semana un período doble de actividades extracurriculares dentro del horario escolar, sin costo adicional.\n- Actividades disponibles: Fútbol, Baloncesto, Tenis de Mesa, Natación, Artes Visuales, Marimba, Teatro Musical.\n- Los alumnos son quienes eligen a qué actividad inscribirse, y participan en ella durante todo el ciclo escolar (la oferta puede variar cada año).\n\nREGLAS GENERALES:\nResponde de forma natural y cálida como WhatsApp, no como un correo. Si preguntan precios da solo el dato específico que pidieron. Nunca des listas largas ni tablas completas — si quieren más info ellos preguntan. Español guatemalteco. NUNCA inventes datos. NUNCA menciones Claude.`;
   const instruccionesGeneral = `\nINSTRUCCIONES: Responde en español guatemalteco natural. Máximo 4 líneas. Usa emojis con moderación. NUNCA inventes precios. Eres cálido y profesional.`;
   return base + (industria === 'colegio' ? instruccionesColegio : instruccionesGeneral);
 }
@@ -497,10 +505,10 @@ function calcularNivelInteres(texto, ultimoMensajeBot, contacto) {
 
 // Extrae datos del padre/alumno del historial usando IA, actualiza Contacto, y crea lead en Odoo si hay interés real
 async function actualizarContactoYDetectarInteres(tenant, numero, mensajeUsuario, respuestaBot, historial, contactoExistente) {
-  // 1. Extraer datos estructurados con IA (nombre, alumno, nivel, zona, colegio, correo)
+  // 1. Extraer datos estructurados con IA (nombre, alumno, nivel, zona, colegio, correo, consentimiento marketing)
   const textoConversacion = historial.map(m => `${m.role === 'user' ? 'Padre' : 'KAI'}: ${m.content}`).join('\n');
   const promptExtraccion = `De esta conversación de WhatsApp entre un padre/madre y un asistente de admisiones escolar, extrae SOLO estos datos si están presentes (responde ÚNICAMENTE un JSON válido, sin texto adicional, sin markdown):
-{"nombre":"nombre del padre/madre o null","nombre_alumno":"nombre del hijo/a o null","nivel_interes":"Preprimaria/Primaria/Básico/Bachillerato o null","fecha_nacimiento_alumno":"fecha si la dio o null","zona":"zona o null","colegio_actual":"colegio actual o null","correo":"correo o null"}
+{"nombre":"nombre del padre/madre o null","nombre_alumno":"nombre del hijo/a o null","nivel_interes":"Preprimaria/Primaria/Básico/Bachillerato o null","fecha_nacimiento_alumno":"fecha si la dio o null","zona":"zona o null","colegio_actual":"colegio actual o null","correo":"correo o null","acepta_marketing":"true si el padre aceptó recibir noticias/promociones del colegio, false si lo rechazó explícitamente, o null si no se le ha preguntado o no respondió claro"}
 
 Conversación:
 ${textoConversacion}`;
@@ -518,7 +526,17 @@ ${textoConversacion}`;
   const update = { ultimo_contacto: new Date(), $inc: { total_conversaciones: contactoExistente ? 0 : 1 } };
   const setFields = {};
   Object.keys(datosExtraidos).forEach(k => {
-    if (datosExtraidos[k] && datosExtraidos[k] !== 'null') setFields[k] = datosExtraidos[k];
+    const valor = datosExtraidos[k];
+    if (valor === null || valor === 'null' || valor === undefined) return;
+    if (k === 'acepta_marketing') {
+      // Solo registrar el consentimiento si aún no se había guardado uno (no sobrescribir un "no" con ambigüedad futura)
+      if (contactoExistente?.acepta_marketing === null || contactoExistente?.acepta_marketing === undefined) {
+        setFields.acepta_marketing = (valor === true || valor === 'true');
+        setFields.acepta_marketing_fecha = new Date();
+      }
+      return;
+    }
+    setFields[k] = valor;
   });
   if (Object.keys(setFields).length) update.$set = setFields;
   if (!update.$set) update.$set = {};
@@ -879,6 +897,46 @@ setInterval(async () => {
     }
   } catch (e) { console.error('❌ Error en verificador de cierre por inactividad:', e.message); }
 }, 5 * 60 * 1000); // revisa cada 5 minutos
+
+// ===== MOTOR DE SEGMENTACIÓN PARA REACTIVACIÓN DE MARKETING =====
+// Clasifica a cada Contacto en un segmento según hace cuánto fue su última conversación.
+// Esto NO envía mensajes — solo etiqueta el segmento para que Campañas WhatsApp pueda filtrar por él.
+//
+// Segmentos:
+//   activo        — conversó en los últimos 7 días, sigue caliente, no necesita reactivación
+//   seguimiento   — entre 7 y 30 días sin escribir, candidato a un mensaje de valor (no venta dura)
+//   reactivacion  — entre 30 y 60 días sin escribir, necesita un empujón (Open House, fechas límite)
+//   frio          — más de 60 días sin escribir, requiere campaña de remarketing fuerte o descartar
+const DIAS_SEGUIMIENTO = 7;
+const DIAS_REACTIVACION = 30;
+const DIAS_FRIO = 60;
+
+async function actualizarSegmentosReactivacion() {
+  try {
+    const ahora = Date.now();
+    const contactos = await Contacto.find({}); // todos los tenants — si hay multi-tenant real, filtrar aquí
+    let cambios = 0;
+
+    for (const c of contactos) {
+      const diasInactivo = (ahora - new Date(c.ultimo_contacto).getTime()) / (1000 * 60 * 60 * 24);
+      let nuevoSegmento = 'activo';
+      if (diasInactivo >= DIAS_FRIO) nuevoSegmento = 'frio';
+      else if (diasInactivo >= DIAS_REACTIVACION) nuevoSegmento = 'reactivacion';
+      else if (diasInactivo >= DIAS_SEGUIMIENTO) nuevoSegmento = 'seguimiento';
+
+      if (c.segmento_reactivacion !== nuevoSegmento) {
+        c.segmento_reactivacion = nuevoSegmento;
+        await c.save();
+        cambios++;
+      }
+    }
+    if (cambios > 0) console.log(`🎯 Segmentación de reactivación actualizada — ${cambios} contacto(s) cambiaron de segmento`);
+  } catch (e) { console.error('❌ Error actualizando segmentos de reactivación:', e.message); }
+}
+
+// Corre una vez al iniciar el servidor, y luego cada 24 horas
+setTimeout(actualizarSegmentosReactivacion, 30 * 1000); // esperar 30s a que MongoDB esté listo
+setInterval(actualizarSegmentosReactivacion, 24 * 60 * 60 * 1000);
 
 // POST — mensajes entrantes reales de WhatsApp
 app.post('/webhook', async (req, res) => {
@@ -1544,6 +1602,45 @@ app.get('/api/odoo/usuarios', authMiddleware, async (req, res) => {
     res.json({ ok: true, usuarios: usuarios||[] });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
+
+// ===== CONTACTOS — segmentación para Marketing y Campañas =====
+
+// Listar contactos con filtros: nivel de calor, segmento de reactivación, zona, nivel educativo, consentimiento
+app.get('/api/contactos', authMiddleware, async (req, res) => {
+  try {
+    const { nivel_calor, segmento, zona, nivel_interes, solo_con_consentimiento } = req.query;
+    const filtro = { tenant_id: req.user.tenant_id };
+    if (nivel_calor) filtro.nivel_calor = parseInt(nivel_calor);
+    if (segmento) filtro.segmento_reactivacion = segmento;
+    if (zona) filtro.zona = new RegExp(zona, 'i');
+    if (nivel_interes) filtro.nivel_interes = new RegExp(nivel_interes, 'i');
+    if (solo_con_consentimiento === 'true') filtro.acepta_marketing = true;
+
+    const contactos = await Contacto.find(filtro).sort({ ultimo_contacto: -1 }).limit(500);
+    res.json({ ok: true, total: contactos.length, contactos });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// Resumen agregado de segmentos — para mostrar tarjetas en el dashboard de Marketing
+app.get('/api/contactos/resumen', authMiddleware, async (req, res) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    const [porSegmento, porNivelCalor, totalConsentimiento, totalContactos] = await Promise.all([
+      Contacto.aggregate([{ $match: { tenant_id: tenantId } }, { $group: { _id: '$segmento_reactivacion', total: { $sum: 1 } } }]),
+      Contacto.aggregate([{ $match: { tenant_id: tenantId, nivel_calor: { $ne: null } } }, { $group: { _id: '$nivel_calor', total: { $sum: 1 } } }]),
+      Contacto.countDocuments({ tenant_id: tenantId, acepta_marketing: true }),
+      Contacto.countDocuments({ tenant_id: tenantId })
+    ]);
+    res.json({
+      ok: true,
+      total_contactos: totalContactos,
+      con_consentimiento_marketing: totalConsentimiento,
+      por_segmento: Object.fromEntries(porSegmento.map(s => [s._id || 'activo', s.total])),
+      por_nivel_calor: Object.fromEntries(porNivelCalor.map(n => [n._id, n.total]))
+    });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 
 // ===== CHATS EN VIVO — handoff a humano =====
 
