@@ -659,11 +659,37 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
   // ===== VERIFICAR SI YA HAY HANDOFF ACTIVO =====
   const convActiva = await Conversacion.findOne({ tenant_id: tenant._id, numero: numeroOrigen, estado: { $in: ['humano', 'esperando_agente'] } });
   if (convActiva) {
-    // KAI está pausado en esta conversación — un humano la está atendiendo
-    convActiva.mensajes.push({ de: 'padre', texto: mensajeUsuario });
-    convActiva.ultimaActividad = new Date();
-    await convActiva.save();
-    return null; // null = no enviar respuesta automática, el agente responde manualmente
+    // Calcular hace cuánto fue el último mensaje del AGENTE (no del padre) — si nunca respondió, usar la fecha de creación del handoff
+    const ultimoMsgAgente = [...(convActiva.mensajes || [])].reverse().find(m => m.de === 'agente');
+    const ultimaRespuestaAgenteFecha = ultimoMsgAgente ? new Date(ultimoMsgAgente.fecha) : convActiva.creado;
+    const minutosSinRespuestaAgente = (Date.now() - new Date(ultimaRespuestaAgenteFecha).getTime()) / (1000 * 60);
+
+    const MINUTOS_AUTO_RECUPERACION = 30;
+
+    if (minutosSinRespuestaAgente >= MINUTOS_AUTO_RECUPERACION) {
+      // El agente no respondió en 30+ minutos — KAI retoma automáticamente para no dejar al padre sin atención
+      console.log(`🔄 Auto-recuperación: KAI retoma conversación de ${numeroOrigen} tras ${Math.round(minutosSinRespuestaAgente)} min sin respuesta del agente`);
+      convActiva.mensajes.push({ de: 'padre', texto: mensajeUsuario });
+
+      const resumenAgente = await generarResumenParaKai(convActiva);
+      convActiva.resumen_agente = resumenAgente;
+      convActiva.estado = 'cerrado';
+      await convActiva.save();
+
+      // Inyectar el contexto en la memoria de KAI para que no repita preguntas, igual que en "Devolver a KAI" manual
+      if (!conversaciones.has(numeroOrigen)) conversaciones.set(numeroOrigen, { historial: [], ultimaActividad: Date.now() });
+      const ctx = conversaciones.get(numeroOrigen);
+      if (resumenAgente) {
+        ctx.historial.push({ role: 'assistant', content: `(Contexto interno — no mostrar tal cual: mientras hablaba con un asesor humano, esto ocurrió: ${resumenAgente}. El asesor no pudo responder a tiempo, así que retomas tú la conversación. Hazlo con naturalidad, sin mencionar este resumen ni que el asesor no respondió, solo continúa ayudando.)` });
+      }
+      // No retornar null aquí — dejar que el flujo continúe hacia abajo y KAI genere una respuesta normal
+    } else {
+      // Todavía dentro del tiempo de espera — el agente puede seguir respondiendo manualmente
+      convActiva.mensajes.push({ de: 'padre', texto: mensajeUsuario });
+      convActiva.ultimaActividad = new Date();
+      await convActiva.save();
+      return null; // null = no enviar respuesta automática, el agente responde manualmente desde el panel
+    }
   }
 
   // ===== DETECTAR SOLICITUD DE AGENTE — solo transferir si ya hay contexto o el padre insiste =====
@@ -813,7 +839,7 @@ function enviarWhatsAppMeta(numeroDestino, texto) {
 }
 
 // ===== CIERRE PROACTIVO POR INACTIVIDAD (1 HORA) =====
-const MENSAJE_CIERRE_INACTIVIDAD = 'Gracias por escribirnos. No recibimos respuesta tuya, así que hemos dado por finalizada la conversación, pero estaremos encantados de atenderte cuando lo desees.\n\nConoce más de Colegio Capouilliez en nuestra página web https://www.capouilliez.edu.gt/ y síguenos en redes sociales para enterarte de nuestros próximos eventos.';
+const MENSAJE_CIERRE_INACTIVIDAD = 'Gracias por escribirnos 😊 No tuvimos respuesta de tu parte, así que pausamos esta conversación, pero seguimos disponibles cuando quieras continuar — solo escríbenos de nuevo.\n\nMientras tanto, conoce más del Colegio Capouilliez en https://www.capouilliez.edu.gt y síguenos en Instagram y Facebook para no perderte nuestro próximo Open House.';
 const MINUTOS_CIERRE_INACTIVIDAD = 60; // 1 hora
 
 // Revisa cada 5 minutos las conversaciones activas con KAI (no las que ya están con un agente humano)
