@@ -1054,16 +1054,47 @@ async function cargarGaleriaImagenes(){
 function pintarGaleriaImagenes(){
   const el = document.getElementById('camp-img-galeria');
   if(!_campImagenesCache.length){ el.innerHTML='<div style="font-size:11px;color:var(--text3);padding:8px">Sin imágenes aún. Sube la primera 📷</div>'; return; }
-  el.innerHTML = _campImagenesCache.map(img => `
-    <div onclick="seleccionarImagenCampana('${img._id}')" style="cursor:pointer;border:2px solid ${_campImagenSeleccionadaId===img._id?'var(--g)':'transparent'};border-radius:8px;padding:2px;background:var(--bg2)" title="${img.nombre}">
-      <div style="width:54px;height:54px;border-radius:6px;background:var(--bg4);display:flex;align-items:center;justify-content:center;font-size:18px;overflow:hidden">📷</div>
-      <div style="font-size:9px;color:var(--text3);text-align:center;width:54px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">${img.nombre}</div>
-    </div>
-  `).join('');
+  el.innerHTML = _campImagenesCache.map(img => {
+    const sel = _campImagenSeleccionadaId === img._id;
+    return `<div style="position:relative">
+      <div onclick="seleccionarImagenCampana('${img._id}')" style="cursor:pointer;border:2px solid ${sel?'var(--g)':'transparent'};border-radius:8px;padding:2px;background:${sel?'var(--g4)':'var(--bg2)'}" title="${img.nombre}">
+        <div style="width:70px;height:70px;border-radius:6px;overflow:hidden;background:var(--bg4);display:flex;align-items:center;justify-content:center">
+          ${_campImagenPreviewCache[img._id]
+            ? `<img src="data:image/jpeg;base64,${_campImagenPreviewCache[img._id]}" style="width:100%;height:100%;object-fit:cover"/>`
+            : '<span style="font-size:22px">📷</span>'}
+        </div>
+        <div style="font-size:9px;color:var(--text3);text-align:center;width:70px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:3px">${img.nombre}</div>
+      </div>
+      ${sel ? `<div onclick="deseleccionarImagen()" style="position:absolute;top:-4px;right:-4px;width:18px;height:18px;background:var(--red);border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:10px;color:#fff;font-weight:700" title="Quitar imagen">✕</div>` : ''}
+    </div>`;
+  }).join('');
 }
 
-function seleccionarImagenCampana(id){
-  _campImagenSeleccionadaId = (_campImagenSeleccionadaId === id) ? null : id; // toggle
+// Cache de miniaturas base64 para mostrar en la galería sin cargar todo el tiempo
+let _campImagenPreviewCache = {};
+let _campImagenSeleccionadaMime = 'image/jpeg';
+
+async function seleccionarImagenCampana(id){
+  if(_campImagenSeleccionadaId === id){ deseleccionarImagen(); return; }
+  _campImagenSeleccionadaId = id;
+  pintarGaleriaImagenes();
+
+  // Cargar base64 si no está en caché
+  if(!_campImagenPreviewCache[id]){
+    try{
+      const r = await fetch(API+'/api/imagenes/'+id,{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+      if(r.ok && r.imagen){
+        _campImagenPreviewCache[id] = r.imagen.imagen_base64;
+        _campImagenSeleccionadaMime = r.imagen.mime_type || 'image/jpeg';
+      }
+    }catch(e){ console.error('Error cargando imagen:', e); }
+    pintarGaleriaImagenes(); // repintar con la imagen real cargada
+  }
+  campPrev();
+}
+
+function deseleccionarImagen(){
+  _campImagenSeleccionadaId = null;
   pintarGaleriaImagenes();
   campPrev();
 }
@@ -1122,19 +1153,21 @@ async function actualizarConteoDestinatarios(){
 function campPrev(){
   const msg = document.getElementById('camp-msg').value || 'Escribe tu mensaje para ver la vista previa...';
   document.getElementById('wa-prev-msg').textContent = msg.replace(/\{nombre\}/g,'Roberto');
-  const imgPrev = document.getElementById('camp-prev-img');
-  const img = _campImagenesCache.find(i=>i._id===_campImagenSeleccionadaId);
-  if(img){
-    // Solo mostramos un placeholder visual ya que no traemos el base64 completo en la lista
-    imgPrev.style.display='block';
-    imgPrev.style.height='160px';
-    imgPrev.style.background='var(--bg4)';
-    imgPrev.style.display='flex';
-    imgPrev.style.alignItems='center';
-    imgPrev.style.justifyContent='center';
-    imgPrev.innerHTML = `<span style="font-size:11px;color:var(--text3)">📷 ${img.nombre}</span>`;
+  const imgEl = document.getElementById('camp-prev-img');
+
+  const base64 = _campImagenSeleccionadaId ? _campImagenPreviewCache?.[_campImagenSeleccionadaId] : null;
+  if(base64){
+    // Mostrar imagen real como <img>
+    imgEl.outerHTML = `<img id="camp-prev-img" src="data:${_campImagenSeleccionadaMime};base64,${base64}" style="width:100%;border-radius:8px;margin-bottom:8px;display:block"/>`;
+  } else if(_campImagenSeleccionadaId && !base64){
+    // Todavía cargando
+    document.getElementById('camp-prev-img').style.display='block';
+    document.getElementById('camp-prev-img').style.height='100px';
+    document.getElementById('camp-prev-img').style.background='var(--bg4)';
   } else {
-    imgPrev.style.display='none';
+    // Sin imagen seleccionada
+    const el = document.getElementById('camp-prev-img');
+    if(el){ el.style.display='none'; el.src=''; el.style.height='auto'; el.style.background='transparent'; }
   }
 }
 
