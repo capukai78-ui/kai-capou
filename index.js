@@ -1807,12 +1807,36 @@ app.post('/api/campana/enviar', authMiddleware, async (req, res) => {
       if (!imagenDoc) return res.status(404).json({ ok: false, error: 'Imagen no encontrada' });
     }
 
-    // Enviar en segundo plano para no bloquear la respuesta HTTP (puede tardar con muchos destinatarios)
+    // Enviar en segundo plano para no bloquear la respuesta HTTP
     res.json({ ok: true, mensaje: `Campaña iniciada — enviando a ${destinatarios.length} contacto(s) en segundo plano`, total_destinatarios: destinatarios.length });
 
     (async () => {
       let exitosos = 0, fallidos = 0;
-      for (const c of destinatarios) {
+      const PAUSA_MS = 3000; // 3 segundos entre envíos — Meta recomienda no más de 20/min para evitar bloqueos
+      const TOPE_DIARIO = 200; // nunca más de 200 mensajes por día en un mismo número
+
+      // Verificar tope diario — contar cuántos enviamos hoy ya
+      const hoyInicio = new Date(); hoyInicio.setHours(0,0,0,0);
+      const enviadosHoy = await Contacto.countDocuments({
+        tenant_id: req.user.tenant_id,
+        ultima_campana_enviada: { $gte: hoyInicio }
+      });
+      const disponibles = Math.max(0, TOPE_DIARIO - enviadosHoy);
+      if (disponibles === 0) {
+        console.log(`⚠️ Tope diario de ${TOPE_DIARIO} mensajes alcanzado — campaña cancelada`);
+        return;
+      }
+      const destinatariosLimitados = destinatarios.slice(0, disponibles);
+      if (destinatariosLimitados.length < destinatarios.length) {
+        console.log(`⚠️ Campaña limitada a ${disponibles} envíos (tope diario de ${TOPE_DIARIO})`);
+      }
+
+      for (const c of destinatariosLimitados) {
+        // No enviar a contactos que llevan más de 60 días sin responder (segmento frío) — alto riesgo de bloqueo
+        if (c.segmento_reactivacion === 'frio' && !filtros?.segmento) {
+          console.log(`⏭️ Saltando ${c.numero} — segmento frío (60+ días sin actividad)`);
+          continue;
+        }
         try {
           if (imagenDoc) {
             await enviarImagenDesdeDB(imagenDoc, c.numero, mensaje || '');
@@ -1824,9 +1848,9 @@ app.post('/api/campana/enviar', authMiddleware, async (req, res) => {
           await c.save();
           exitosos++;
         } catch (e) { fallidos++; console.error(`❌ Error enviando campaña a ${c.numero}:`, e.message); }
-        await new Promise(r => setTimeout(r, 1200)); // pausa entre envíos para no saturar la API de Meta
+        await new Promise(r => setTimeout(r, PAUSA_MS)); // pausa entre envíos
       }
-      console.log(`📣 Campaña finalizada — ${exitosos} exitosos, ${fallidos} fallidos de ${destinatarios.length} destinatarios`);
+      console.log(`📣 Campaña finalizada — ${exitosos} exitosos, ${fallidos} fallidos de ${destinatariosLimitados.length} destinatarios`);
     })();
 
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
