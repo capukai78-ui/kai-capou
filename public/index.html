@@ -374,7 +374,17 @@ tr:hover td{background:var(--g4)}
             <div style="text-align:center;color:var(--text3);margin-top:40px;font-size:13px">Selecciona una conversación de la lista</div>
           </div>
           <div id="cl-input-area" style="padding:14px 18px;border-top:1px solid var(--border);display:none">
-            <div style="display:flex;gap:10px">
+            <div id="cl-img-selector" style="display:none;margin-bottom:10px;background:var(--bg3);border-radius:10px;padding:10px">
+              <div style="font-size:11px;color:var(--text3);margin-bottom:8px">Selecciona una imagen para enviar:</div>
+              <div id="cl-img-lista" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+              <button onclick="document.getElementById('cl-img-selector').style.display='none'" style="margin-top:8px;font-size:11px;color:var(--text3);background:none;border:none;cursor:pointer">✕ Cancelar</button>
+            </div>
+            <div id="cl-img-seleccionada-preview" style="display:none;margin-bottom:8px;position:relative;display:inline-block">
+              <img id="cl-img-prev-img" style="height:60px;border-radius:8px;object-fit:cover"/>
+              <button onclick="quitarImagenChat()" style="position:absolute;top:-6px;right:-6px;width:18px;height:18px;background:var(--red);border:none;border-radius:50%;color:#fff;font-size:10px;cursor:pointer;font-weight:700">✕</button>
+            </div>
+            <div style="display:flex;gap:8px">
+              <button onclick="abrirSelectorImagenesChat()" title="Adjuntar imagen" style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px 12px;font-size:16px;cursor:pointer;color:var(--text)">📷</button>
               <input type="text" id="cl-input-msg" placeholder="Escribe tu respuesta..." style="flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px 14px;color:var(--text);font-size:13px;outline:none" onkeypress="if(event.key==='Enter')enviarMensajeAgente()">
               <button class="btn-p" onclick="enviarMensajeAgente()">Enviar</button>
             </div>
@@ -975,18 +985,59 @@ async function abrirChat(id){
   } catch(e) { console.error(e); }
 }
 
+let _chatImagenId = null;
+
+async function abrirSelectorImagenesChat(){
+  const selectorEl = document.getElementById('cl-img-selector');
+  const listaEl = document.getElementById('cl-img-lista');
+  selectorEl.style.display = selectorEl.style.display==='none' ? 'block' : 'none';
+  if(selectorEl.style.display==='none') return;
+  listaEl.innerHTML = '<div style="font-size:11px;color:var(--text3)">Cargando...</div>';
+  try{
+    const r = await fetch(API+'/api/imagenes',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+    const imgs = r.ok ? r.imagenes : [];
+    if(!imgs.length){ listaEl.innerHTML='<div style="font-size:11px;color:var(--text3)">Sin imágenes — sube desde Campañas WhatsApp</div>'; return; }
+    listaEl.innerHTML = imgs.map(img=>`
+      <div onclick="seleccionarImagenChat('${img._id}')" style="cursor:pointer;text-align:center">
+        <div style="width:60px;height:60px;background:var(--bg2);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:22px">📷</div>
+        <div style="font-size:9px;color:var(--text3);width:60px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:3px">${img.nombre}</div>
+      </div>`).join('');
+  }catch(e){ listaEl.innerHTML='<div style="font-size:11px;color:var(--red)">Error cargando</div>'; }
+}
+
+async function seleccionarImagenChat(id){
+  document.getElementById('cl-img-selector').style.display='none';
+  _chatImagenId = id;
+  try{
+    const r = await fetch(API+'/api/imagenes/'+id,{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+    if(r.ok && r.imagen){
+      const prev = document.getElementById('cl-img-seleccionada-preview');
+      const img = document.getElementById('cl-img-prev-img');
+      img.src = `data:${r.imagen.mime_type||'image/jpeg'};base64,${r.imagen.imagen_base64}`;
+      prev.style.display='inline-block';
+    }
+  }catch(e){}
+}
+
+function quitarImagenChat(){
+  _chatImagenId = null;
+  document.getElementById('cl-img-seleccionada-preview').style.display='none';
+  document.getElementById('cl-img-prev-img').src='';
+}
+
 async function enviarMensajeAgente(){
   const input = document.getElementById('cl-input-msg');
   const mensaje = input.value.trim();
-  if(!mensaje || !_chatActivoId) return;
+  if(!mensaje && !_chatImagenId) return;
+  if(!_chatActivoId) return;
   input.value = '';
   try {
     const r = await fetch(API+'/api/conversaciones/'+_chatActivoId+'/responder',{
       method:'POST',
       headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'},
-      body: JSON.stringify({ mensaje })
+      body: JSON.stringify({ mensaje, imagen_id: _chatImagenId || undefined })
     }).then(r=>r.json());
-    if(r.ok){ abrirChat(_chatActivoId); showToast('Mensaje enviado ✓','ok'); }
+    if(r.ok){ quitarImagenChat(); abrirChat(_chatActivoId); showToast('Enviado ✓','ok'); }
     else { showToast(r.error||'Error al enviar','error'); }
   } catch(e) { showToast('Error de conexión','error'); }
 }
@@ -1093,10 +1144,18 @@ async function seleccionarImagenCampana(id){
   campPrev();
 }
 
-function deseleccionarImagen(){
-  _campImagenSeleccionadaId = null;
-  pintarGaleriaImagenes();
-  campPrev();
+async function deseleccionarImagen(){
+  if(!_campImagenSeleccionadaId) return;
+  if(!confirm('¿Eliminar esta imagen del sistema? No se puede deshacer.')) return;
+  try{
+    await fetch(API+'/api/imagenes/'+_campImagenSeleccionadaId,{method:'DELETE',headers:{Authorization:'Bearer '+TOKEN}});
+    delete _campImagenPreviewCache[_campImagenSeleccionadaId];
+    _campImagenSeleccionadaId = null;
+    _campImagenSeleccionadaMime = 'image/jpeg';
+    showToast('Imagen eliminada','ok');
+    await cargarGaleriaImagenes();
+    campPrev();
+  }catch(e){ showToast('Error al eliminar','error'); }
 }
 
 async function subirImagenCampana(e){
