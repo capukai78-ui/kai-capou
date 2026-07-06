@@ -57,6 +57,9 @@ const messageLogSchema = new mongoose.Schema({
   from: String,
   message: String,
   response: String,
+  canal: { type: String, default: 'whatsapp' }, // canal de origen para trazabilidad
+  procesado: { type: Boolean, default: true },   // false = llegó pero falló el proceso
+  error: { type: String, default: null },        // si procesado=false, aquí está el motivo
   fecha: { type: Date, default: Date.now }
 });
 
@@ -183,6 +186,7 @@ const contactoSchema = new mongoose.Schema({
   odoo_lead_id:   { type: Number, default: null }, // si ya se creó como candidato en Odoo
   nivel_calor:    { type: Number, default: null, enum: [null, 1, 2, 3] }, // 1=Alta Intención, 2=Interesado, 3=Exploratorio
   nivel_calor_etiqueta: { type: String, default: null }, // texto de la etiqueta aplicada en Odoo
+  canal_origen:   { type: String, enum: ['whatsapp','instagram','messenger','lead_ads','formulario','otro'], default: 'whatsapp' },
   total_conversaciones: { type: Number, default: 0 },
 
   // ===== MARKETING Y REACTIVACIÓN =====
@@ -689,6 +693,103 @@ async function crearCandidatoOdooSiNoExiste(tenant, numero, mensajeUsuario, hist
   await crearCandidatoEnOdoo(tenant, contacto, numero, { nivel: 1, etiqueta: 'Candidato KAI — Alta Intención' });
 }
 
+// ===== OMNICHANNEL — funciones de envío por canal =====
+
+// Enviar mensaje por Instagram DMs (requiere token de página con permisos instagram_manage_messages)
+function enviarMensajeInstagram(recipientId, texto) {
+  return new Promise((resolve) => {
+    const TOKEN_PAGE = process.env.INSTAGRAM_PAGE_TOKEN || process.env.WHATSAPP_TOKEN;
+    const body = JSON.stringify({
+      recipient: { id: recipientId },
+      message: { text: texto }
+    });
+    const req2 = https.request({
+      hostname: 'graph.facebook.com',
+      path: `/v22.0/me/messages?access_token=${TOKEN_PAGE}`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+    }, (r) => { let d=''; r.on('data',c=>d+=c); r.on('end',()=>{ try{resolve(JSON.parse(d))}catch(e){resolve(null)} }); });
+    req2.on('error', () => resolve(null));
+    req2.write(body); req2.end();
+  });
+}
+
+// Enviar mensaje por Facebook Messenger (requiere token de página con permisos pages_messaging)
+function enviarMensajeMessenger(recipientId, texto) {
+  return new Promise((resolve) => {
+    const TOKEN_PAGE = process.env.MESSENGER_PAGE_TOKEN || process.env.WHATSAPP_TOKEN;
+    const body = JSON.stringify({
+      recipient: { id: recipientId },
+      message: { text: texto },
+      messaging_type: 'RESPONSE'
+    });
+    const req2 = https.request({
+      hostname: 'graph.facebook.com',
+      path: `/v22.0/me/messages?access_token=${TOKEN_PAGE}`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+    }, (r) => { let d=''; r.on('data',c=>d+=c); r.on('end',()=>{ try{resolve(JSON.parse(d))}catch(e){resolve(null)} }); });
+    req2.on('error', () => resolve(null));
+    req2.write(body); req2.end();
+  });
+}
+
+// Procesa un mensaje de cualquier canal — crea/actualiza Contacto y lead en Odoo con canal_origen
+async function procesarMensajeOmnichannel(numero, nombre, mensaje, canal, tenant) {
+  try {
+    const teamId = tenant?.odoo_team_id || 1;
+
+    // Buscar o crear contacto con el canal de origen registrado
+    let contacto = await Contacto.findOne({ tenant_id: tenant._id, numero });
+    if (!contacto) {
+      contacto = await Contacto.create({
+        tenant_id: tenant._id,
+        numero,
+        nombre: nombre || null,
+        canal_origen: canal,
+        total_conversaciones: 1,
+        ultimo_contacto: new Date(),
+        primer_contacto: new Date()
+      });
+    } else {
+      // Si ya existía, registrar canal si no lo tenía
+      if (!contacto.canal_origen) contacto.canal_origen = canal;
+      if (nombre && !contacto.nombre) contacto.nombre = nombre;
+      contacto.ultimo_contacto = new Date();
+      await contacto.save();
+    }
+
+    // Crear lead en Odoo si no existe aún — con etiqueta de canal
+    if (!contacto.odoo_lead_id) {
+      const etiquetaCanal = {
+        whatsapp:   'Canal — WhatsApp',
+        instagram:  'Canal — Instagram',
+        messenger:  'Canal — Messenger',
+        lead_ads:   'Canal — Lead Ads Facebook',
+        formulario: 'Canal — Formulario Web'
+      }[canal] || 'Canal — Otro';
+
+      const tagId = await getOdooTagId(etiquetaCanal);
+      const leadId = await odooCallLocal('crm.lead', 'create', [{
+        name: `Lead KAI — ${nombre || 'Sin nombre'} (${etiquetaCanal})`,
+        phone: numero.startsWith('ig_') || numero.startsWith('fb_') ? null : numero,
+        partner_name: nombre || null,
+        description: `Canal de origen: ${canal}\nCapturado automáticamente por KAI.`,
+        team_id: teamId,
+        type: 'opportunity',
+        tag_ids: tagId ? [[6, 0, [tagId]]] : undefined
+      }]);
+      if (leadId) {
+        contacto.odoo_lead_id = leadId;
+        await contacto.save();
+        console.log(`✅ Lead Odoo creado desde ${canal} — #${leadId}`);
+      }
+    }
+  } catch (e) {
+    console.error(`❌ procesarMensajeOmnichannel [${canal}]:`, e.message);
+  }
+}
+
 async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
   // ===== VERIFICAR SI YA HAY HANDOFF ACTIVO =====
   const convActiva = await Conversacion.findOne({ tenant_id: tenant._id, numero: numeroOrigen, estado: { $in: ['humano', 'esperando_agente'] } });
@@ -1044,60 +1145,128 @@ setInterval(actualizarSegmentosReactivacion, 24 * 60 * 60 * 1000);
 
 // POST — mensajes entrantes reales de WhatsApp
 app.post('/webhook', async (req, res) => {
-  res.sendStatus(200); // Responder rápido a Meta, procesar después
+  res.sendStatus(200); // responder rápido a Meta, procesar después
 
   try {
-    const entry = req.body.entry?.[0];
-    const changes = entry?.changes?.[0];
-    const value = changes?.value;
-    const mensaje = value?.messages?.[0];
+    const body = req.body;
+    const object = body.object; // 'whatsapp_business_account' | 'instagram' | 'page'
 
-    if (!mensaje) return; // Puede ser un evento de "status" (entregado/leído), lo ignoramos
+    // ── DETECTAR CANAL ──────────────────────────────────────────────────────
+    let canal = null;
+    let numeroOrigen = null;
+    let nombreCliente = null;
+    let mensajeUsuario = null;
+    let idExterno = null; // id único del remitente en ese canal
 
-    const numeroOrigen = mensaje.from; // ej: "50212345678"
-    const mensajeUsuario = mensaje.text?.body || '';
-    const nombreCliente = value?.contacts?.[0]?.profile?.name || null;
-    const phoneIdRecibido = value?.metadata?.phone_number_id;
+    if (object === 'whatsapp_business_account') {
+      const value = body.entry?.[0]?.changes?.[0]?.value;
+      const mensaje = value?.messages?.[0];
+      if (!mensaje || !mensaje.text?.body) return;
+      canal = 'whatsapp';
+      numeroOrigen = mensaje.from;
+      mensajeUsuario = mensaje.text.body;
+      nombreCliente = value?.contacts?.[0]?.profile?.name || null;
+      idExterno = mensaje.from;
 
-    if (!mensajeUsuario) return; // Tipo de mensaje no soportado (audio, imagen, etc.)
+    } else if (object === 'instagram') {
+      const messaging = body.entry?.[0]?.messaging?.[0];
+      if (!messaging?.message?.text) return;
+      canal = 'instagram';
+      idExterno = messaging.sender.id;
+      mensajeUsuario = messaging.message.text;
+      // Instagram no da número de teléfono directamente — usamos su PSID como identificador
+      numeroOrigen = `ig_${idExterno}`;
+      nombreCliente = null;
 
-    console.log(`📩 WhatsApp de ${nombreCliente || numeroOrigen}: ${mensajeUsuario}`);
+    } else if (object === 'page') {
+      const messaging = body.entry?.[0]?.messaging?.[0];
+      if (!messaging?.message?.text) return;
+      canal = 'messenger';
+      idExterno = messaging.sender.id;
+      mensajeUsuario = messaging.message.text;
+      numeroOrigen = `fb_${idExterno}`;
+      nombreCliente = null;
 
-    // Buscar el tenant configurado para este número de WhatsApp
+    } else {
+      return; // evento desconocido
+    }
+
+    console.log(`📩 [${canal.toUpperCase()}] de ${nombreCliente || numeroOrigen}: ${mensajeUsuario}`);
+
+    // ── GUARDAR LOG INMEDIATO — antes de cualquier procesamiento ────────────
+    // Si algo falla después, el mensaje ya quedó registrado en MongoDB
     const tenant = await Tenant.findOne({ whatsapp_phone_id: phoneIdRecibido, activo: true })
-                || await Tenant.findOne({ activo: true }); // fallback: primer tenant activo
+                || await Tenant.findOne({ activo: true });
+    if (!tenant) return;
 
-    if (!tenant) {
-      await enviarWhatsAppMeta(numeroOrigen, 'Gracias por escribirnos 🙌, pronto te atenderemos.');
-      return;
-    }
+    const logEntry = await MessageLog.create({
+      tenant_id: tenant._id,
+      from: numeroOrigen,
+      message: mensajeUsuario,
+      canal,
+      procesado: false, // se marca true al final si todo salió bien
+      fecha: new Date()
+    }).catch(() => null);
 
+    // ── TENANT ya declarado arriba ───────────────────────────────────────────
     const limite_info = await verificarLimite(tenant._id, tenant.plan);
-    if (limite_info.agotado) {
-      await enviarWhatsAppMeta(process.env.OWNER_WHATSAPP || numeroOrigen, `🚫 BOTLY: "${tenant.nombre}" agotó su plan.`).catch(() => {});
-      await enviarWhatsAppMeta(numeroOrigen, 'Nuestro asistente está en mantenimiento. Contáctanos directamente. 🙏');
-      return;
-    }
+    if (limite_info.agotado) return;
     await notificarAdminSiNecesario(tenant, limite_info);
 
-    const teamId = tenant?.odoo_team_id || 1;
-    const tenantNombre = tenant?.nombre || 'General';
-    await procesarMensajeWhatsApp(numeroOrigen, nombreCliente, mensajeUsuario, teamId, tenantNombre).catch(e => console.error('Odoo:', e.message));
+    // ── DEDUPLICACIÓN — buscar si ya existe el contacto por número/id ───────
+    // Si el padre escribió por WhatsApp antes y ahora escribe por Instagram,
+    // puede que tengamos su teléfono en el Contacto de WhatsApp.
+    // La deduplicación busca primero por el idExterno exacto, luego por correo si lo tenemos.
+    let contactoExistente = await Contacto.findOne({ tenant_id: tenant._id, numero: numeroOrigen });
+
+    // Registrar el canal de origen si es nuevo
+    if (contactoExistente && !contactoExistente.canal_origen) {
+      contactoExistente.canal_origen = canal;
+      await contactoExistente.save();
+    }
+
+    // Actualizar nombre si lo recibimos y no lo teníamos
+    if (contactoExistente && nombreCliente && !contactoExistente.nombre) {
+      contactoExistente.nombre = nombreCliente;
+      await contactoExistente.save();
+    }
+
+    // ── FUNCIÓN DE RESPUESTA POR CANAL ──────────────────────────────────────
+    const enviarRespuesta = async (numero, texto) => {
+      if (canal === 'whatsapp') {
+        await enviarWhatsAppMeta(numero, texto);
+      } else if (canal === 'instagram') {
+        await enviarMensajeInstagram(idExterno, texto);
+      } else if (canal === 'messenger') {
+        await enviarMensajeMessenger(idExterno, texto);
+      }
+    };
+
+    // ── PROCESAR CON KAI ────────────────────────────────────────────────────
+    await procesarMensajeOmnichannel(numeroOrigen, nombreCliente, mensajeUsuario, canal, tenant);
 
     const respuesta = await responderConIA(tenant, mensajeUsuario, numeroOrigen);
-
     if (respuesta === null) {
-      // Conversación en manos de un agente humano — KAI no responde
-      console.log(`⏸️  KAI pausado para ${numeroOrigen} — esperando respuesta de agente`);
+      console.log(`⏸️  KAI pausado para ${numeroOrigen} — agente humano activo`);
       return;
     }
 
-    await MessageLog.create({ tenant_id: tenant._id, from: numeroOrigen, message: mensajeUsuario, response: respuesta });
-    await enviarWhatsAppMeta(numeroOrigen, respuesta);
-    console.log(`✅ Respuesta enviada a ${numeroOrigen}`);
+    if (logEntry) {
+      logEntry.response = respuesta;
+      logEntry.procesado = true;
+      await logEntry.save().catch(()=>{});
+    }
+    await enviarRespuesta(numeroOrigen, respuesta);
+    console.log(`✅ [${canal.toUpperCase()}] Respuesta enviada a ${numeroOrigen}`);
 
   } catch (err) {
     console.error('❌ WEBHOOK error:', err);
+    // Si teníamos un logEntry pendiente, marcarlo con el error para que no se pierda el rastro
+    if (typeof logEntry !== 'undefined' && logEntry) {
+      logEntry.procesado = false;
+      logEntry.error = err.message;
+      await logEntry.save().catch(()=>{});
+    }
   }
 });
 
@@ -1859,6 +2028,111 @@ app.post('/api/campana/enviar', authMiddleware, async (req, res) => {
 
 
 // Listar contactos con filtros: nivel de calor, segmento de reactivación, zona, nivel educativo, consentimiento
+// ===== LEAD ADS — recibe notificación de Facebook cuando alguien llena un formulario de Lead Ad =====
+app.post('/api/lead-ads', async (req, res) => {
+  res.sendStatus(200);
+  try {
+    const { leadgen_id, page_id } = req.body.entry?.[0]?.changes?.[0]?.value || {};
+    if (!leadgen_id) return;
+
+    // Consultar los datos del formulario a la Graph API de Meta
+    const TOKEN_PAGE = process.env.MESSENGER_PAGE_TOKEN || process.env.WHATSAPP_TOKEN;
+    const leadData = await new Promise((resolve) => {
+      const req2 = https.request({
+        hostname: 'graph.facebook.com',
+        path: `/v22.0/${leadgen_id}?access_token=${TOKEN_PAGE}`,
+        method: 'GET'
+      }, (r) => { let d=''; r.on('data',c=>d+=c); r.on('end',()=>{ try{resolve(JSON.parse(d))}catch(e){resolve(null)} }); });
+      req2.on('error', ()=>resolve(null)); req2.end();
+    });
+
+    if (!leadData?.field_data) return;
+
+    const campos = {};
+    leadData.field_data.forEach(f => { campos[f.name] = f.values?.[0]; });
+    const nombre = campos.full_name || campos.first_name || 'Sin nombre';
+    const telefono = (campos.phone_number || '').replace(/\D/g,'');
+    const correo = campos.email || null;
+    const nivel = campos.grado_interes || campos.nivel || null;
+
+    const tenant = await Tenant.findOne({ activo: true });
+    if (!tenant) return;
+
+    // Crear/actualizar contacto con canal lead_ads
+    const numero = telefono ? `502${telefono.slice(-8)}` : `fb_lead_${leadgen_id}`;
+    let contacto = await Contacto.findOne({ tenant_id: tenant._id, numero });
+    if (!contacto) {
+      contacto = await Contacto.create({
+        tenant_id: tenant._id, numero,
+        nombre, correo, nivel_interes: nivel,
+        canal_origen: 'lead_ads',
+        ultimo_contacto: new Date(), primer_contacto: new Date(), total_conversaciones: 1
+      });
+    }
+
+    // Crear lead en Odoo directamente con los datos del formulario
+    if (!contacto.odoo_lead_id) {
+      const tagId = await getOdooTagId('Canal — Lead Ads Facebook');
+      const leadId = await odooCallLocal('crm.lead', 'create', [{
+        name: `Lead Ads — ${nombre}`,
+        phone: telefono || null,
+        email_from: correo || null,
+        partner_name: nombre,
+        description: `Formulario de Lead Ad completado.\nNivel de interés: ${nivel || 'No especificado'}\nCapturado automáticamente por KAI.`,
+        team_id: tenant?.odoo_team_id || 1,
+        type: 'opportunity',
+        tag_ids: tagId ? [[6, 0, [tagId]]] : undefined
+      }]);
+      if (leadId) { contacto.odoo_lead_id = leadId; await contacto.save(); }
+    }
+    console.log(`✅ Lead Ads procesado — ${nombre} (${telefono})`);
+  } catch (e) { console.error('❌ Lead Ads webhook:', e.message); }
+});
+
+// ===== FORMULARIO WEB — el webmaster agrega un fetch() al botón de envío del formulario =====
+app.post('/api/lead-web', async (req, res) => {
+  try {
+    const { nombre, telefono, correo, nivel_interes, mensaje } = req.body;
+    if (!nombre && !telefono && !correo) return res.status(400).json({ ok: false, error: 'Se requiere al menos nombre, teléfono o correo' });
+
+    const tenant = await Tenant.findOne({ activo: true });
+    if (!tenant) return res.status(500).json({ ok: false, error: 'Tenant no encontrado' });
+
+    const numero = telefono ? `502${String(telefono).replace(/\D/g,'').slice(-8)}` : `web_${Date.now()}`;
+    let contacto = await Contacto.findOne({ tenant_id: tenant._id, numero });
+    if (!contacto) {
+      contacto = await Contacto.create({
+        tenant_id: tenant._id, numero,
+        nombre: nombre || null, correo: correo || null,
+        nivel_interes: nivel_interes || null,
+        canal_origen: 'formulario',
+        ultimo_contacto: new Date(), primer_contacto: new Date(), total_conversaciones: 1
+      });
+    }
+
+    if (!contacto.odoo_lead_id) {
+      const tagId = await getOdooTagId('Canal — Formulario Web');
+      const leadId = await odooCallLocal('crm.lead', 'create', [{
+        name: `Formulario Web — ${nombre || correo || telefono}`,
+        phone: telefono || null,
+        email_from: correo || null,
+        partner_name: nombre || null,
+        description: `Formulario web completado.\n${mensaje ? 'Mensaje: ' + mensaje : ''}\nNivel de interés: ${nivel_interes || 'No especificado'}\nCapturado automáticamente por KAI.`,
+        team_id: tenant?.odoo_team_id || 1,
+        type: 'opportunity',
+        tag_ids: tagId ? [[6, 0, [tagId]]] : undefined
+      }]);
+      if (leadId) { contacto.odoo_lead_id = leadId; await contacto.save(); }
+    }
+
+    res.json({ ok: true, mensaje: 'Contacto registrado correctamente' });
+    console.log(`✅ Formulario web — ${nombre} (${telefono || correo})`);
+  } catch (e) {
+    console.error('❌ Lead web:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get('/api/contactos', authMiddleware, async (req, res) => {
   try {
     const { nivel_calor, segmento, zona, nivel_interes, solo_con_consentimiento } = req.query;
@@ -1878,19 +2152,33 @@ app.get('/api/contactos', authMiddleware, async (req, res) => {
 app.get('/api/contactos/resumen', authMiddleware, async (req, res) => {
   try {
     const tenantId = req.user.tenant_id;
-    const [porSegmento, porNivelCalor, totalConsentimiento, totalContactos] = await Promise.all([
+    const [porSegmento, porNivelCalor, totalConsentimiento, totalContactos, porCanal] = await Promise.all([
       Contacto.aggregate([{ $match: { tenant_id: tenantId } }, { $group: { _id: '$segmento_reactivacion', total: { $sum: 1 } } }]),
       Contacto.aggregate([{ $match: { tenant_id: tenantId, nivel_calor: { $ne: null } } }, { $group: { _id: '$nivel_calor', total: { $sum: 1 } } }]),
       Contacto.countDocuments({ tenant_id: tenantId, acepta_marketing: true }),
-      Contacto.countDocuments({ tenant_id: tenantId })
+      Contacto.countDocuments({ tenant_id: tenantId }),
+      Contacto.aggregate([{ $match: { tenant_id: tenantId } }, { $group: { _id: '$canal_origen', total: { $sum: 1 } } }])
     ]);
     res.json({
       ok: true,
       total_contactos: totalContactos,
       con_consentimiento_marketing: totalConsentimiento,
       por_segmento: Object.fromEntries(porSegmento.map(s => [s._id || 'activo', s.total])),
-      por_nivel_calor: Object.fromEntries(porNivelCalor.map(n => [n._id, n.total]))
+      por_nivel_calor: Object.fromEntries(porNivelCalor.map(n => [n._id, n.total])),
+      por_canal: Object.fromEntries(porCanal.map(c => [c._id || 'whatsapp', c.total]))
     });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// Mensajes no procesados — para detectar si algo falló silenciosamente
+app.get('/api/logs/no-procesados', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+    const logs = await MessageLog.find({
+      tenant_id: req.user.tenant_id,
+      procesado: false
+    }).sort({ fecha: -1 }).limit(50);
+    res.json({ ok: true, total: logs.length, logs });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
