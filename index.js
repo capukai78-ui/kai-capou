@@ -11,9 +11,49 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'botly-secret-2025';
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) { console.error('❌ FATAL: JWT_SECRET no está configurado en las variables de entorno'); process.exit(1); }
 
-app.use(cors());
+// ===== SEGURIDAD =====
+// CORS — solo acepta peticiones del panel y del webhook de Meta
+const origenesPermitidos = [
+  'https://kai-capouilliez.up.railway.app',
+  'https://www.capouilliez.edu.gt',
+  /\.railway\.app$/
+];
+app.use(cors({
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true); // peticiones server-to-server (webhook Meta, Odoo)
+    const ok = origenesPermitidos.some(o => typeof o === 'string' ? o === origin : o.test(origin));
+    ok ? cb(null, true) : cb(new Error('CORS bloqueado: origen no permitido'));
+  },
+  credentials: true
+}));
+
+// Rate limiting manual — máximo 60 peticiones por minuto por IP para el API
+const _rateMap = new Map();
+app.use('/api/', (req, res, next) => {
+  const ip = req.ip || req.headers['x-forwarded-for'] || 'unknown';
+  const ahora = Date.now();
+  const ventana = 60 * 1000; // 1 minuto
+  const limite = 120; // 120 req/min por IP
+  const entry = _rateMap.get(ip) || { count: 0, inicio: ahora };
+  if (ahora - entry.inicio > ventana) { entry.count = 1; entry.inicio = ahora; }
+  else entry.count++;
+  _rateMap.set(ip, entry);
+  if (entry.count > limite) return res.status(429).json({ ok: false, error: 'Demasiadas peticiones. Intenta en un momento.' });
+  next();
+});
+
+// Headers de seguridad básicos (sin helmet, usando solo lo necesario)
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
+});
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: false }));
 app.use(express.static('public'));
@@ -612,7 +652,27 @@ async function getOdooTagId(nombreTag) {
 
 // Crea el lead "Candidato KAI" en Odoo con la etiqueta correspondiente a su nivel de calor
 async function crearCandidatoEnOdoo(tenant, contacto, numero, resultadoNivel) {
-  if (contacto.odoo_lead_id) return contacto.odoo_lead_id; // ya existe, no duplicar
+  if (contacto.odoo_lead_id) return contacto.odoo_lead_id; // ya existe en memoria
+
+  // Verificación adicional — buscar directamente en Odoo por teléfono antes de crear
+  // Esto evita duplicados cuando dos mensajes llegan casi simultáneamente
+  try {
+    const telefonoLimpio = numero.replace(/\D/g,'');
+    const existentes = await odooCallLocal('crm.lead', 'search_read',
+      [[['phone', 'like', telefonoLimpio.slice(-8)], ['active', '=', true]]],
+      { fields: ['id', 'name', 'phone'], limit: 1 }
+    );
+    if (existentes && existentes.length) {
+      // Ya existe un lead con ese teléfono — vincularlo al Contacto sin crear otro
+      contacto.odoo_lead_id = existentes[0].id;
+      await contacto.save();
+      console.log(`🔗 Lead existente en Odoo vinculado — #${existentes[0].id} para ${numero}`);
+      return existentes[0].id;
+    }
+  } catch (e) {
+    console.warn('⚠️ No se pudo verificar duplicados en Odoo:', e.message);
+  }
+
   try {
     const teamId = tenant?.odoo_team_id || 1;
     const etiqueta = resultadoNivel?.etiqueta || 'Lead KAI — Exploratorio';
@@ -637,7 +697,7 @@ async function crearCandidatoEnOdoo(tenant, contacto, numero, resultadoNivel) {
       description: descripcion,
       team_id: teamId,
       type: 'opportunity',
-      tag_ids: tagId ? [[6, 0, [tagId]]] : undefined // formato Odoo many2many: reemplazar tags con [tagId]
+      tag_ids: tagId ? [[6, 0, [tagId]]] : undefined
     }]);
 
     if (leadId) {
