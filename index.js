@@ -193,14 +193,15 @@ const usuarioPanelSchema = new mongoose.Schema({
 // ===== MODELO CONVERSACIÓN — para handoff a humano =====
 const conversacionSchema = new mongoose.Schema({
   tenant_id:     { type: mongoose.Schema.Types.ObjectId, ref: 'Tenant' },
-  numero:        { type: String, required: true }, // WhatsApp del padre/madre
+  numero:        { type: String, required: true },
   nombre:        String,
+  canal:         { type: String, enum: ['whatsapp','instagram','messenger','otro'], default: 'whatsapp' },
   estado:        { type: String, enum: ['bot', 'esperando_agente', 'humano', 'cerrado'], default: 'bot' },
   agente_id:     { type: mongoose.Schema.Types.ObjectId, ref: 'UsuarioPanel', default: null },
   agente_nombre: { type: String, default: null },
-  motivo:        { type: String, default: null }, // por qué pidió hablar con humano
-  resumen_kai:   { type: String, default: null }, // resumen de KAI para el agente al recibir el chat
-  resumen_agente:{ type: String, default: null }, // resumen del agente para KAI al devolver el chat
+  motivo:        { type: String, default: null },
+  resumen_kai:   { type: String, default: null },
+  resumen_agente:{ type: String, default: null },
   mensajes:      [{
     de:     { type: String, enum: ['padre', 'bot', 'agente'] },
     texto:  String,
@@ -1292,18 +1293,59 @@ app.post('/webhook', async (req, res) => {
     }
 
     // ── FUNCIÓN DE RESPUESTA POR CANAL ──────────────────────────────────────
+    // ── CANALES EN MODO LECTURA (sin respuesta automática) ──────────────────
+    // Instagram y Messenger: KAI captura contacto y lead en Odoo pero NO responde.
+    // Para activar respuestas, quitar el canal de este array.
+    const CANALES_SOLO_LECTURA = ['instagram', 'messenger'];
+
     const enviarRespuesta = async (numero, texto) => {
-      if (canal === 'whatsapp') {
-        await enviarWhatsAppMeta(numero, texto);
-      } else if (canal === 'instagram') {
-        await enviarMensajeInstagram(idExterno, texto);
-      } else if (canal === 'messenger') {
-        await enviarMensajeMessenger(idExterno, texto);
-      }
+      if (CANALES_SOLO_LECTURA.includes(canal)) return;
+      if (canal === 'whatsapp') await enviarWhatsAppMeta(numero, texto);
+      else if (canal === 'instagram') await enviarMensajeInstagram(idExterno, texto);
+      else if (canal === 'messenger') await enviarMensajeMessenger(idExterno, texto);
     };
 
     // ── PROCESAR CON KAI ────────────────────────────────────────────────────
     await procesarMensajeOmnichannel(numeroOrigen, nombreCliente, mensajeUsuario, canal, tenant);
+
+    // Canales en solo lectura: solo guardar en MongoDB y mostrar en panel — sin Odoo, sin respuesta
+    if (CANALES_SOLO_LECTURA.includes(canal)) {
+      // Guardar/actualizar contacto en MongoDB (sin tocar Odoo)
+      await Contacto.findOneAndUpdate(
+        { tenant_id: tenant._id, numero: numeroOrigen },
+        {
+          $set: { canal_origen: canal, ultimo_contacto: new Date(), nombre: nombreCliente || undefined },
+          $inc: { total_conversaciones: 1 },
+          $setOnInsert: { primer_contacto: new Date() }
+        },
+        { upsert: true, new: true }
+      ).catch(()=>{});
+
+      // Crear o actualizar conversación en panel para que aparezca en Chats en Vivo
+      let conv = await Conversacion.findOne({ tenant_id: tenant._id, numero: numeroOrigen, estado: { $ne: 'cerrado' } });
+      if (!conv) {
+        conv = await Conversacion.create({
+          tenant_id: tenant._id,
+          numero: numeroOrigen,
+          canal: canal,
+          estado: 'esperando_agente',
+          mensajes: [{ de: 'padre', texto: mensajeUsuario, fecha: new Date() }],
+          ultimaActividad: new Date()
+        });
+      } else {
+        conv.mensajes.push({ de: 'padre', texto: mensajeUsuario, fecha: new Date() });
+        conv.ultimaActividad = new Date();
+        await conv.save();
+      }
+
+      if (logEntry) {
+        logEntry.procesado = true;
+        logEntry.response = '[modo lectura — visible en panel]';
+        await logEntry.save().catch(()=>{});
+      }
+      console.log(`👁️  [${canal.toUpperCase()}] Mensaje en panel — ${nombreCliente || numeroOrigen}: ${mensajeUsuario}`);
+      return;
+    }
 
     const respuesta = await responderConIA(tenant, mensajeUsuario, numeroOrigen);
     if (respuesta === null) {
