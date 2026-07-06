@@ -928,6 +928,10 @@ function pintarListaChats(convs){
   }
   const estadoColor = e => e==='esperando_agente' ? 'var(--amber)' : e==='humano' ? 'var(--g)' : 'var(--text3)';
   const estadoTxt = e => e==='esperando_agente' ? 'Esperando' : e==='humano' ? 'En atención' : 'Cerrado';
+  const canalBadge = c => {
+    const cfg = {instagram:{label:'Instagram',bg:'#EEEDFE',color:'#3C3489'},messenger:{label:'Messenger',bg:'#E6F1FB',color:'#0C447C'},whatsapp:{label:'WhatsApp',bg:'#E1F5EE',color:'#085041'}}[c.canal||'whatsapp']||{label:'WhatsApp',bg:'#E1F5EE',color:'#085041'};
+    return `<span style="font-size:9px;padding:2px 7px;border-radius:10px;background:${cfg.bg};color:${cfg.color};font-weight:500">${cfg.label}</span>`;
+  };
 
   lista.innerHTML = convs.map(c => `
     <div onclick="abrirChat('${c._id}')" style="padding:12px;border-radius:10px;cursor:pointer;margin-bottom:6px;background:${_chatActivoId===c._id?'var(--bg3)':'transparent'};border:1px solid ${_chatActivoId===c._id?'var(--border2)':'transparent'}" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='${_chatActivoId===c._id?'var(--bg3)':'transparent'}'">
@@ -935,8 +939,11 @@ function pintarListaChats(convs){
         <div style="font-weight:600;font-size:13px">${c.nombre || c.numero}</div>
         <span style="font-size:9px;padding:2px 6px;border-radius:5px;background:${estadoColor(c.estado)}22;color:${estadoColor(c.estado)};white-space:nowrap">${estadoTxt(c.estado)}</span>
       </div>
-      <div style="font-size:11px;color:var(--text3)">${c.numero}</div>
-      <div style="font-size:11px;color:var(--text2);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.mensajes?.length?c.mensajes[c.mensajes.length-1].texto:''}</div>
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+        ${canalBadge(c)}
+        <div style="font-size:11px;color:var(--text3)">${c.numero}</div>
+      </div>
+      <div style="font-size:11px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.mensajes?.length?c.mensajes[c.mensajes.length-1].texto:''}</div>
       ${c.agente_nombre?`<div style="font-size:10px;color:var(--g);margin-top:4px">👤 ${c.agente_nombre}</div>`:''}
     </div>
   `).join('');
