@@ -1301,10 +1301,12 @@ async function motorContactoProactivo() {
     const tagSinWAId = await getOdooTagId(TAG_KAI_SIN_WHATSAPP);
 
     // Leads en Odoo con teléfono que KAI aún no contactó
+    // Solo leads SIN ASIGNAR (sin vendedor) con teléfono que KAI aún no contactó
     const leads = await odooCallLocal('crm.lead', 'search_read',
       [[
         ['type', '=', 'opportunity'],
         ['active', '=', true],
+        ['user_id', '=', false],
         ['phone', '!=', false],
         ['phone', '!=', ''],
         ['tag_ids', 'not in', [tagContactadoId]],
@@ -2489,9 +2491,10 @@ app.get('/api/motor/escanear', authMiddleware, async (req, res) => {
     const tagContactadoId = await getOdooTagId(TAG_KAI_CONTACTADO);
     const tagSinWAId = await getOdooTagId(TAG_KAI_SIN_WHATSAPP);
 
-    // Leads pendientes de contactar (con teléfono, sin tags de KAI)
+    // Leads SIN ASIGNAR pendientes de contactar (con teléfono, sin tags de KAI)
     const pendientes = await odooCallLocal('crm.lead', 'search_read',
-      [[['type','=','opportunity'],['active','=',true],['phone','!=',false],['phone','!=',''],
+      [[['type','=','opportunity'],['active','=',true],['user_id','=',false],
+        ['phone','!=',false],['phone','!=',''],
         ['tag_ids','not in',[tagContactadoId]],['tag_ids','not in',[tagSinWAId]]]],
       { fields: ['id','name','phone','partner_name','email_from','stage_id','tag_ids'], limit: 100 }
     ) || [];
