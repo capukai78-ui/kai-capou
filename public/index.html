@@ -825,6 +825,43 @@ tr:hover td{background:var(--g4)}
         <div class="tw-h"><div class="tw-t">🕐 Últimos leads en Odoo</div><div style="font-size:11px;color:var(--text3)">Tiempo real · Producción</div></div>
         <div id="mkt-leads"></div>
       </div>
+
+      <!-- LEADS NUEVOS SIN CONTACTAR -->
+      <div class="fc" style="margin-top:20px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+          <div>
+            <div class="ft" style="margin-bottom:2px">📡 Leads nuevos — últimas 24h</div>
+            <div style="font-size:11px;color:var(--text3)">Solo leads con teléfono que KAI aún no contactó · Los sin teléfono los atiende el equipo manualmente</div>
+          </div>
+          <button class="btn-g" style="font-size:11px" onclick="escanearLeadsNuevos()">↻ Escanear Odoo</button>
+        </div>
+
+        <!-- Tarjetas resumen -->
+        <div class="dash-metrics" id="leads-nuevos-resumen" style="margin-bottom:14px">
+          <div class="mc"><div class="mc-lbl">Cargando...</div><div class="mc-val">⏳</div></div>
+        </div>
+
+        <!-- Tabla de leads pendientes -->
+        <div class="tw" style="margin-bottom:0">
+          <div class="tw-h">
+            <div class="tw-t">Pendientes de contactar hoy</div>
+          </div>
+          <div id="leads-nuevos-tabla">
+            <div style="text-align:center;padding:24px;color:var(--text3);font-size:12px">Haz clic en "Escanear Odoo" para ver los leads nuevos</div>
+          </div>
+        </div>
+
+        <!-- Tabla de sin teléfono -->
+        <div class="tw" style="margin-top:12px;margin-bottom:0">
+          <div class="tw-h">
+            <div class="tw-t">⚠️ Sin teléfono — seguimiento manual del equipo</div>
+          </div>
+          <div id="leads-sin-telefono-tabla">
+            <div style="text-align:center;padding:16px;color:var(--text3);font-size:12px">Escanea para ver leads sin WhatsApp</div>
+          </div>
+        </div>
+      </div>
+
     </div>
   </main>
 </div>
@@ -1377,6 +1414,76 @@ async function enviarCampanaMasiva(){
       showToast(r.error||'Error al enviar campaña','error');
     }
   }catch(e){ showToast('Error de conexión','error'); }
+}
+
+async function escanearLeadsNuevos(){
+  const resumenEl = document.getElementById('leads-nuevos-resumen');
+  const tablaEl = document.getElementById('leads-nuevos-tabla');
+  const sinTelEl = document.getElementById('leads-sin-telefono-tabla');
+  resumenEl.innerHTML='<div class="mc"><div class="mc-lbl">Escaneando Odoo...</div><div class="mc-val">⏳</div></div>';
+  tablaEl.innerHTML='<div style="text-align:center;padding:24px;color:var(--text3);font-size:12px">Consultando...</div>';
+
+  try{
+    const r = await fetch(API+'/api/motor/escanear',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+    if(!r.ok){ tablaEl.innerHTML=`<div style="padding:16px;color:var(--red);font-size:12px">Error: ${r.error}</div>`; return; }
+
+    // Tarjetas resumen
+    resumenEl.innerHTML = `
+      <div class="mc"><div class="mc-lbl">Pendientes hoy</div><div class="mc-val" style="color:var(--amber)">${r.resumen.pendientes_de_contactar}</div><div class="mc-sub">con teléfono</div></div>
+      <div class="mc"><div class="mc-lbl">KAI contactó</div><div class="mc-val" style="color:var(--g)">${r.resumen.ya_contactados_por_kai}</div><div class="mc-sub">total acumulado</div></div>
+      <div class="mc"><div class="mc-lbl">Sin teléfono</div><div class="mc-val" style="color:var(--text3)">${r.resumen.sin_whatsapp_valido}</div><div class="mc-sub">equipo los contacta</div></div>`;
+
+    // Tabla pendientes con teléfono
+    if(!r.pendientes?.length){
+      tablaEl.innerHTML='<div style="text-align:center;padding:24px;color:var(--g);font-size:12px">✅ Sin leads pendientes en las últimas 24 horas</div>';
+    } else {
+      tablaEl.innerHTML = `
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="border-bottom:1px solid var(--border)">
+            <th style="text-align:left;padding:8px 12px;color:var(--text3);font-weight:500">Nombre</th>
+            <th style="text-align:left;padding:8px 12px;color:var(--text3);font-weight:500">Teléfono</th>
+            <th style="text-align:left;padding:8px 12px;color:var(--text3);font-weight:500">Etapa</th>
+            <th style="text-align:left;padding:8px 12px;color:var(--text3);font-weight:500">Vendedor</th>
+            <th style="text-align:left;padding:8px 12px;color:var(--text3);font-weight:500">Llegó</th>
+          </tr></thead>
+          <tbody>
+            ${r.pendientes.map(l=>`
+              <tr style="border-bottom:0.5px solid var(--border)">
+                <td style="padding:10px 12px;font-weight:500;color:var(--text)">${l.nombre||'Sin nombre'}</td>
+                <td style="padding:10px 12px;color:var(--text2)">${l.telefono}</td>
+                <td style="padding:10px 12px"><span style="font-size:10px;padding:2px 8px;border-radius:10px;background:var(--bg3);color:var(--text3)">${l.etapa||'—'}</span></td>
+                <td style="padding:10px 12px;color:var(--text3);font-size:11px">${l.vendedor||'Sin asignar'}</td>
+                <td style="padding:10px 12px;color:var(--text3)">${l.fecha_creacion||'—'}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>`;
+    }
+
+    // Tabla sin teléfono — para seguimiento manual
+    if(!r.sin_whatsapp?.length){
+      sinTelEl.innerHTML='<div style="text-align:center;padding:16px;color:var(--text3);font-size:12px">Sin leads sin teléfono en este período</div>';
+    } else {
+      sinTelEl.innerHTML = `
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="border-bottom:1px solid var(--border)">
+            <th style="text-align:left;padding:8px 12px;color:var(--text3);font-weight:500">Nombre</th>
+            <th style="text-align:left;padding:8px 12px;color:var(--text3);font-weight:500">Correo</th>
+            <th style="text-align:left;padding:8px 12px;color:var(--text3);font-weight:500">Etapa</th>
+          </tr></thead>
+          <tbody>
+            ${r.sin_whatsapp.map(l=>`
+              <tr style="border-bottom:0.5px solid var(--border)">
+                <td style="padding:10px 12px;font-weight:500;color:var(--text)">${l.nombre||'Sin nombre'}</td>
+                <td style="padding:10px 12px;color:var(--text2)">${l.email||'Sin correo'}</td>
+                <td style="padding:10px 12px"><span style="font-size:10px;padding:2px 8px;border-radius:10px;background:var(--bg3);color:var(--text3)">${l.etapa||'—'}</span></td>
+              </tr>`).join('')}
+          </tbody>
+        </table>`;
+    }
+
+  }catch(e){
+    tablaEl.innerHTML=`<div style="padding:16px;color:var(--red);font-size:12px">Error de conexión: ${e.message}</div>`;
+  }
 }
 
 async function loadMarketing(){
