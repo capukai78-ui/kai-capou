@@ -537,7 +537,7 @@ function calcularNivelInteres(texto, ultimoMensajeBot, contacto) {
   const confirmacionAgendar = esAfirmacionSimple && botPreguntoAgendar;
 
   if (fraseAltaIntencion || confirmacionAgendar) {
-    return { nivel: 1, etiqueta: 'Candidato KAI — Alta Intención' };
+    return { nivel: 1, etiqueta: 'KAI — Alta Intención' };
   }
 
   // ---- NIVEL 2 — INTERESADO ----
@@ -547,18 +547,18 @@ function calcularNivelInteres(texto, ultimoMensajeBot, contacto) {
   const tieneDatosClave = !!(contacto?.nombre_alumno && contacto?.nivel_interes);
 
   if (tieneDatosClave && preguntoProcesoOcuotas) {
-    return { nivel: 2, etiqueta: 'Candidato KAI — Interesado' };
+    return { nivel: 2, etiqueta: 'KAI — Interesado' };
   }
   // También cuenta como Nivel 2 si ya tiene nombre del alumno + nivel, aunque la pregunta actual sea otra cosa —
   // refleja que ya pasó el filtro inicial de solo curiosear.
   if (tieneDatosClave) {
-    return { nivel: 2, etiqueta: 'Candidato KAI — Interesado' };
+    return { nivel: 2, etiqueta: 'KAI — Interesado' };
   }
 
   // ---- NIVEL 3 — EXPLORATORIO ----
   // Si ya dio AL MENOS el nivel educativo de interés, cuenta como lead exploratorio (no solo curiosidad anónima).
   if (contacto?.nivel_interes) {
-    return { nivel: 3, etiqueta: 'Lead KAI — Exploratorio' };
+    return { nivel: 3, etiqueta: 'KAI — Exploratorio' };
   }
 
   return null; // Aún no hay suficiente señal para clasificar — no crear nada todavía
@@ -676,10 +676,10 @@ async function crearCandidatoEnOdoo(tenant, contacto, numero, resultadoNivel) {
 
   try {
     const teamId = tenant?.odoo_team_id || 1;
-    const etiqueta = resultadoNivel?.etiqueta || 'Lead KAI — Exploratorio';
+    const etiqueta = resultadoNivel?.etiqueta || 'KAI — Exploratorio';
     const nivel = resultadoNivel?.nivel || 3;
 
-    const nombreLead = `${etiqueta.split(' — ')[0]} — ${contacto.nombre || 'Sin nombre'}${contacto.nombre_alumno ? ' (hijo: ' + contacto.nombre_alumno + ')' : ''}`;
+    const nombreLead = `Lead KAI — ${contacto.nombre || 'Sin nombre'}${contacto.nombre_alumno ? ' (hijo: ' + contacto.nombre_alumno + ')' : ''}`;
     const descripcion = [
       `Nivel de calor: ${etiqueta}`,
       contacto.nivel_interes ? `Nivel educativo de interés: ${contacto.nivel_interes}` : null,
@@ -722,7 +722,7 @@ async function actualizarNivelCandidatoEnOdoo(tenant, contacto, resultadoNivel) 
   try {
     const etiqueta = resultadoNivel.etiqueta;
     const tagId = await getOdooTagId(etiqueta);
-    const nuevoNombre = `${etiqueta.split(' — ')[0]} — ${contacto.nombre || 'Sin nombre'}${contacto.nombre_alumno ? ' (hijo: ' + contacto.nombre_alumno + ')' : ''}`;
+    const nuevoNombre = `Lead KAI — ${contacto.nombre || 'Sin nombre'}${contacto.nombre_alumno ? ' (hijo: ' + contacto.nombre_alumno + ')' : ''}`;
 
     await odooCallLocal('crm.lead', 'write', [[contacto.odoo_lead_id], {
       name: nuevoNombre,
@@ -751,7 +751,7 @@ async function crearCandidatoOdooSiNoExiste(tenant, numero, mensajeUsuario, hist
   }
   if (contacto.odoo_lead_id) return; // ya existe
   // El handoff inmediato siempre implica Nivel 1 — Alta Intención (pidió agendar/inscribir)
-  await crearCandidatoEnOdoo(tenant, contacto, numero, { nivel: 1, etiqueta: 'Candidato KAI — Alta Intención' });
+  await crearCandidatoEnOdoo(tenant, contacto, numero, { nivel: 1, etiqueta: 'KAI — Alta Intención' });
 }
 
 // ===== OMNICHANNEL — funciones de envío por canal =====
@@ -1301,18 +1301,20 @@ async function motorContactoProactivo() {
     const tagSinWAId = await getOdooTagId(TAG_KAI_SIN_WHATSAPP);
 
     // Leads en Odoo con teléfono que KAI aún no contactó
-    // Solo leads SIN ASIGNAR (sin vendedor) con teléfono que KAI aún no contactó
+    // Leads creados en las últimas 24 horas + con teléfono + KAI no los ha contactado + no ganados
+    const hace24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().replace('T',' ').substring(0,19);
     const leads = await odooCallLocal('crm.lead', 'search_read',
       [[
         ['type', '=', 'opportunity'],
         ['active', '=', true],
-        ['user_id', '=', false],
+        ['stage_id.is_won','=',false],  // excluir leads ganados
         ['phone', '!=', false],
         ['phone', '!=', ''],
+        ['create_date', '>=', hace24h],
         ['tag_ids', 'not in', [tagContactadoId]],
         ['tag_ids', 'not in', [tagSinWAId]],
       ]],
-      { fields: ['id', 'name', 'phone', 'partner_name', 'email_from', 'tag_ids', 'stage_id'], limit: 20 }
+      { fields: ['id', 'name', 'phone', 'partner_name', 'email_from', 'tag_ids', 'stage_id', 'user_id'], limit: 50 }
     );
 
     if (!leads || !leads.length) return;
@@ -1379,9 +1381,10 @@ async function motorContactoProactivo() {
   } catch(e) { console.error('❌ Motor proactivo:', e.message); }
 }
 
-// Primera ejecución 2 min después de arrancar, luego cada 30 min
-setTimeout(() => motorContactoProactivo(), 2 * 60 * 1000);
-setInterval(() => motorContactoProactivo(), 30 * 60 * 1000);
+// Motor proactivo DESHABILITADO hasta validación completa
+// Para activar: usar endpoint POST /api/motor/activar desde el panel
+// setTimeout(() => motorContactoProactivo(), 2 * 60 * 1000);
+// setInterval(() => motorContactoProactivo(), 30 * 60 * 1000);
 
 // POST — mensajes entrantes reales de WhatsApp
 app.post('/webhook', async (req, res) => {
@@ -2484,6 +2487,31 @@ app.get('/api/contactos/resumen', authMiddleware, async (req, res) => {
 });
 
 // Mensajes no procesados — para detectar si algo falló silenciosamente
+// ===== LIMPIAR TAGS KAI DE ODOO — para corregir etiquetado incorrecto =====
+app.post('/api/odoo/limpiar-tags-kai', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+    const { tag_id } = req.body;
+    if (!tag_id) return res.status(400).json({ ok: false, error: 'tag_id requerido' });
+
+    // Buscar todos los leads que tienen este tag
+    const leads = await odooCallLocal('crm.lead', 'search_read',
+      [[['tag_ids', 'in', [tag_id]]]],
+      { fields: ['id', 'name', 'tag_ids'], limit: 1000 }
+    ) || [];
+
+    if (!leads.length) return res.json({ ok: true, mensaje: 'No hay leads con ese tag', total: 0 });
+
+    // Quitar el tag de cada lead (comando 3 = remove)
+    const ids = leads.map(l => l.id);
+    await odooCallLocal('crm.lead', 'write', [ids, {
+      tag_ids: [[3, tag_id]] // comando 3 = quitar este tag sin tocar los demás
+    }]);
+
+    res.json({ ok: true, mensaje: `Tag eliminado de ${ids.length} leads correctamente`, total: ids.length });
+  } catch(e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 // ===== ESCÁNER DE LEADS — ver qué hay en Odoo antes de contactar =====
 app.get('/api/motor/escanear', authMiddleware, async (req, res) => {
   try {
@@ -2491,19 +2519,18 @@ app.get('/api/motor/escanear', authMiddleware, async (req, res) => {
     const tagContactadoId = await getOdooTagId(TAG_KAI_CONTACTADO);
     const tagSinWAId = await getOdooTagId(TAG_KAI_SIN_WHATSAPP);
 
-    // Leads SIN ASIGNAR pendientes de contactar (con teléfono, sin tags de KAI)
+    // Leads de las últimas 24h con teléfono que KAI no ha contactado + no ganados
+    const hace24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().replace('T',' ').substring(0,19);
     const pendientes = await odooCallLocal('crm.lead', 'search_read',
-      [[['type','=','opportunity'],['active','=',true],['user_id','=',false],
+      [[['type','=','opportunity'],['active','=',true],
+        ['stage_id.is_won','=',false],
         ['phone','!=',false],['phone','!=',''],
+        ['create_date','>=',hace24h],
         ['tag_ids','not in',[tagContactadoId]],['tag_ids','not in',[tagSinWAId]]]],
-      { fields: ['id','name','phone','partner_name','email_from','stage_id','tag_ids'], limit: 100 }
+      { fields: ['id','name','phone','partner_name','email_from','stage_id','tag_ids','user_id','create_date'], limit: 100 }
     ) || [];
 
-    // Leads ya contactados por KAI
-    const contactados = await odooCallLocal('crm.lead', 'search_read',
-      [[['type','=','opportunity'],['tag_ids','in',[tagContactadoId]]]],
-      { fields: ['id','name','phone','partner_name'], limit: 50 }
-    ) || [];
+    const contactados = [];
 
     // Leads sin WhatsApp válido
     const sinWA = await odooCallLocal('crm.lead', 'search_read',
@@ -2515,12 +2542,17 @@ app.get('/api/motor/escanear', authMiddleware, async (req, res) => {
       ok: true,
       resumen: {
         pendientes_de_contactar: pendientes.length,
-        ya_contactados_por_kai: contactados.length,
+  
         sin_whatsapp_valido: sinWA.length
       },
       pendientes: pendientes.map(l => ({
-        id: l.id, nombre: l.partner_name || l.name,
-        telefono: l.phone, etapa: l.stage_id?.[1], email: l.email_from
+        id: l.id,
+        nombre: l.partner_name || l.name,
+        telefono: l.phone,
+        etapa: l.stage_id?.[1],
+        email: l.email_from,
+        vendedor: l.user_id?.[1] || 'Sin asignar',
+        fecha_creacion: l.create_date?.substring(0,16)
       })),
       contactados: contactados.map(l => ({ id: l.id, nombre: l.partner_name || l.name, telefono: l.phone })),
       sin_whatsapp: sinWA.map(l => ({ id: l.id, nombre: l.partner_name || l.name, telefono: l.phone }))
@@ -2716,16 +2748,16 @@ app.post('/api/odoo/test-niveles-calor', authMiddleware, async (req, res) => {
   try {
     const teamId = 1;
     const niveles = [
-      { nivel: 1, etiqueta: 'Candidato KAI — Alta Intención', nombre: 'PRUEBA Nivel 1 — Familia Pérez', telefono: '50211111111' },
-      { nivel: 2, etiqueta: 'Candidato KAI — Interesado', nombre: 'PRUEBA Nivel 2 — Familia Gómez', telefono: '50222222222' },
-      { nivel: 3, etiqueta: 'Lead KAI — Exploratorio', nombre: 'PRUEBA Nivel 3 — Familia López', telefono: '50233333333' },
+      { nivel: 1, etiqueta: 'KAI — Alta Intención', nombre: 'PRUEBA Nivel 1 — Familia Pérez', telefono: '50211111111' },
+      { nivel: 2, etiqueta: 'KAI — Interesado', nombre: 'PRUEBA Nivel 2 — Familia Gómez', telefono: '50222222222' },
+      { nivel: 3, etiqueta: 'KAI — Exploratorio', nombre: 'PRUEBA Nivel 3 — Familia López', telefono: '50233333333' },
     ];
 
     const resultados = [];
     for (const n of niveles) {
       const tagId = await getOdooTagId(n.etiqueta);
       const leadId = await odooCallLocal('crm.lead', 'create', [{
-        name: `${n.etiqueta.split(' — ')[0]} — ${n.nombre}`,
+        name: `Lead KAI — ${n.nombre}`,
         phone: n.telefono,
         description: `PRUEBA — Lead de demostración del nivel de calor: ${n.etiqueta}. Puede eliminarse, fue creado para validar el sistema de etiquetas.`,
         team_id: teamId,
