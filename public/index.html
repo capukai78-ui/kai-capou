@@ -1429,9 +1429,8 @@ async function escanearLeadsNuevos(){
 
     // Tarjetas resumen
     resumenEl.innerHTML = `
-      <div class="mc"><div class="mc-lbl">Pendientes hoy</div><div class="mc-val" style="color:var(--amber)">${r.resumen.pendientes_de_contactar}</div><div class="mc-sub">con teléfono</div></div>
-      <div class="mc"><div class="mc-lbl">KAI contactó</div><div class="mc-val" style="color:var(--g)">${r.resumen.ya_contactados_por_kai}</div><div class="mc-sub">total acumulado</div></div>
-      <div class="mc"><div class="mc-lbl">Sin teléfono</div><div class="mc-val" style="color:var(--text3)">${r.resumen.sin_whatsapp_valido}</div><div class="mc-sub">equipo los contacta</div></div>`;
+      <div class="mc"><div class="mc-lbl">Pendientes hoy</div><div class="mc-val" style="color:var(--amber)">${r.resumen.pendientes_de_contactar}</div><div class="mc-sub">leads nuevos con teléfono</div></div>
+      <div class="mc"><div class="mc-lbl">Sin teléfono</div><div class="mc-val" style="color:var(--text3)">${r.resumen.sin_whatsapp_valido}</div><div class="mc-sub">seguimiento manual del equipo</div></div>`;
 
     // Tabla pendientes con teléfono
     if(!r.pendientes?.length){
