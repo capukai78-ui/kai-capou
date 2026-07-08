@@ -133,8 +133,8 @@ const documentoSchema = new mongoose.Schema({
 const imagenMarketingSchema = new mongoose.Schema({
   tenant_id:   { type: mongoose.Schema.Types.ObjectId, ref: 'Tenant' },
   nombre:      { type: String, required: true }, // ej: "Fachada principal", "Laboratorio de ciencias"
-  categoria:   { type: String, enum: ['instalaciones','aulas','deportes','academia_aha','eventos','open_house','graduacion','general'], default: 'general' },
-  nivel_educativo: { type: String, enum: ['Jardín','Preprimaria','Kínder','Primaria','Básico','Bachillerato','Todos'], default: 'Todos' },
+  categoria:   { type: String, enum: ['cuotas','admision','programas','info_general','academia_aha','instalaciones','aulas','deportes','eventos','open_house','graduacion','general'], default: 'general' },
+  nivel_educativo: { type: String, enum: ['Jardín','Preprimaria','Kínder','Primaria','Básico','Secundaria','Bachillerato','Todos'], default: 'Todos' },
   imagen_base64: { type: String, required: true }, // imagen codificada, se sube vía panel
   mime_type:   { type: String, default: 'image/jpeg' },
   subida_por:  { type: mongoose.Schema.Types.ObjectId, ref: 'UsuarioPanel' },
