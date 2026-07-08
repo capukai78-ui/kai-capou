@@ -369,6 +369,7 @@ tr:hover td{background:var(--g4)}
             <div id="cl-resumen-kai" style="display:none;margin-top:10px;background:var(--g4);border:1px solid var(--border2);border-radius:8px;padding:10px 12px;font-size:11px;color:var(--text2);line-height:1.5">
               <span style="font-weight:600;color:var(--g)">📋 Resumen de KAI:</span> <span id="cl-resumen-kai-texto"></span>
             </div>
+            <div id="cl-contacto-info" style="margin-top:10px"></div>
           </div>
           <div id="cl-mensajes" style="flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:10px">
             <div style="text-align:center;color:var(--text3);margin-top:40px;font-size:13px">Selecciona una conversación de la lista</div>
@@ -1098,6 +1099,50 @@ async function abrirChat(id){
       </div>`;
     }).join('');
     mensajesEl.scrollTop = mensajesEl.scrollHeight;
+
+    // Mostrar datos del contacto e imágenes sugeridas según su nivel
+    const contacto = r.contacto;
+    const imgs = r.imagenes_sugeridas || [];
+
+    // Actualizar nombre con datos reales del contacto
+    if(contacto?.nombre) document.getElementById('cl-chat-nombre').textContent = contacto.nombre;
+
+    // Panel de contexto del contacto
+    let infoHtml = '';
+    if(contacto) {
+      const datos = [
+        contacto.nombre_alumno ? `👦 Alumno: ${contacto.nombre_alumno}` : null,
+        contacto.nivel_interes ? `📚 Nivel: ${contacto.nivel_interes}` : null,
+        contacto.zona ? `📍 Zona: ${contacto.zona}` : null,
+        contacto.colegio_actual ? `🏫 Colegio actual: ${contacto.colegio_actual}` : null,
+        contacto.correo ? `📧 ${contacto.correo}` : null,
+      ].filter(Boolean);
+      if(datos.length) {
+        infoHtml = `<div style="background:var(--bg3);border-radius:10px;padding:10px 14px;margin-bottom:10px;font-size:11px;color:var(--text3)">
+          <div style="font-weight:600;color:var(--text2);margin-bottom:6px">Datos del padre/madre</div>
+          ${datos.map(d=>`<div>${d}</div>`).join('')}
+        </div>`;
+      }
+    }
+
+    // Imágenes sugeridas para este nivel
+    let imgsHtml = '';
+    if(imgs.length) {
+      imgsHtml = `<div style="background:var(--bg3);border-radius:10px;padding:10px 14px;margin-bottom:10px">
+        <div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:8px">🖼️ Imágenes sugeridas para ${contacto?.nivel_interes||'este nivel'}</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          ${imgs.map(img=>`
+            <div onclick="seleccionarImagenChat('${img._id}')" style="cursor:pointer;text-align:center;width:70px">
+              <div style="width:70px;height:60px;background:var(--bg2);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:20px;border:1px solid var(--border)">🖼️</div>
+              <div style="font-size:9px;color:var(--text3);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${img.nombre}</div>
+            </div>`).join('')}
+        </div>
+      </div>`;
+    }
+
+    // Insertar info antes del área de input si existe un contenedor
+    const infoEl = document.getElementById('cl-contacto-info');
+    if(infoEl) infoEl.innerHTML = infoHtml + imgsHtml;
 
     // Refrescar lista para marcar el seleccionado
     const rl = await fetch(API+'/api/conversaciones',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
