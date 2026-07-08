@@ -851,6 +851,87 @@ async function procesarMensajeOmnichannel(numero, nombre, mensaje, canal, tenant
   }
 }
 
+// ===== ENVÍO AUTOMÁTICO DE IMÁGENES SEGÚN CONTEXTO =====
+// Detecta qué imagen es relevante para el mensaje del padre y la envía después de la respuesta de texto.
+// Solo envía UNA imagen por mensaje para no saturar. Espera 1.5s después del texto para que se vea ordenado.
+
+const REGLAS_IMAGEN = [
+  // ── CUOTAS — nombres genéricos sin año, se actualizan desde el panel ──
+  { keywords: ['cuota','colegiatura','mensualidad','precio','costo','cuánto cuesta','cuanto cuesta','cuánto es','cuanto es'], nivel: ['preprimaria','jardín','jardin','infantil','kínder','kinder','párvulos','parvulos','preparatoria'], categoria: 'cuotas', nombre_contiene: 'Preprimaria' },
+  { keywords: ['cuota','colegiatura','mensualidad','precio','costo','cuánto cuesta','cuanto cuesta','cuánto es','cuanto es'], nivel: ['primaria','primero','segundo','tercero','cuarto','quinto','sexto','1°','2°','3°','4°','5°','6°'], categoria: 'cuotas', nombre_contiene: 'Primaria' },
+  { keywords: ['cuota','colegiatura','mensualidad','precio','costo','cuánto cuesta','cuanto cuesta','cuánto es','cuanto es'], nivel: ['secundaria','básico','basico','bachillerato','séptimo','octavo','noveno','décimo','7°','8°','9°','10°'], categoria: 'cuotas', nombre_contiene: 'Secundaria' },
+
+  // ── PROCESO DE ADMISIÓN ──
+  { keywords: ['proceso','admisión','admision','inscribir','inscripción','inscripcion','cómo aplico','como aplico','cómo ingreso','como ingreso'], nivel: ['jardín','jardin','infantil','kínder','kinder'], categoria: 'admision', nombre_contiene: 'Jardín' },
+  { keywords: ['proceso','admisión','admision','inscribir','inscripción','inscripcion','cómo aplico','como aplico'], nivel: ['párvulos','parvulos','preparatoria'], categoria: 'admision', nombre_contiene: 'Párvulos' },
+  { keywords: ['proceso','admisión','admision','inscribir','inscripción','inscripcion','cómo aplico','como aplico'], nivel: ['primaria','secundaria','básico','basico','bachillerato'], categoria: 'admision', nombre_contiene: 'Primaria y Secundaria' },
+
+  // ── PAPELERÍA Y REQUISITOS ──
+  { keywords: ['papelería','papeleria','documentos','qué necesito','que necesito','qué piden','que piden','qué documentos','que documentos'], nivel: [], categoria: 'admision', nombre_contiene: 'Papelería' },
+  { keywords: ['requisito','nota mínima','nota minima','promedio','calificacion','calificación','aprobado','punteo'], nivel: [], categoria: 'admision', nombre_contiene: 'Requisitos' },
+
+  // ── EDADES ──
+  { keywords: ['edad','años tiene','cuántos años','cuantos años','a qué edad','a que edad','qué edad','que edad','tiene que tener'], nivel: [], categoria: 'admision', nombre_contiene: 'Edades' },
+
+  // ── HORARIOS ──
+  { keywords: ['horario','hora','a qué hora','a que hora','cuándo entra','cuando entra','cuándo sale','cuando sale','qué hora'], nivel: [], categoria: 'info_general', nombre_contiene: 'Horario' },
+
+  // ── PROGRAMAS ACADÉMICOS ──
+  { keywords: ['cómo es','como es','qué enseñan','que enseñan','metodología','metodologia','programa','plan de estudios','cómo trabajan','como trabajan'], nivel: ['preprimaria','jardín','jardin','infantil','kínder','kinder','párvulos','parvulos'], categoria: 'programas', nombre_contiene: 'Preprimaria' },
+  { keywords: ['cómo es','como es','qué enseñan','que enseñan','metodología','metodologia','programa'], nivel: ['primaria','1°','2°','3°','4°','5°','6°'], categoria: 'programas', nombre_contiene: 'Primaria' },
+  { keywords: ['cómo es','como es','qué enseñan','que enseñan','metodología','metodologia','programa'], nivel: ['secundaria','básico','basico'], categoria: 'programas', nombre_contiene: 'Secundaria' },
+  { keywords: ['bachillerato','carrera','ciencias y letras','qué bachillerato','que bachillerato'], nivel: [], categoria: 'programas', nombre_contiene: 'Bachillerato' },
+
+  // ── UBICACIÓN ──
+  { keywords: ['dónde están','donde estan','dirección','direccion','ubicación','ubicacion','cómo llego','como llego','zona 11','mapa','dónde queda','donde queda'], nivel: [], categoria: 'info_general', nombre_contiene: 'Ubicación' },
+
+  // ── ACADEMIA AHA ──
+  { keywords: ['extraescolar','extracurricular','academia','aha','natación','natacion','danza','teatro','guitarra','piano','ajedrez','arte','actividad fuera','actividades después','actividades despues'], nivel: [], categoria: 'academia_aha', nombre_contiene: 'Academia AHA' },
+];
+
+async function detectarYEnviarImagen(tenant, mensajeUsuario, contacto, canal, numeroOrigen, idExterno) {
+  try {
+    const t = mensajeUsuario.toLowerCase();
+    const nivelContacto = (contacto?.nivel_interes || '').toLowerCase();
+
+    for (const regla of REGLAS_IMAGEN) {
+      // Verificar si el mensaje contiene alguna keyword de la regla
+      const tieneKeyword = regla.keywords.some(k => t.includes(k));
+      if (!tieneKeyword) continue;
+
+      // Verificar nivel — si la regla tiene niveles específicos, al menos uno debe coincidir
+      // con el mensaje actual O con el nivel de interés ya registrado del contacto
+      if (regla.nivel && regla.nivel.length > 0) {
+        const textoCompleto = t + ' ' + nivelContacto;
+        const coincideNivel = regla.nivel.some(n => textoCompleto.includes(n));
+        if (!coincideNivel) continue;
+      }
+
+      // Buscar imagen en MongoDB según la regla
+      const filtro = { tenant_id: tenant._id, activo: true, categoria: regla.categoria };
+      if (regla.nivel_educativo) filtro.nivel_educativo = { $in: [regla.nivel_educativo, 'Todos'] };
+      if (regla.nombre_contiene) filtro.nombre = new RegExp(regla.nombre_contiene, 'i');
+
+      const imagen = await ImagenMarketing.findOne(filtro);
+      if (!imagen) continue;
+
+      // Esperar 1.5s para que el texto llegue primero
+      await new Promise(r => setTimeout(r, 1500));
+
+      // Enviar según canal
+      if (canal === 'whatsapp') {
+        await enviarImagenDesdeDB(imagen, numeroOrigen, '');
+      }
+      // Instagram y Messenger en modo lectura — no enviamos imágenes todavía
+
+      console.log(`🖼️ Imagen automática enviada: "${imagen.nombre}" → ${numeroOrigen}`);
+      return; // Solo una imagen por mensaje
+    }
+  } catch (e) {
+    console.error('❌ Error enviando imagen automática:', e.message);
+  }
+}
+
 async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
   // ===== VERIFICAR SI YA HAY HANDOFF ACTIVO =====
   const convActiva = await Conversacion.findOne({ tenant_id: tenant._id, numero: numeroOrigen, estado: { $in: ['humano', 'esperando_agente'] } });
@@ -1204,6 +1285,102 @@ async function actualizarSegmentosReactivacion() {
 setTimeout(actualizarSegmentosReactivacion, 30 * 1000); // esperar 30s a que MongoDB esté listo
 setInterval(actualizarSegmentosReactivacion, 24 * 60 * 60 * 1000);
 
+// ===== MOTOR DE CONTACTO PROACTIVO — KAI revisa Odoo y contacta leads nuevos por WhatsApp =====
+// Corre cada 30 minutos. Busca leads en Odoo que tienen teléfono pero KAI nunca contactó.
+// Los contacta por WhatsApp, captura respuesta en flujo normal, asigna a Cindy o Vanessa.
+
+const TAG_KAI_CONTACTADO = 'KAI — Contactado';
+const TAG_KAI_SIN_WHATSAPP = 'KAI — Sin WhatsApp';
+
+async function motorContactoProactivo() {
+  try {
+    const tenant = await Tenant.findOne({ activo: true });
+    if (!tenant) return;
+
+    const tagContactadoId = await getOdooTagId(TAG_KAI_CONTACTADO);
+    const tagSinWAId = await getOdooTagId(TAG_KAI_SIN_WHATSAPP);
+
+    // Leads en Odoo con teléfono que KAI aún no contactó
+    const leads = await odooCallLocal('crm.lead', 'search_read',
+      [[
+        ['type', '=', 'opportunity'],
+        ['active', '=', true],
+        ['phone', '!=', false],
+        ['phone', '!=', ''],
+        ['tag_ids', 'not in', [tagContactadoId]],
+        ['tag_ids', 'not in', [tagSinWAId]],
+      ]],
+      { fields: ['id', 'name', 'phone', 'partner_name', 'email_from', 'tag_ids', 'stage_id'], limit: 20 }
+    );
+
+    if (!leads || !leads.length) return;
+    console.log(`📡 Motor proactivo: ${leads.length} lead(s) para contactar`);
+
+    for (const lead of leads) {
+      try {
+        let telefono = String(lead.phone || '').replace(/\D/g, '');
+        if (telefono.length === 8) telefono = '502' + telefono;
+        if (telefono.length < 10) {
+          await odooCallLocal('crm.lead', 'write', [[lead.id], { tag_ids: [[4, tagSinWAId]] }]);
+          continue;
+        }
+
+        // Crear o vincular contacto en MongoDB
+        let contacto = await Contacto.findOne({ tenant_id: tenant._id, numero: telefono });
+        if (!contacto) {
+          contacto = await Contacto.create({
+            tenant_id: tenant._id, numero: telefono,
+            nombre: lead.partner_name || null, correo: lead.email_from || null,
+            canal_origen: 'lead_ads', odoo_lead_id: lead.id,
+            ultimo_contacto: new Date(), primer_contacto: new Date(), total_conversaciones: 0
+          });
+        } else if (!contacto.odoo_lead_id) {
+          contacto.odoo_lead_id = lead.id;
+          await contacto.save();
+        }
+
+        // Mensaje de primer contacto personalizado
+        const nombre = lead.partner_name ? lead.partner_name.split(' ')[0] : null;
+        const saludo = nombre ? `Hola ${nombre}` : 'Hola';
+        const mensaje = `${saludo} 👋 Te escribimos del *Colegio Capouilliez*.\n\nRecibimos tu información y queremos ayudarte con el proceso de admisiones 🏫\n\n¿Para qué nivel educativo estás buscando información?\n\n1️⃣ Preprimaria (2-6 años)\n2️⃣ Primaria (7-12 años)\n3️⃣ Secundaria (13-16 años)`;
+
+        const resultado = await enviarWhatsAppMeta(telefono, mensaje);
+
+        if (resultado?.messages?.length) {
+          // Marcar como contactado en Odoo
+          await odooCallLocal('crm.lead', 'write', [[lead.id], { tag_ids: [[4, tagContactadoId]] }]);
+          await odooCallLocal('crm.lead', 'message_post', [[lead.id]], {
+            body: `📱 KAI contactó por WhatsApp (${telefono}) con mensaje de bienvenida. Esperando respuesta.`
+          }).catch(() => {});
+
+          // Asignar asesora con menos carga
+          const agentes = await UsuarioPanel.find({ tenant_id: tenant._id, role: 'vendedor', activo: true });
+          if (agentes.length) {
+            let menorCarga = agentes[0], menorCount = Infinity;
+            for (const a of agentes) {
+              const c = await Conversacion.countDocuments({ tenant_id: tenant._id, agente_id: a._id, estado: { $in: ['humano','esperando_agente'] } });
+              if (c < menorCount) { menorCount = c; menorCarga = a; }
+            }
+            if (menorCarga.odoo_user_id) {
+              await odooCallLocal('crm.lead', 'write', [[lead.id], { user_id: menorCarga.odoo_user_id }]).catch(() => {});
+            }
+          }
+
+          console.log(`✅ KAI contactó lead #${lead.id} (${nombre || telefono})`);
+          await new Promise(r => setTimeout(r, 3000));
+        } else {
+          await odooCallLocal('crm.lead', 'write', [[lead.id], { tag_ids: [[4, tagSinWAId]] }]);
+          console.log(`⚠️ Sin WhatsApp válido — lead #${lead.id} (${telefono})`);
+        }
+      } catch(e) { console.error(`❌ Lead #${lead.id}:`, e.message); }
+    }
+  } catch(e) { console.error('❌ Motor proactivo:', e.message); }
+}
+
+// Primera ejecución 2 min después de arrancar, luego cada 30 min
+setTimeout(() => motorContactoProactivo(), 2 * 60 * 1000);
+setInterval(() => motorContactoProactivo(), 30 * 60 * 1000);
+
 // POST — mensajes entrantes reales de WhatsApp
 app.post('/webhook', async (req, res) => {
   res.sendStatus(200); // responder rápido a Meta, procesar después
@@ -1361,6 +1538,10 @@ app.post('/webhook', async (req, res) => {
     await enviarRespuesta(numeroOrigen, respuesta);
     console.log(`✅ [${canal.toUpperCase()}] Respuesta enviada a ${numeroOrigen}`);
 
+    // Enviar imagen automática si el contexto lo amerita (sin await — no bloquea el flujo)
+    const contactoActual = await Contacto.findOne({ tenant_id: tenant._id, numero: numeroOrigen }).catch(()=>null);
+    detectarYEnviarImagen(tenant, mensajeUsuario, contactoActual, canal, numeroOrigen, idExterno).catch(()=>{});
+
   } catch (err) {
     console.error('❌ WEBHOOK error:', err);
     // Si teníamos un logEntry pendiente, marcarlo con el error para que no se pierda el rastro
@@ -1404,7 +1585,7 @@ app.post('/bolt', async (req, res) => {
     const palabrasInteres = ['precio','costo','quiero','necesito','demo','contratar','interesa','bot','automatizar'];
     if (palabrasInteres.some(p => ultimoMensaje.toLowerCase().includes(p)) && messages.length >= 2) {
       await Lead.create({ interes: ultimoMensaje, telefono: telefonoFinal }).catch(() => {});
-      await procesarMensajeWhatsApp(telefonoFinal, 'Visitante Web', ultimoMensaje, 1, 'Botly Web').catch(() => {});
+      await procesarMensajeWhatsApp(telefonoFinal, 'Visitante Web', ultimoMensaje, 1, 'KAI Web').catch(() => {});
     }
     const reply = await llamarClaude(system, messages, 800);
     res.json({ content: [{ type: 'text', text: reply || 'Error.' }] });
@@ -1981,6 +2162,34 @@ app.get('/api/odoo/usuarios', authMiddleware, async (req, res) => {
 // ===== IMÁGENES DE MARKETING — gestión y envío =====
 
 // Subir una imagen nueva (base64 enviado desde el panel)
+// Carga masiva de imágenes — solo admin — recibe array de imágenes
+app.post('/api/imagenes/bulk', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ ok: false, error: 'Solo admin' });
+    const { imagenes } = req.body;
+    if (!Array.isArray(imagenes) || !imagenes.length) return res.status(400).json({ ok: false, error: 'Array de imágenes requerido' });
+
+    const resultados = [];
+    for (const img of imagenes) {
+      // Verificar si ya existe una imagen con ese nombre para no duplicar
+      const existe = await ImagenMarketing.findOne({ tenant_id: req.user.tenant_id, nombre: img.nombre });
+      if (existe) { resultados.push({ nombre: img.nombre, status: 'ya existe' }); continue; }
+      await ImagenMarketing.create({
+        tenant_id: req.user.tenant_id,
+        nombre: img.nombre,
+        categoria: img.categoria || 'general',
+        nivel_educativo: img.nivel_educativo || 'Todos',
+        imagen_base64: img.imagen_base64,
+        mime_type: img.mime_type || 'image/jpeg',
+        subida_por_nombre: 'Admin — carga masiva'
+      });
+      resultados.push({ nombre: img.nombre, status: 'creada' });
+    }
+    const creadas = resultados.filter(r => r.status === 'creada').length;
+    res.json({ ok: true, mensaje: `${creadas} imágenes subidas, ${resultados.length - creadas} ya existían`, resultados });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 app.post('/api/imagenes', authMiddleware, async (req, res) => {
   try {
     if (!['admin', 'vendedor'].includes(req.user.role)) return res.status(403).json({ ok: false, error: 'Sin permisos' });
@@ -2273,6 +2482,82 @@ app.get('/api/contactos/resumen', authMiddleware, async (req, res) => {
 });
 
 // Mensajes no procesados — para detectar si algo falló silenciosamente
+// ===== ESCÁNER DE LEADS — ver qué hay en Odoo antes de contactar =====
+app.get('/api/motor/escanear', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+    const tagContactadoId = await getOdooTagId(TAG_KAI_CONTACTADO);
+    const tagSinWAId = await getOdooTagId(TAG_KAI_SIN_WHATSAPP);
+
+    // Leads pendientes de contactar (con teléfono, sin tags de KAI)
+    const pendientes = await odooCallLocal('crm.lead', 'search_read',
+      [[['type','=','opportunity'],['active','=',true],['phone','!=',false],['phone','!=',''],
+        ['tag_ids','not in',[tagContactadoId]],['tag_ids','not in',[tagSinWAId]]]],
+      { fields: ['id','name','phone','partner_name','email_from','stage_id','tag_ids'], limit: 100 }
+    ) || [];
+
+    // Leads ya contactados por KAI
+    const contactados = await odooCallLocal('crm.lead', 'search_read',
+      [[['type','=','opportunity'],['tag_ids','in',[tagContactadoId]]]],
+      { fields: ['id','name','phone','partner_name'], limit: 50 }
+    ) || [];
+
+    // Leads sin WhatsApp válido
+    const sinWA = await odooCallLocal('crm.lead', 'search_read',
+      [[['type','=','opportunity'],['tag_ids','in',[tagSinWAId]]]],
+      { fields: ['id','name','phone','partner_name'], limit: 50 }
+    ) || [];
+
+    res.json({
+      ok: true,
+      resumen: {
+        pendientes_de_contactar: pendientes.length,
+        ya_contactados_por_kai: contactados.length,
+        sin_whatsapp_valido: sinWA.length
+      },
+      pendientes: pendientes.map(l => ({
+        id: l.id, nombre: l.partner_name || l.name,
+        telefono: l.phone, etapa: l.stage_id?.[1], email: l.email_from
+      })),
+      contactados: contactados.map(l => ({ id: l.id, nombre: l.partner_name || l.name, telefono: l.phone })),
+      sin_whatsapp: sinWA.map(l => ({ id: l.id, nombre: l.partner_name || l.name, telefono: l.phone }))
+    });
+  } catch(e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// ===== PRUEBA DEL MOTOR — enviar a UN número específico sin tocar leads reales =====
+app.post('/api/motor/prueba', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+    const { telefono, nombre } = req.body;
+    if (!telefono) return res.status(400).json({ ok: false, error: 'Teléfono requerido' });
+
+    const telefonoLimpio = String(telefono).replace(/\D/g,'');
+    const tel = telefonoLimpio.length === 8 ? '502' + telefonoLimpio : telefonoLimpio;
+    const primerNombre = nombre ? nombre.split(' ')[0] : null;
+    const saludo = primerNombre ? `Hola ${primerNombre}` : 'Hola';
+
+    const mensaje = `${saludo} 👋 Te escribimos del *Colegio Capouilliez*.\n\nRecibimos tu información y queremos ayudarte con el proceso de admisiones 🏫\n\n¿Para qué nivel educativo estás buscando información?\n\n1️⃣ Preprimaria (2-6 años)\n2️⃣ Primaria (7-12 años)\n3️⃣ Secundaria (13-16 años)`;
+
+    const resultado = await enviarWhatsAppMeta(tel, mensaje);
+
+    if (resultado?.messages?.length) {
+      res.json({ ok: true, mensaje: `✅ Mensaje enviado a ${tel}`, whatsapp_id: resultado.messages[0].id });
+    } else {
+      res.json({ ok: false, error: 'Meta no confirmó el envío', detalle: resultado });
+    }
+  } catch(e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// ===== ACTIVAR MOTOR MANUALMENTE — sin esperar los 30 min =====
+app.post('/api/motor/activar', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+    res.json({ ok: true, mensaje: 'Motor de contacto proactivo iniciado — revisa los logs de Railway' });
+    motorContactoProactivo(); // corre en segundo plano
+  } catch(e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/logs/no-procesados', authMiddleware, async (req, res) => {
   try {
     if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
@@ -2455,7 +2740,42 @@ app.post('/api/odoo/test-niveles-calor', authMiddleware, async (req, res) => {
 
 app.get('/', (req, res) => res.sendFile('index.html', { root: 'public' }));
 
+// ===== SEED DE IMÁGENES AL INICIAR =====
+// Carga las imágenes del colegio en MongoDB si no existen todavía.
+// Los admin/vendedores pueden agregar, modificar o eliminar imágenes desde el panel.
+async function seedImagenes() {
+  try {
+    const tenant = await Tenant.findOne({ activo: true });
+    if (!tenant) return;
+
+    let IMAGENES_SEED;
+    try { IMAGENES_SEED = require('./imagenes_seed.js'); } catch(e) { return; } // archivo opcional
+
+    let nuevas = 0;
+    for (const img of IMAGENES_SEED) {
+      const existe = await ImagenMarketing.findOne({ tenant_id: tenant._id, nombre: img.nombre });
+      if (existe) continue;
+      await ImagenMarketing.create({
+        tenant_id: tenant._id,
+        nombre: img.nombre,
+        categoria: img.categoria,
+        nivel_educativo: img.nivel_educativo,
+        imagen_base64: img.imagen_base64,
+        mime_type: img.mime_type || 'image/jpeg',
+        subida_por_nombre: 'Sistema — carga inicial'
+      });
+      nuevas++;
+    }
+    if (nuevas > 0) console.log(`🖼️ ${nuevas} imágenes del colegio cargadas en el banco de imágenes`);
+    else console.log(`🖼️ Banco de imágenes: ${IMAGENES_SEED.length} imágenes ya cargadas`);
+  } catch(e) {
+    console.error('❌ Error en seed de imágenes:', e.message);
+  }
+}
+
 app.listen(PORT, () => {
-  console.log(`✅ Botly corriendo en puerto ${PORT}`);
+  console.log(`✅ KAI — Colegio Capouilliez corriendo en puerto ${PORT}`);
   console.log(`📊 Planes: Básico(${PLANES.basico.mensajes_mes}msg/${PLANES.basico.max_usuarios}usr) | Profesional(${PLANES.profesional.mensajes_mes}msg/${PLANES.profesional.max_usuarios}usr) | Empresarial(${PLANES.empresarial.mensajes_mes}msg/${PLANES.empresarial.max_usuarios}usr)`);
+  // Cargar imágenes del colegio en MongoDB al iniciar (si no existen)
+  setTimeout(seedImagenes, 5000); // esperar 5s a que MongoDB esté listo
 });
