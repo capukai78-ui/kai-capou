@@ -2544,13 +2544,15 @@ app.get('/api/motor/escanear', authMiddleware, async (req, res) => {
     const tagContactadoId = await getOdooTagId(TAG_KAI_CONTACTADO);
     const tagSinWAId = await getOdooTagId(TAG_KAI_SIN_WHATSAPP);
 
-    // Leads SIN ASIGNAR — igual que la vista "Sin asignar" en Odoo
+    // Leads SIN ASIGNAR de los últimos 30 días — igual que vista "Sin asignar" en Odoo
+    const hace30d = new Date(Date.now() - 30*24*60*60*1000).toISOString().replace('T',' ').substring(0,19);
     const pendientes = await odooCallLocal('crm.lead', 'search_read',
       [[
         ['active', '=', true],
         ['user_id', '=', false],
+        ['create_date', '>=', hace30d],
       ]],
-      { fields: ['id','name','phone','partner_name','email_from','stage_id','tag_ids','user_id','create_date','type','team_id'], limit: 200 }
+      { fields: ['id','name','phone','mobile','partner_name','email_from','stage_id','tag_ids','user_id','create_date','type','team_id','fb_form_id','x_studio_comentarios','x_studio_notas_1'], limit: 200 }
     ) || [];
 
     const contactados = [];
@@ -2571,10 +2573,14 @@ app.get('/api/motor/escanear', authMiddleware, async (req, res) => {
       pendientes: pendientes.map(l => ({
         id: l.id,
         nombre: l.name,
-        telefono: (l.phone && String(l.phone) !== 'false') ? l.phone : null,
+        contacto: l.partner_name || null,
+        telefono: (l.mobile && String(l.mobile) !== 'false') ? l.mobile : ((l.phone && String(l.phone) !== 'false') ? l.phone : null),
         email: l.email_from || null,
-        etapa: l.stage_id?.[1] || '—',
+        nivel: l.x_studio_comentarios || null,
+        zona: l.x_studio_notas_1 || null,
+        formulario: l.fb_form_id?.[1] || null,
         equipo: l.team_id?.[1] || null,
+        tipo: l.type || null,
         fecha_creacion: l.create_date?.substring(0,16)
       })),
       contactados: contactados.map(l => ({ id: l.id, nombre: l.partner_name || l.name, telefono: l.phone })),
