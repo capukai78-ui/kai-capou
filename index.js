@@ -2552,7 +2552,7 @@ app.get('/api/motor/escanear', authMiddleware, async (req, res) => {
         ['user_id', '=', false],
         ['create_date', '>=', hace30d],
       ]],
-      { fields: ['id','name','phone','mobile','partner_name','email_from','stage_id','tag_ids','user_id','create_date','type','team_id','fb_form_id','x_studio_comentarios','x_studio_notas_1'], limit: 200 }
+      { fields: ['id','name','phone','mobile','partner_name','contact_name','email_from','stage_id','tag_ids','user_id','create_date','type','team_id','fb_form_id','x_studio_comentarios','x_studio_notas_1'], limit: 200 }
     ) || [];
 
     const contactados = [];
@@ -2573,7 +2573,7 @@ app.get('/api/motor/escanear', authMiddleware, async (req, res) => {
       pendientes: pendientes.map(l => ({
         id: l.id,
         nombre: l.name,
-        contacto: l.partner_name || null,
+        contacto: l.partner_name || l.contact_name || null,
         telefono: (l.mobile && String(l.mobile) !== 'false') ? l.mobile : ((l.phone && String(l.phone) !== 'false') ? l.phone : null),
         email: l.email_from || null,
         nivel: l.x_studio_comentarios || null,
