@@ -2744,32 +2744,41 @@ app.get('/', (req, res) => res.sendFile('index.html', { root: 'public' }));
 // Carga las imágenes del colegio en MongoDB si no existen todavía.
 // Los admin/vendedores pueden agregar, modificar o eliminar imágenes desde el panel.
 async function seedImagenes() {
+  // Envuelto en try/catch total — nunca debe crashear el servidor
   try {
     const tenant = await Tenant.findOne({ activo: true });
     if (!tenant) return;
 
     let IMAGENES_SEED;
-    try { IMAGENES_SEED = require('./imagenes_seed.js'); } catch(e) { return; } // archivo opcional
+    try { IMAGENES_SEED = require('./imagenes_seed.js'); }
+    catch(e) { console.log('ℹ️ imagenes_seed.js no encontrado — omitiendo'); return; }
+
+    if (!Array.isArray(IMAGENES_SEED) || !IMAGENES_SEED.length) return;
 
     let nuevas = 0;
     for (const img of IMAGENES_SEED) {
-      const existe = await ImagenMarketing.findOne({ tenant_id: tenant._id, nombre: img.nombre });
-      if (existe) continue;
-      await ImagenMarketing.create({
-        tenant_id: tenant._id,
-        nombre: img.nombre,
-        categoria: img.categoria,
-        nivel_educativo: img.nivel_educativo,
-        imagen_base64: img.imagen_base64,
-        mime_type: img.mime_type || 'image/jpeg',
-        subida_por_nombre: 'Sistema — carga inicial'
-      });
-      nuevas++;
+      try {
+        const existe = await ImagenMarketing.findOne({ tenant_id: tenant._id, nombre: img.nombre });
+        if (existe) continue;
+        await ImagenMarketing.create({
+          tenant_id: tenant._id,
+          nombre: img.nombre,
+          categoria: img.categoria || 'general',
+          nivel_educativo: img.nivel_educativo || 'Todos',
+          imagen_base64: img.imagen_base64,
+          mime_type: img.mime_type || 'image/jpeg',
+          subida_por_nombre: 'Sistema — carga inicial'
+        });
+        nuevas++;
+      } catch(imgErr) {
+        console.error(`⚠️ No se pudo cargar imagen "${img.nombre}":`, imgErr.message);
+      }
     }
-    if (nuevas > 0) console.log(`🖼️ ${nuevas} imágenes del colegio cargadas en el banco de imágenes`);
-    else console.log(`🖼️ Banco de imágenes: ${IMAGENES_SEED.length} imágenes ya cargadas`);
+    console.log(nuevas > 0
+      ? `🖼️ ${nuevas} imágenes cargadas en el banco`
+      : `🖼️ Banco OK — ${IMAGENES_SEED.length} imágenes ya estaban cargadas`);
   } catch(e) {
-    console.error('❌ Error en seed de imágenes:', e.message);
+    console.error('⚠️ Seed imágenes (no crítico):', e.message);
   }
 }
 
