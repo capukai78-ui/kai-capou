@@ -1464,7 +1464,7 @@ async function escanearLeadsNuevos(){
               </td>
               <td style="padding:10px 12px;font-size:11px">
                 ${l.nivel?`<div style="color:var(--g)">${l.nivel}</div>`:''}
-                ${l.zona?`<div style="color:var(--text3);margin-top:2px">📍 ${l.zona}</div>`:''}
+                ${l.zona&&!l.zona.startsWith('http')?`<div style="color:var(--text3);margin-top:2px">📍 ${l.zona}</div>`:''}
                 ${!l.nivel&&!l.zona?'<span style="color:var(--text3)">—</span>':''}
               </td>
               <td style="padding:10px 12px;font-size:11px;color:var(--text3)">${l.formulario||l.equipo||'—'}</td>
