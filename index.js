@@ -1301,20 +1301,14 @@ async function motorContactoProactivo() {
     const tagSinWAId = await getOdooTagId(TAG_KAI_SIN_WHATSAPP);
 
     // Leads en Odoo con teléfono que KAI aún no contactó
-    // Leads creados en las últimas 24 horas + con teléfono + KAI no los ha contactado + no ganados
-    const hace24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().replace('T',' ').substring(0,19);
+    // Leads SIN ASIGNAR — igual que la vista "Sin asignar" en Odoo
     const leads = await odooCallLocal('crm.lead', 'search_read',
       [[
         ['type', '=', 'opportunity'],
         ['active', '=', true],
-        ['stage_id.is_won','=',false],  // excluir leads ganados
-        ['phone', '!=', false],
-        ['phone', '!=', ''],
-        ['create_date', '>=', hace24h],
-        ['tag_ids', 'not in', [tagContactadoId]],
-        ['tag_ids', 'not in', [tagSinWAId]],
+        ['user_id', '=', false],
       ]],
-      { fields: ['id', 'name', 'phone', 'partner_name', 'email_from', 'tag_ids', 'stage_id', 'user_id'], limit: 50 }
+      { fields: ['id', 'name', 'phone', 'partner_name', 'email_from', 'tag_ids', 'stage_id', 'user_id', 'create_date'], limit: 100 }
     );
 
     if (!leads || !leads.length) return;
@@ -2519,14 +2513,13 @@ app.get('/api/motor/escanear', authMiddleware, async (req, res) => {
     const tagContactadoId = await getOdooTagId(TAG_KAI_CONTACTADO);
     const tagSinWAId = await getOdooTagId(TAG_KAI_SIN_WHATSAPP);
 
-    // Leads de las últimas 24h con teléfono que KAI no ha contactado + no ganados
-    const hace24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().replace('T',' ').substring(0,19);
+    // Leads SIN ASIGNAR — igual que la vista "Sin asignar" en Odoo
     const pendientes = await odooCallLocal('crm.lead', 'search_read',
-      [[['type','=','opportunity'],['active','=',true],
-        ['stage_id.is_won','=',false],
-        ['phone','!=',false],['phone','!=',''],
-        ['create_date','>=',hace24h],
-        ['tag_ids','not in',[tagContactadoId]],['tag_ids','not in',[tagSinWAId]]]],
+      [[
+        ['type', '=', 'opportunity'],
+        ['active', '=', true],
+        ['user_id', '=', false],
+      ]],
       { fields: ['id','name','phone','partner_name','email_from','stage_id','tag_ids','user_id','create_date'], limit: 100 }
     ) || [];
 
