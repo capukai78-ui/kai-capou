@@ -617,43 +617,119 @@ tr:hover td{background:var(--g4)}
 
     <!-- DOCUMENTOS -->
     <div id="p-docs" class="page">
-      <div class="ph"><div><div class="ph-title">Documentos</div><div class="ph-sub">Sube información para que la IA responda con precisión</div></div></div>
-      <div class="fc" style="margin-bottom:16px">
-        <div class="ft">📎 Subir documento</div>
-        <div class="frow">
-          <div class="fg" style="margin-bottom:0"><label class="fl">Nombre</label><input class="fi" id="doc-nombre" placeholder="Proyecto Educativo 2025"/></div>
-          <div class="fg" style="margin-bottom:0">
-            <label class="fl">Tipo</label>
-            <select class="fs" id="doc-tipo">
-              <option value="admision">📋 Admisión</option>
-              <option value="cuotas">💰 Cuotas y Precios</option>
-              <option value="programas">🎓 Programas Académicos</option>
-              <option value="info_general">🏫 Información General</option>
-              <option value="aha">🎨 Academia AHA</option>
-              <option value="faq">❓ Preguntas Frecuentes</option>
-              <option value="restricciones">⚠️ Restricciones KAI</option>
-              <option value="comunicacion">📞 Comunicación</option>
-              <option value="imagen">🖼️ Imagen / Infografía</option>
-              <option value="general">📄 General</option>
-            </select>
+      <div class="ph"><div><div class="ph-title">Documentos e Imágenes</div><div class="ph-sub">Gestiona el conocimiento de KAI y el banco de imágenes</div></div></div>
+
+      <!-- PESTAÑAS -->
+      <div style="display:flex;gap:4px;margin-bottom:16px;border-bottom:1px solid var(--border);padding-bottom:0">
+        <button id="tab-docs-btn" onclick="switchDocsTab('docs')" style="padding:10px 20px;border:none;background:none;color:var(--g);font-weight:600;font-size:13px;border-bottom:2px solid var(--g);cursor:pointer">📄 Documentos</button>
+        <button id="tab-imgs-btn" onclick="switchDocsTab('imgs')" style="padding:10px 20px;border:none;background:none;color:var(--text3);font-weight:500;font-size:13px;border-bottom:2px solid transparent;cursor:pointer">🖼️ Imágenes de Marketing</button>
+      </div>
+
+      <!-- TAB DOCUMENTOS -->
+      <div id="tab-docs">
+        <div class="fc" style="margin-bottom:16px">
+          <div class="ft">📎 Subir documento</div>
+          <div class="frow">
+            <div class="fg" style="margin-bottom:0"><label class="fl">Nombre</label><input class="fi" id="doc-nombre" placeholder="Proyecto Educativo 2025"/></div>
+            <div class="fg" style="margin-bottom:0">
+              <label class="fl">Tipo</label>
+              <select class="fs" id="doc-tipo">
+                <option value="admision">📋 Admisión</option>
+                <option value="cuotas">💰 Cuotas y Precios</option>
+                <option value="programas">🎓 Programas Académicos</option>
+                <option value="info_general">🏫 Información General</option>
+                <option value="aha">🎨 Academia AHA</option>
+                <option value="faq">❓ Preguntas Frecuentes</option>
+                <option value="restricciones">⚠️ Restricciones KAI</option>
+                <option value="comunicacion">📞 Comunicación</option>
+                <option value="general">📄 General</option>
+              </select>
+            </div>
+          </div>
+          <div class="fg" style="margin-top:10px">
+            <label class="fl">Archivo (PDF, Word) o texto directo</label>
+            <div id="doc-dropzone" style="border:2px dashed var(--border2);border-radius:8px;padding:20px;text-align:center;cursor:pointer;color:var(--text3);font-size:13px;margin-bottom:10px" onclick="document.getElementById('doc-file').click()" ondragover="event.preventDefault()" ondrop="handleDocDrop(event)">
+              📄 Arrastra un PDF o Word aquí, o haz clic para seleccionar<br/>
+              <span style="font-size:11px">PDF, DOC, DOCX hasta 5MB</span>
+            </div>
+            <input type="file" id="doc-file" accept=".pdf,.doc,.docx,.txt" style="display:none" onchange="handleImgSelect(event)"/>
+            <div id="doc-preview" style="display:none;font-size:12px;color:var(--green);margin-bottom:8px"></div>
+            <textarea class="fta" id="doc-contenido" placeholder="O pega el texto del documento aquí directamente..."></textarea>
+          </div>
+          <div style="display:flex;gap:10px;margin-top:4px">
+            <button class="btn-p" onclick="saveDoc()">Guardar documento</button>
+            <button class="btn-g" onclick="document.getElementById('doc-file').value='';document.getElementById('doc-preview').style.display='none';document.getElementById('doc-contenido').value='';document.getElementById('doc-nombre').value=''">Limpiar</button>
           </div>
         </div>
-        <div class="fg" style="margin-top:10px">
-          <label class="fl">Archivo (PDF, Word) o texto directo</label>
-          <div id="doc-dropzone" style="border:2px dashed var(--border2);border-radius:8px;padding:20px;text-align:center;cursor:pointer;color:var(--text3);font-size:13px;margin-bottom:10px" onclick="document.getElementById('doc-file').click()" ondragover="event.preventDefault()" ondrop="handleDocDrop(event)">
-            📄 Arrastra un PDF o Word aquí, o haz clic para seleccionar<br/>
-            <span style="font-size:11px">PDF, DOC, DOCX hasta 5MB</span>
+        <div id="docs-list"><div style="text-align:center;padding:30px;color:var(--text3)">Cargando documentos...</div></div>
+      </div>
+
+      <!-- TAB IMÁGENES -->
+      <div id="tab-imgs" style="display:none">
+        <div class="fc" style="margin-bottom:16px">
+          <div class="ft">🖼️ Subir nueva imagen</div>
+          <div class="frow">
+            <div class="fg" style="margin-bottom:0"><label class="fl">Nombre</label><input class="fi" id="img-nombre" placeholder="Cuotas 2027 — Primaria"/></div>
+            <div class="fg" style="margin-bottom:0">
+              <label class="fl">Categoría</label>
+              <select class="fs" id="img-categoria">
+                <option value="cuotas">💰 Cuotas</option>
+                <option value="admision">📋 Admisión</option>
+                <option value="programas">🎓 Programas</option>
+                <option value="info_general">🏫 Info General</option>
+                <option value="academia_aha">🎨 Academia AHA</option>
+                <option value="instalaciones">🏟️ Instalaciones</option>
+                <option value="eventos">🎉 Eventos</option>
+                <option value="open_house">🏠 Open House</option>
+                <option value="general">📄 General</option>
+              </select>
+            </div>
+            <div class="fg" style="margin-bottom:0">
+              <label class="fl">Nivel educativo</label>
+              <select class="fs" id="img-nivel">
+                <option value="Todos">Todos los niveles</option>
+                <option value="Jardín">Jardín</option>
+                <option value="Preprimaria">Preprimaria</option>
+                <option value="Kínder">Kínder</option>
+                <option value="Primaria">Primaria</option>
+                <option value="Básico">Básico</option>
+                <option value="Bachillerato">Bachillerato</option>
+              </select>
+            </div>
           </div>
-          <input type="file" id="doc-file" accept=".pdf,.doc,.docx,.txt" style="display:none" onchange="handleImgSelect(event)"/>
-          <div id="doc-preview" style="display:none;font-size:12px;color:var(--green);margin-bottom:8px"></div>
-          <textarea class="fta" id="doc-contenido" placeholder="O pega el texto del documento aquí directamente..."></textarea>
+          <div class="fg" style="margin-top:10px">
+            <label class="fl">Imagen (JPG, PNG)</label>
+            <div onclick="document.getElementById('img-file-input').click()" style="border:2px dashed var(--border2);border-radius:8px;padding:20px;text-align:center;cursor:pointer;color:var(--text3);font-size:13px;margin-bottom:10px">
+              🖼️ Haz clic para seleccionar una imagen<br/><span style="font-size:11px">JPG, PNG hasta 5MB</span>
+            </div>
+            <input type="file" id="img-file-input" accept="image/*" style="display:none" onchange="previsualizarImagen(event)"/>
+            <div id="img-preview-area" style="display:none;margin-bottom:10px">
+              <img id="img-preview-img" style="max-height:160px;border-radius:8px;border:1px solid var(--border)"/>
+              <div id="img-preview-nombre" style="font-size:11px;color:var(--text3);margin-top:4px"></div>
+            </div>
+          </div>
+          <button class="btn-p" onclick="subirImagenPanel()">Subir imagen</button>
         </div>
-        <div style="display:flex;gap:10px;margin-top:4px">
-          <button class="btn-p" onclick="saveDoc()">Guardar documento</button>
-          <button class="btn-g" onclick="document.getElementById('doc-file').value='';document.getElementById('doc-preview').style.display='none';document.getElementById('doc-contenido').value='';document.getElementById('doc-nombre').value=''">Limpiar</button>
+
+        <!-- GALERÍA DE IMÁGENES EXISTENTES -->
+        <div class="tw">
+          <div class="tw-h">
+            <div class="tw-t">Banco de imágenes</div>
+            <div style="font-size:11px;color:var(--text3)">KAI las envía automáticamente según el contexto de la conversación</div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;padding:6px 0;margin-bottom:12px">
+            <button onclick="filtrarGaleria('')" class="btn-g" style="font-size:11px;padding:5px 12px">Todas</button>
+            <button onclick="filtrarGaleria('cuotas')" class="btn-g" style="font-size:11px;padding:5px 12px">💰 Cuotas</button>
+            <button onclick="filtrarGaleria('admision')" class="btn-g" style="font-size:11px;padding:5px 12px">📋 Admisión</button>
+            <button onclick="filtrarGaleria('programas')" class="btn-g" style="font-size:11px;padding:5px 12px">🎓 Programas</button>
+            <button onclick="filtrarGaleria('info_general')" class="btn-g" style="font-size:11px;padding:5px 12px">🏫 Info</button>
+            <button onclick="filtrarGaleria('academia_aha')" class="btn-g" style="font-size:11px;padding:5px 12px">🎨 AHA</button>
+          </div>
+          <div id="imgs-galeria-panel" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;padding:4px">
+            <div style="color:var(--text3);font-size:12px;padding:20px;text-align:center;grid-column:1/-1">Cargando imágenes...</div>
+          </div>
         </div>
       </div>
-      <div id="docs-list"><div style="text-align:center;padding:30px;color:var(--text3)">Cargando documentos...</div></div>
     </div>
     <!-- USUARIOS Y SEDES -->
     <div id="p-usuarios" class="page">
@@ -1877,6 +1953,121 @@ function tipoLabel(tipo) {
   };
   return map[tipo] || tipo;
 }
+
+// ===== GESTIÓN DE IMÁGENES DESDE DOCUMENTOS =====
+let _imgsPanelCache = [];
+let _imgFileBase64 = null;
+let _imgFileMime = 'image/jpeg';
+
+function switchDocsTab(tab) {
+  document.getElementById('tab-docs').style.display = tab==='docs' ? 'block' : 'none';
+  document.getElementById('tab-imgs').style.display = tab==='imgs' ? 'block' : 'none';
+  document.getElementById('tab-docs-btn').style.color = tab==='docs' ? 'var(--g)' : 'var(--text3)';
+  document.getElementById('tab-docs-btn').style.borderBottom = tab==='docs' ? '2px solid var(--g)' : '2px solid transparent';
+  document.getElementById('tab-imgs-btn').style.color = tab==='imgs' ? 'var(--g)' : 'var(--text3)';
+  document.getElementById('tab-imgs-btn').style.borderBottom = tab==='imgs' ? '2px solid var(--g)' : '2px solid transparent';
+  if(tab==='imgs') cargarGaleriPanel();
+}
+
+function previsualizarImagen(e) {
+  const file = e.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    _imgFileBase64 = reader.result.split(',')[1];
+    _imgFileMime = file.type;
+    document.getElementById('img-preview-img').src = reader.result;
+    document.getElementById('img-preview-nombre').textContent = file.name;
+    document.getElementById('img-preview-area').style.display = 'block';
+    if(!document.getElementById('img-nombre').value) {
+      document.getElementById('img-nombre').value = file.name.replace(/\.[^/.]+$/,'');
+    }
+  };
+  reader.readAsDataURL(file);
+}
+
+async function subirImagenPanel() {
+  const nombre = document.getElementById('img-nombre').value.trim();
+  const categoria = document.getElementById('img-categoria').value;
+  const nivel = document.getElementById('img-nivel').value;
+  if(!nombre){ showToast('Escribe un nombre para la imagen','error'); return; }
+  if(!_imgFileBase64){ showToast('Selecciona una imagen primero','error'); return; }
+  try {
+    const r = await fetch(API+'/api/imagenes',{
+      method:'POST',
+      headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'},
+      body: JSON.stringify({ nombre, categoria, nivel_educativo: nivel, imagen_base64: _imgFileBase64, mime_type: _imgFileMime })
+    }).then(r=>r.json());
+    if(r.ok){
+      showToast('✓ Imagen subida — KAI ya puede usarla','ok');
+      document.getElementById('img-nombre').value='';
+      document.getElementById('img-preview-area').style.display='none';
+      document.getElementById('img-file-input').value='';
+      _imgFileBase64=null;
+      await cargarGaleriPanel();
+    } else { showToast(r.error||'Error al subir','error'); }
+  } catch(e){ showToast('Error de conexión','error'); }
+}
+
+async function cargarGaleriPanel(filtroCategoria='') {
+  const el = document.getElementById('imgs-galeria-panel');
+  el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center;grid-column:1/-1">Cargando...</div>';
+  const params = filtroCategoria ? `?categoria=${filtroCategoria}` : '';
+  const r = await fetch(API+'/api/imagenes'+params,{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+  _imgsPanelCache = r.ok ? r.imagenes : [];
+  if(!_imgsPanelCache.length){
+    el.innerHTML='<div style="color:var(--text3);font-size:12px;padding:30px;text-align:center;grid-column:1/-1">Sin imágenes — sube la primera arriba 🖼️</div>';
+    return;
+  }
+  el.innerHTML = _imgsPanelCache.map(img=>`
+    <div style="background:var(--bg3);border-radius:10px;overflow:hidden;border:1px solid var(--border)">
+      <div onclick="verImagenPanel('${img._id}')" style="height:110px;background:var(--bg4);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:28px" id="thumb-${img._id}">🖼️</div>
+      <div style="padding:10px">
+        <div style="font-size:12px;font-weight:600;margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${img.nombre}">${img.nombre}</div>
+        <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px">
+          <span style="font-size:9px;padding:2px 6px;border-radius:8px;background:var(--bg2);color:var(--text3)">${img.categoria}</span>
+          <span style="font-size:9px;padding:2px 6px;border-radius:8px;background:var(--bg2);color:var(--text3)">${img.nivel_educativo}</span>
+        </div>
+        <div style="font-size:10px;color:var(--text3);margin-bottom:8px">Enviada ${img.veces_enviada||0} veces</div>
+        <button onclick="eliminarImagenPanel('${img._id}','${img.nombre.replace(/'/g,"\\'")}')" style="width:100%;background:none;border:1px solid var(--red);color:var(--red);border-radius:6px;padding:5px;font-size:11px;cursor:pointer">🗑️ Eliminar</button>
+      </div>
+    </div>
+  `).join('');
+  // Cargar miniaturas reales en segundo plano
+  _imgsPanelCache.forEach(img => cargarMiniatura(img._id));
+}
+
+async function cargarMiniatura(id) {
+  try{
+    const r = await fetch(API+'/api/imagenes/'+id,{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+    if(r.ok && r.imagen){
+      const el = document.getElementById('thumb-'+id);
+      if(el) el.innerHTML = `<img src="data:${r.imagen.mime_type};base64,${r.imagen.imagen_base64}" style="width:100%;height:100%;object-fit:cover"/>`;
+    }
+  }catch(e){}
+}
+
+async function verImagenPanel(id) {
+  const r = await fetch(API+'/api/imagenes/'+id,{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+  if(r.ok && r.imagen){
+    const w = window.open('','_blank','width=600,height=700');
+    w.document.write(`<html><body style="margin:0;background:#0B1120;display:flex;align-items:center;justify-content:center;min-height:100vh">
+      <div style="text-align:center;padding:20px">
+        <div style="color:#F5A800;font-size:14px;font-weight:600;margin-bottom:10px">${r.imagen.nombre}</div>
+        <img src="data:${r.imagen.mime_type};base64,${r.imagen.imagen_base64}" style="max-width:100%;border-radius:10px"/>
+        <div style="color:#888;font-size:11px;margin-top:8px">${r.imagen.categoria} | ${r.imagen.nivel_educativo} | Enviada ${r.imagen.veces_enviada||0} veces</div>
+      </div></body></html>`);
+  }
+}
+
+async function eliminarImagenPanel(id, nombre) {
+  if(!confirm(`¿Eliminar "${nombre}"?\n\nKAI dejará de enviar esta imagen automáticamente.`)) return;
+  const r = await fetch(API+'/api/imagenes/'+id,{method:'DELETE',headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+  if(r.ok){ showToast('Imagen eliminada','ok'); await cargarGaleriPanel(); }
+  else showToast(r.error||'Error','error');
+}
+
+function filtrarGaleria(categoria) { cargarGaleriPanel(categoria); }
 
 async function loadDocs(){
   const el=document.getElementById('docs-list');
