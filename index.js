@@ -2106,6 +2106,38 @@ app.get('/api/odoo/test', authMiddleware, async (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// Leer TODOS los campos de un lead específico por ID
+app.get('/api/odoo/leads/:id/detalle', authMiddleware, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (!id) return res.status(400).json({ ok: false, error: 'ID requerido' });
+
+    // Primero obtener los campos disponibles en el modelo
+    const campos = await odooCallLocal('crm.lead', 'fields_get', [], { attributes: ['string', 'type'] });
+
+    // Leer el lead con todos sus campos
+    const leads = await odooCallLocal('crm.lead', 'read', [[id]], {});
+
+    if (!leads || !leads.length) return res.status(404).json({ ok: false, error: 'Lead no encontrado' });
+
+    const lead = leads[0];
+
+    // Filtrar campos vacíos para no saturar la respuesta
+    const datosFiltrados = {};
+    for (const [campo, valor] of Object.entries(lead)) {
+      if (valor !== false && valor !== null && valor !== '' && valor !== undefined) {
+        datosFiltrados[campo] = {
+          valor,
+          etiqueta: campos[campo]?.string || campo,
+          tipo: campos[campo]?.type || 'unknown'
+        };
+      }
+    }
+
+    res.json({ ok: true, id, total_campos: Object.keys(datosFiltrados).length, datos: datosFiltrados });
+  } catch(e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/odoo/leads', authMiddleware, async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 200;
@@ -2518,7 +2550,7 @@ app.get('/api/motor/escanear', authMiddleware, async (req, res) => {
         ['active', '=', true],
         ['user_id', '=', false],
       ]],
-      { fields: ['id','name','phone','partner_name','email_from','stage_id','tag_ids','user_id','create_date','type'], limit: 100 }
+      { fields: ['id','name','phone','partner_name','email_from','stage_id','tag_ids','user_id','create_date','type','team_id'], limit: 200 }
     ) || [];
 
     const contactados = [];
@@ -2538,11 +2570,11 @@ app.get('/api/motor/escanear', authMiddleware, async (req, res) => {
       },
       pendientes: pendientes.map(l => ({
         id: l.id,
-        nombre: l.partner_name || l.name,
-        telefono: l.phone,
-        etapa: l.stage_id?.[1],
-        email: l.email_from,
-        vendedor: l.user_id?.[1] || 'Sin asignar',
+        nombre: l.name,
+        telefono: (l.phone && String(l.phone) !== 'false') ? l.phone : null,
+        email: l.email_from || null,
+        etapa: l.stage_id?.[1] || '—',
+        equipo: l.team_id?.[1] || null,
         fecha_creacion: l.create_date?.substring(0,16)
       })),
       contactados: contactados.map(l => ({ id: l.id, nombre: l.partner_name || l.name, telefono: l.phone })),
