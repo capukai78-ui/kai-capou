@@ -1304,11 +1304,10 @@ async function motorContactoProactivo() {
     // Leads SIN ASIGNAR — igual que la vista "Sin asignar" en Odoo
     const leads = await odooCallLocal('crm.lead', 'search_read',
       [[
-        ['type', '=', 'opportunity'],
         ['active', '=', true],
         ['user_id', '=', false],
       ]],
-      { fields: ['id', 'name', 'phone', 'partner_name', 'email_from', 'tag_ids', 'stage_id', 'user_id', 'create_date'], limit: 100 }
+      { fields: ['id', 'name', 'phone', 'partner_name', 'email_from', 'tag_ids', 'stage_id', 'user_id', 'create_date', 'type'], limit: 100 }
     );
 
     if (!leads || !leads.length) return;
@@ -2516,11 +2515,10 @@ app.get('/api/motor/escanear', authMiddleware, async (req, res) => {
     // Leads SIN ASIGNAR — igual que la vista "Sin asignar" en Odoo
     const pendientes = await odooCallLocal('crm.lead', 'search_read',
       [[
-        ['type', '=', 'opportunity'],
         ['active', '=', true],
         ['user_id', '=', false],
       ]],
-      { fields: ['id','name','phone','partner_name','email_from','stage_id','tag_ids','user_id','create_date'], limit: 100 }
+      { fields: ['id','name','phone','partner_name','email_from','stage_id','tag_ids','user_id','create_date','type'], limit: 100 }
     ) || [];
 
     const contactados = [];
