@@ -1430,7 +1430,7 @@ app.post('/webhook', async (req, res) => {
     console.log(`📩 [${canal.toUpperCase()}] de ${nombreCliente || numeroOrigen}: ${mensajeUsuario}`);
 
     // ── GUARDAR LOG INMEDIATO — antes de cualquier procesamiento ────────────
-    // Si algo falla después, el mensaje ya quedó registrado en MongoDB
+    const phoneIdRecibido = body.entry?.[0]?.changes?.[0]?.value?.metadata?.phone_number_id;
     const tenant = await Tenant.findOne({ whatsapp_phone_id: phoneIdRecibido, activo: true })
                 || await Tenant.findOne({ activo: true });
     if (!tenant) return;
