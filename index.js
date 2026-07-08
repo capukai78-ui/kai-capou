@@ -225,7 +225,7 @@ const contactoSchema = new mongoose.Schema({
   correo:         { type: String, default: null },
   resumen_ultimo_contacto: { type: String, default: null }, // qué se habló la última vez
   odoo_lead_id:   { type: Number, default: null }, // si ya se creó como candidato en Odoo
-  nivel_calor:    { type: Number, default: null, enum: [null, 1, 2, 3] }, // 1=Alta Intención, 2=Interesado, 3=Exploratorio
+  nivel_calor:    { type: Number, default: null }, // 1=Alta Intención, 2=Interesado, 3=Exploratorio
   nivel_calor_etiqueta: { type: String, default: null }, // texto de la etiqueta aplicada en Odoo
   canal_origen:   { type: String, enum: ['whatsapp','instagram','messenger','lead_ads','formulario','otro'], default: 'whatsapp' },
   total_conversaciones: { type: Number, default: 0 },
@@ -970,6 +970,32 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
   }
 
   // ===== DETECTAR SOLICITUD DE AGENTE — solo transferir si ya hay contexto o el padre insiste =====
+  
+  // ── RECUPERAR MEMORIA DESDE MONGODB si el servidor reinició ────────────
+  // Si no hay historial en RAM pero el contacto existe en MongoDB, inyectar el contexto
+  if (!conversaciones.has(numeroOrigen)) {
+    const contactoExistente = await Contacto.findOne({ tenant_id: tenant._id, numero: numeroOrigen });
+    if (contactoExistente && contactoExistente.nombre) {
+      // El padre ya había conversado antes — inyectar contexto para que KAI lo reconozca
+      conversaciones.set(numeroOrigen, { historial: [], ultimaActividad: Date.now() });
+      const ctx = conversaciones.get(numeroOrigen);
+      const partes = [];
+      if (contactoExistente.nombre) partes.push(`nombre del padre: ${contactoExistente.nombre}`);
+      if (contactoExistente.nombre_alumno) partes.push(`nombre del alumno: ${contactoExistente.nombre_alumno}`);
+      if (contactoExistente.nivel_interes) partes.push(`nivel de interés: ${contactoExistente.nivel_interes}`);
+      if (contactoExistente.zona) partes.push(`zona: ${contactoExistente.zona}`);
+      if (contactoExistente.correo) partes.push(`correo: ${contactoExistente.correo}`);
+      if (contactoExistente.resumen_ultimo_contacto) partes.push(`última conversación: ${contactoExistente.resumen_ultimo_contacto}`);
+      if (partes.length) {
+        ctx.historial.push({
+          role: 'assistant',
+          content: `(Contexto interno — ya conoces a este padre/madre. ${partes.join(', ')}. Salúdalo por su nombre directamente, sin volver a pedir datos que ya tienes. Continúa desde donde quedaron.)`
+        });
+        console.log(`🧠 Memoria recuperada para ${numeroOrigen} — ${contactoExistente.nombre}`);
+      }
+    }
+  }
+
   const historialPrevio = conversaciones.get(numeroOrigen)?.historial || [];
   const yaHayContexto = historialPrevio.length >= 4; // al menos 2 intercambios (pregunta+respuesta x2)
   const insisteExplicito = detectaInsistenciaAgente(mensajeUsuario);
@@ -1536,9 +1562,10 @@ app.post('/webhook', async (req, res) => {
     await enviarRespuesta(numeroOrigen, respuesta);
     console.log(`✅ [${canal.toUpperCase()}] Respuesta enviada a ${numeroOrigen}`);
 
-    // Enviar imagen automática si el contexto lo amerita (sin await — no bloquea el flujo)
-    const contactoActual = await Contacto.findOne({ tenant_id: tenant._id, numero: numeroOrigen }).catch(()=>null);
-    detectarYEnviarImagen(tenant, mensajeUsuario, contactoActual, canal, numeroOrigen, idExterno).catch(()=>{});
+    // Envío automático de imágenes DESHABILITADO — el vendedor las envía manualmente desde el panel
+    // Para activar en producción: descomentar las líneas de abajo
+    // const contactoActual = await Contacto.findOne({ tenant_id: tenant._id, numero: numeroOrigen }).catch(()=>null);
+    // detectarYEnviarImagen(tenant, mensajeUsuario, contactoActual, canal, numeroOrigen, idExterno).catch(()=>{});
 
   } catch (err) {
     console.error('❌ WEBHOOK error:', err);
@@ -2651,7 +2678,33 @@ app.get('/api/conversaciones/:id', authMiddleware, async (req, res) => {
   try {
     const conv = await Conversacion.findOne({ _id: req.params.id, tenant_id: req.user.tenant_id });
     if (!conv) return res.status(404).json({ ok: false, error: 'No encontrada' });
-    res.json({ ok: true, conversacion: conv });
+
+    // Buscar el contacto para obtener su nivel de interés
+    const contacto = await Contacto.findOne({ tenant_id: req.user.tenant_id, numero: conv.numero });
+
+    // Sugerir imágenes según el nivel del contacto
+    let imagenesSugeridas = [];
+    if (contacto?.nivel_interes) {
+      const nivel = contacto.nivel_interes;
+      // Buscar imágenes que coincidan con el nivel o sean para todos
+      imagenesSugeridas = await ImagenMarketing.find({
+        tenant_id: req.user.tenant_id,
+        activo: true,
+        $or: [
+          { nivel_educativo: nivel },
+          { nivel_educativo: 'Todos' }
+        ]
+      }).select('-imagen_base64').limit(6); // Sin base64 para carga rápida
+    } else {
+      // Sin nivel conocido — mostrar imágenes generales
+      imagenesSugeridas = await ImagenMarketing.find({
+        tenant_id: req.user.tenant_id,
+        activo: true,
+        nivel_educativo: 'Todos'
+      }).select('-imagen_base64').limit(4);
+    }
+
+    res.json({ ok: true, conversacion: conv, contacto, imagenes_sugeridas: imagenesSugeridas });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
