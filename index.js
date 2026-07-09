@@ -2876,7 +2876,7 @@ async function seedImagenes() {
     let nuevas = 0;
     for (const img of IMAGENES_SEED) {
       try {
-        const existe = await ImagenMarketing.findOne({ tenant_id: tenant._id, nombre: img.nombre });
+        const existe = await ImagenMarketing.findOne({ tenant_id: tenant._id, nombre: img.nombre, activo: true });
         if (existe) continue;
         await ImagenMarketing.create({
           tenant_id: tenant._id,
