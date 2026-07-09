@@ -2897,6 +2897,7 @@ async function seedImagenes() {
           nivel_educativo: img.nivel_educativo || 'Todos',
           imagen_base64: img.imagen_base64,
           mime_type: img.mime_type || 'image/jpeg',
+          caption: img.caption || '',
           subida_por_nombre: 'Sistema — carga inicial'
         });
         nuevas++;
