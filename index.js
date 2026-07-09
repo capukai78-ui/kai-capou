@@ -2221,6 +2221,18 @@ app.get('/api/odoo/usuarios', authMiddleware, async (req, res) => {
 
 // Subir una imagen nueva (base64 enviado desde el panel)
 // Carga masiva de imágenes — solo admin — recibe array de imágenes
+// Eliminar TODAS las imágenes (activas e inactivas) y recargar el seed
+app.post('/api/imagenes/reset', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+    const eliminadas = await ImagenMarketing.deleteMany({ tenant_id: req.user.tenant_id });
+    // Recargar seed inmediatamente
+    await seedImagenes();
+    const total = await ImagenMarketing.countDocuments({ tenant_id: req.user.tenant_id, activo: true });
+    res.json({ ok: true, eliminadas: eliminadas.deletedCount, recargadas: total });
+  } catch(e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.post('/api/imagenes/bulk', authMiddleware, async (req, res) => {
   try {
     if (req.user.role !== 'admin') return res.status(403).json({ ok: false, error: 'Solo admin' });
