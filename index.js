@@ -140,6 +140,7 @@ const imagenMarketingSchema = new mongoose.Schema({
   subida_por:  { type: mongoose.Schema.Types.ObjectId, ref: 'UsuarioPanel' },
   subida_por_nombre: { type: String },
   activo:      { type: Boolean, default: true },
+  caption:      { type: String, default: '' }, // texto predefinido para enviar con la imagen
   veces_enviada: { type: Number, default: 0 },
   creado:      { type: Date, default: Date.now }
 });
