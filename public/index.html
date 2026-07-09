@@ -1180,6 +1180,10 @@ async function seleccionarImagenChat(id){
       const img = document.getElementById('cl-img-prev-img');
       img.src = `data:${r.imagen.mime_type||'image/jpeg'};base64,${r.imagen.imagen_base64}`;
       prev.style.display='inline-block';
+      // Autocompletar el campo de texto con el caption predefinido
+      if(r.imagen.caption) {
+        document.getElementById('cl-input-msg').value = r.imagen.caption;
+      }
     }
   }catch(e){}
 }
