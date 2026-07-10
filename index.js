@@ -2135,6 +2135,80 @@ app.get('/api/odoo/test', authMiddleware, async (req, res) => {
 });
 
 // Leer TODOS los campos de un lead específico por ID
+// Leer mensajes del chatter de un lead y parsear datos del padre
+app.get('/api/odoo/leer-mensajes/:id', authMiddleware, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+
+    // Leer los mensajes del lead
+    const mensajes = await odooCallLocal('mail.message', 'search_read',
+      [[['res_id', '=', id], ['model', '=', 'crm.lead'], ['message_type', 'in', ['email', 'comment']]]],
+      { fields: ['body', 'date', 'author_id', 'message_type'], limit: 10, order: 'date asc' }
+    ) || [];
+
+    // Parsear el cuerpo HTML para extraer datos del formulario
+    const datosParseados = {};
+    for (const msg of mensajes) {
+      const body = (msg.body || '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+
+      // Buscar patrones de formulario de contacto
+      const patrones = [
+        { campo: 'nombre', regex: /(?:nombre|name)[:\s]+([A-Za-záéíóúÁÉÍÓÚñÑ\s]{3,60})/i },
+        { campo: 'telefono', regex: /(?:tel[eé]fono|tel|phone|celular|número)[:\s]+([\d\s\+\-]{6,20})/i },
+        { campo: 'correo', regex: /(?:correo|email|e-mail)[:\s]+([\w\.\-]+@[\w\.\-]+\.\w+)/i },
+        { campo: 'mensaje', regex: /(?:mensaje|message|comentario|asunto|tema)[:\s]+(.{5,300})/i },
+        { campo: 'nivel', regex: /(?:nivel|grado|interés|interes|para)[:\s]+([A-Za-záéíóúÁÉÍÓÚñÑ\s]{3,50})/i },
+      ];
+
+      for (const { campo, regex } of patrones) {
+        if (!datosParseados[campo]) {
+          const match = body.match(regex);
+          if (match) datosParseados[campo] = match[1].trim();
+        }
+      }
+
+      // También buscar teléfonos solos (números de 8 dígitos)
+      if (!datosParseados.telefono) {
+        const telMatch = body.match(/\b(\d{8})\b/);
+        if (telMatch) datosParseados.telefono = '502' + telMatch[1];
+      }
+    }
+
+    res.json({
+      ok: true,
+      lead_id: id,
+      mensajes: mensajes.map(m => ({
+        fecha: m.date,
+        autor: m.author_id?.[1],
+        cuerpo: (m.body || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g,' ').trim().substring(0, 500)
+      })),
+      datos_parseados: datosParseados
+    });
+  } catch(e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Actualizar lead en Odoo con datos parseados del formulario
+app.post('/api/odoo/actualizar-lead', authMiddleware, async (req, res) => {
+  try {
+    const { lead_id, nombre, telefono, correo, nivel, zona } = req.body;
+    if (!lead_id) return res.status(400).json({ ok: false, error: 'lead_id requerido' });
+
+    const updates = {};
+    if (nombre) updates.partner_name = nombre;
+    if (telefono) updates.phone = telefono;
+    if (correo) updates.email_from = correo;
+    if (nivel) updates.x_studio_comentarios = nivel;
+    if (zona) updates.x_studio_notas_1 = zona;
+
+    await odooCallLocal('crm.lead', 'write', [[lead_id], updates]);
+    await odooCallLocal('crm.lead', 'message_post', [[lead_id]], {
+      body: `📋 Datos actualizados desde el panel KAI: ${Object.entries(updates).map(([k,v])=>`${k}: ${v}`).join(', ')}`
+    }).catch(()=>{});
+
+    res.json({ ok: true, mensaje: 'Lead actualizado en Odoo correctamente' });
+  } catch(e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/odoo/leads/:id/detalle', authMiddleware, async (req, res) => {
   try {
     const id = parseInt(req.params.id);
