@@ -2159,39 +2159,35 @@ app.get('/api/odoo/leer-mensajes/:id', authMiddleware, async (req, res) => {
       if (TEMAS_ADMISIONES.some(t => bodyLower.includes(t))) esAdmisiones = true;
 
       // Buscar patrones
-      // Parsear por campo — el formato es "Campo Valor Campo2 Valor2..."
-      // Estrategia: extraer cada campo hasta que aparezca el siguiente campo conocido
-      const CAMPOS_CONOCIDOS = ['nombre','correo','n','número de telefono','telefono','tel','tema','mensaje','nivel','por qué medio','cómo se enteró'];
-      const campoRegex = new RegExp(
-        '(' + CAMPOS_CONOCIDOS.map(c => c.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('|') + ')[:\s]+([\s\S]+?)(?=(?:' +
-        CAMPOS_CONOCIDOS.map(c => c.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('|') + '|lead\/oportunidad|$))',
-        'gi'
-      );
-      let match;
-      while ((match = campoRegex.exec(bodyLower)) !== null) {
-        const campo = match[1].trim().toLowerCase();
-        const valor = body.substring(match.index + match[1].length).match(/[:\s]+([\s\S]+?)(?=(?:Nombre|Correo|N[úu]mero|Tema|Mensaje|Nivel|Lead|Por qué|Cómo|$))/i)?.[1]?.trim();
-        if (!valor) continue;
-        if ((campo === 'nombre') && !datosParseados.nombre) datosParseados.nombre = valor.split(/\s{2,}/)[0].trim();
-        if ((campo.includes('tel') || campo.includes('número')) && !datosParseados.telefono) {
-          const num = valor.replace(/\D/g,'');
-          if (num.length >= 8) datosParseados.telefono = num.length === 8 ? '502'+num : num;
-        }
-        if (campo === 'correo' && !datosParseados.correo) {
-          const em = valor.match(/[\w\.\-]+@[\w\.\-]+\.\w+/);
+      // Parser simple y robusto — procesa el texto limpio campo por campo
+      const lineas = body.split(/\s{2,}|\n/);
+      for (let i = 0; i < lineas.length; i++) {
+        const linea = lineas[i].trim();
+        const sig = (lineas[i+1]||'').trim();
+        const lLow = linea.toLowerCase();
+        
+        if (lLow === 'nombre' && sig && !datosParseados.nombre) {
+          datosParseados.nombre = sig;
+        } else if ((lLow === 'correo' || lLow === 'email') && sig && !datosParseados.correo) {
+          const em = sig.match(/[\w\.\-]+@[\w\.\-]+\.\w+/);
           if (em && !em[0].includes('capouilliez')) datosParseados.correo = em[0];
+        } else if ((lLow.includes('telefono') || lLow.includes('teléfono') || lLow.includes('número')) && sig && !datosParseados.telefono) {
+          const num = sig.replace(/\D/g,'');
+          if (num.length >= 8) datosParseados.telefono = num.length === 8 ? '502'+num : num;
+        } else if ((lLow === 'tema' || lLow === 'asunto') && sig && !datosParseados.tema) {
+          datosParseados.tema = sig;
+        } else if (lLow === 'mensaje' && sig && !datosParseados.mensaje) {
+          datosParseados.mensaje = sig.substring(0, 200);
+        } else if ((lLow === 'nivel' || lLow === 'grado') && sig && !datosParseados.nivel) {
+          datosParseados.nivel = sig;
         }
-        if (campo === 'tema' && !datosParseados.tema) datosParseados.tema = valor.split(/\s{2,}/)[0].trim();
-        if (campo === 'mensaje' && !datosParseados.mensaje) datosParseados.mensaje = valor.split(/\s{2,}/)[0].trim().substring(0,200);
-        if (campo === 'nivel' && !datosParseados.nivel) datosParseados.nivel = valor.split(/\s{2,}/)[0].trim();
       }
 
-      // Fallback — correo suelto
+      // Fallbacks con regex si no se encontró por líneas
       if (!datosParseados.correo) {
         const em = body.match(/[\w\.\-]+@[\w\.\-]+\.\w+/);
         if (em && !em[0].includes('capouilliez')) datosParseados.correo = em[0];
       }
-      // Fallback — teléfono suelto
       if (!datosParseados.telefono) {
         const t = body.match(/\b([2345]\d{7})\b/);
         if (t) datosParseados.telefono = '502' + t[1];
