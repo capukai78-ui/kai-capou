@@ -2749,7 +2749,22 @@ app.get('/api/conversaciones', authMiddleware, async (req, res) => {
     const filtro = { tenant_id: req.user.tenant_id, estado: { $ne: 'cerrado' } };
     if (req.user.role === 'vendedor') filtro.agente_id = req.user.id;
     const convs = await Conversacion.find(filtro).sort({ ultimaActividad: -1 }).limit(100);
-    res.json({ ok: true, conversaciones: convs });
+
+    // Enriquecer con nombre del Contacto en MongoDB para mostrar en el panel
+    const convsEnriquecidas = await Promise.all(convs.map(async (conv) => {
+      const obj = conv.toObject();
+      if (!obj.nombre) {
+        const contacto = await Contacto.findOne({ tenant_id: req.user.tenant_id, numero: conv.numero }).select('nombre nombre_alumno nivel_interes');
+        if (contacto?.nombre) {
+          obj.nombre = contacto.nombre;
+          obj.nombre_alumno = contacto.nombre_alumno;
+          obj.nivel_interes = contacto.nivel_interes;
+        }
+      }
+      return obj;
+    }));
+
+    res.json({ ok: true, conversaciones: convsEnriquecidas });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
