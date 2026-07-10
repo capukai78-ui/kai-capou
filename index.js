@@ -2148,16 +2148,23 @@ app.get('/api/odoo/leer-mensajes/:id', authMiddleware, async (req, res) => {
 
     // Parsear el cuerpo HTML para extraer datos del formulario
     const datosParseados = {};
+    let esAdmisiones = false;
+    const TEMAS_ADMISIONES = ['admisiones','inscripcion','inscripción','colegio','primaria','preprimaria','secundaria','bachillerato','kinder','jardin','jardín','cuota','matricula'];
+
     for (const msg of mensajes) {
       const body = (msg.body || '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+      const bodyLower = body.toLowerCase();
 
-      // Buscar patrones de formulario de contacto
+      // Detectar si es sobre admisiones
+      if (TEMAS_ADMISIONES.some(t => bodyLower.includes(t))) esAdmisiones = true;
+
+      // Buscar patrones
       const patrones = [
         { campo: 'nombre', regex: /(?:nombre|name)[:\s]+([A-Za-záéíóúÁÉÍÓÚñÑ\s]{3,60})/i },
-        { campo: 'telefono', regex: /(?:tel[eé]fono|tel|phone|celular|número)[:\s]+([\d\s\+\-]{6,20})/i },
+        { campo: 'telefono', regex: /(?:tel[eé]fono|tel|phone|celular|n[uú]mero)[:\s]+([\d\s\+\-]{6,20})/i },
         { campo: 'correo', regex: /(?:correo|email|e-mail)[:\s]+([\w\.\-]+@[\w\.\-]+\.\w+)/i },
         { campo: 'mensaje', regex: /(?:mensaje|message|comentario|asunto|tema)[:\s]+(.{5,300})/i },
-        { campo: 'nivel', regex: /(?:nivel|grado|interés|interes|para)[:\s]+([A-Za-záéíóúÁÉÍÓÚñÑ\s]{3,50})/i },
+        { campo: 'nivel', regex: /(?:nivel|grado|inter[eé]s|para)[:\s]+([A-Za-záéíóúÁÉÍÓÚñÑ\s]{3,50})/i },
       ];
 
       for (const { campo, regex } of patrones) {
@@ -2167,16 +2174,23 @@ app.get('/api/odoo/leer-mensajes/:id', authMiddleware, async (req, res) => {
         }
       }
 
-      // También buscar teléfonos solos (números de 8 dígitos)
+      // Teléfono de 8 dígitos guatemalteco
       if (!datosParseados.telefono) {
-        const telMatch = body.match(/\b(\d{8})\b/);
+        const telMatch = body.match(/\b([2345]\d{7})\b/);
         if (telMatch) datosParseados.telefono = '502' + telMatch[1];
+      }
+
+      // Correo suelto
+      if (!datosParseados.correo) {
+        const emailMatch = body.match(/[\w\.\-]+@[\w\.\-]+\.\w+/);
+        if (emailMatch && !emailMatch[0].includes('capouilliez')) datosParseados.correo = emailMatch[0];
       }
     }
 
     res.json({
       ok: true,
       lead_id: id,
+      es_admisiones: esAdmisiones,
       mensajes: mensajes.map(m => ({
         fecha: m.date,
         autor: m.author_id?.[1],
