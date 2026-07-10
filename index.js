@@ -2159,27 +2159,34 @@ app.get('/api/odoo/leer-mensajes/:id', authMiddleware, async (req, res) => {
       if (TEMAS_ADMISIONES.some(t => bodyLower.includes(t))) esAdmisiones = true;
 
       // Buscar patrones
-      // Parser simple y robusto — procesa el texto limpio campo por campo
-      const lineas = body.split(/\s{2,}|\n/);
-      for (let i = 0; i < lineas.length; i++) {
-        const linea = lineas[i].trim();
-        const sig = (lineas[i+1]||'').trim();
-        const lLow = linea.toLowerCase();
+      // Parser — el texto viene como "Nombre Carlos Escobar Correo email Teléfono 12345 Tema X Mensaje Y"
+      // Separamos por palabras clave conocidas
+      const KEYS = ['nombre','correo','n\u00famero de telefono','n\u00famero de tel\u00e9fono','telefono','tel\u00e9fono','celular','tema','asunto','mensaje','nivel','grado','lead'];
+      const keysRegex = new RegExp('(' + KEYS.join('|') + ')\\s+', 'gi');
+      const partes = body.replace(keysRegex, '|||$1|||').split('|||').filter(Boolean);
+      
+      for (let i = 0; i < partes.length; i++) {
+        const llave = partes[i].trim().toLowerCase();
+        const valor = (partes[i+1]||'').trim();
+        if (!valor) continue;
         
-        if (lLow === 'nombre' && sig && !datosParseados.nombre) {
-          datosParseados.nombre = sig;
-        } else if ((lLow === 'correo' || lLow === 'email') && sig && !datosParseados.correo) {
-          const em = sig.match(/[\w\.\-]+@[\w\.\-]+\.\w+/);
-          if (em && !em[0].includes('capouilliez')) datosParseados.correo = em[0];
-        } else if ((lLow.includes('telefono') || lLow.includes('teléfono') || lLow.includes('número')) && sig && !datosParseados.telefono) {
-          const num = sig.replace(/\D/g,'');
-          if (num.length >= 8) datosParseados.telefono = num.length === 8 ? '502'+num : num;
-        } else if ((lLow === 'tema' || lLow === 'asunto') && sig && !datosParseados.tema) {
-          datosParseados.tema = sig;
-        } else if (lLow === 'mensaje' && sig && !datosParseados.mensaje) {
-          datosParseados.mensaje = sig.substring(0, 200);
-        } else if ((lLow === 'nivel' || lLow === 'grado') && sig && !datosParseados.nivel) {
-          datosParseados.nivel = sig;
+        if (llave === 'nombre' && !datosParseados.nombre) {
+          datosParseados.nombre = valor.replace(/[|]+.*/,'').trim();
+          i++;
+        } else if ((llave === 'correo' || llave === 'email') && !datosParseados.correo) {
+          const em = valor.match(/[\w\.\-]+@[\w\.\-]+\.\w+/);
+          if (em && !em[0].includes('capouilliez')) { datosParseados.correo = em[0]; i++; }
+        } else if (llave.includes('tel') || llave.includes('n\u00famero') || llave === 'celular') {
+          if (!datosParseados.telefono) {
+            const num = valor.replace(/\D/g,'');
+            if (num.length >= 8) { datosParseados.telefono = num.length === 8 ? '502'+num : num; i++; }
+          }
+        } else if ((llave === 'tema' || llave === 'asunto') && !datosParseados.tema) {
+          datosParseados.tema = valor.replace(/[|]+.*/,'').trim(); i++;
+        } else if (llave === 'mensaje' && !datosParseados.mensaje) {
+          datosParseados.mensaje = valor.replace(/[|]+.*/,'').trim().substring(0,200); i++;
+        } else if ((llave === 'nivel' || llave === 'grado') && !datosParseados.nivel) {
+          datosParseados.nivel = valor.replace(/[|]+.*/,'').trim(); i++;
         }
       }
 
