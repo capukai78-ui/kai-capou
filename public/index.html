@@ -1512,14 +1512,16 @@ async function escanearLeadsNuevos(){
     const r = await fetch(API+'/api/motor/escanear',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
     if(!r.ok){ tablaEl.innerHTML=`<div style="padding:16px;color:var(--red)">Error: ${r.error}</div>`; return; }
 
-    // Filtrar solo admisiones reales — excluir spam/internos
-    const EXCLUIR = ['admisiones','contactanos','calendario','capacitacion','rrhh','empleo','trabajo','re:','fwd:'];
+    // Separar leads: los que tienen datos completos vs los que hay que extraer del chatter
+    // Excluir solo los que claramente no son admisiones
+    const EXCLUIR = ['calendario','capacitacion','rrhh','empleo','trabajo','re:','fwd:'];
     const todos = (r.pendientes||[]).filter(l => {
       const n = (l.nombre||'').toLowerCase();
       return !EXCLUIR.some(ex => n.startsWith(ex));
     });
 
     const conTel = todos.filter(l=>l.telefono);
+    // Sin teléfono = los que hay que leer del chatter (Contactanos, Admisiones, formularios web)
     const sinTel = todos.filter(l=>!l.telefono);
 
     // Tarjetas resumen
