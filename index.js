@@ -2183,7 +2183,7 @@ app.get('/api/odoo/leer-mensajes/:id', authMiddleware, async (req, res) => {
         }
       }
 
-      // Fallbacks con regex si no se encontró por líneas
+      // Fallbacks con regex
       if (!datosParseados.correo) {
         const em = body.match(/[\w\.\-]+@[\w\.\-]+\.\w+/);
         if (em && !em[0].includes('capouilliez')) datosParseados.correo = em[0];
@@ -2191,25 +2191,6 @@ app.get('/api/odoo/leer-mensajes/:id', authMiddleware, async (req, res) => {
       if (!datosParseados.telefono) {
         const t = body.match(/\b([2345]\d{7})\b/);
         if (t) datosParseados.telefono = '502' + t[1];
-      }
-
-      for (const { campo, regex } of patrones) {
-        if (!datosParseados[campo]) {
-          const match = body.match(regex);
-          if (match) datosParseados[campo] = match[1].trim();
-        }
-      }
-
-      // Teléfono de 8 dígitos guatemalteco
-      if (!datosParseados.telefono) {
-        const telMatch = body.match(/\b([2345]\d{7})\b/);
-        if (telMatch) datosParseados.telefono = '502' + telMatch[1];
-      }
-
-      // Correo suelto
-      if (!datosParseados.correo) {
-        const emailMatch = body.match(/[\w\.\-]+@[\w\.\-]+\.\w+/);
-        if (emailMatch && !emailMatch[0].includes('capouilliez')) datosParseados.correo = emailMatch[0];
       }
     }
 
