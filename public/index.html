@@ -1611,22 +1611,78 @@ async function escanearLeadsNuevos(){
   }
 }
 
-function prepararParaOdoo(leadId, nombre, email, nivel, zona){
-  // Mostrar modal con vista previa de los datos antes de confirmar en Odoo
-  const info = `
-📋 VISTA PREVIA DEL LEAD
+async function prepararParaOdoo(leadId, nombre, email, nivel, zona){
+  // Mostrar modal de carga
+  const modal = document.createElement('div');
+  modal.id = 'modal-odoo';
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);z-index:9999;display:flex;align-items:center;justify-content:center';
+  modal.innerHTML = '<div style="background:var(--bg2);border-radius:14px;padding:24px;width:520px;max-width:95vw;max-height:85vh;overflow-y:auto"><div style="color:var(--text3);text-align:center;padding:20px">Leyendo datos del formulario...</div></div>';
+  document.body.appendChild(modal);
 
-Nombre: ${nombre}
-Correo: ${email}
-Nivel de interés: ${nivel||'No especificado'}
-Zona: ${zona||'No especificada'}
-ID en Odoo: #${leadId}
+  try{
+    // Leer datos del chatter en Odoo
+    const r = await fetch(API+'/api/odoo/leer-mensajes/'+leadId,{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+    const d = r.datos_parseados || {};
+    
+    // Combinar con datos que ya teníamos
+    const nombreFinal = d.nombre || nombre || '';
+    const telFinal = d.telefono || '';
+    const emailFinal = d.correo || email || '';
+    const nivelFinal = d.nivel || nivel || '';
+    const mensajeFinal = d.mensaje || '';
 
-¿Deseas asignar este lead a un vendedor para que dé seguimiento?`;
-  
-  if(confirm(info)){
-    asignarVendedorLead(leadId);
+    modal.querySelector('div').innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <div style="font-weight:600;font-size:15px">📋 Vista previa — Lead #${leadId}</div>
+        <button onclick="document.getElementById('modal-odoo').remove()" style="background:none;border:none;color:var(--text3);font-size:18px;cursor:pointer">✕</button>
+      </div>
+      
+      <div style="background:var(--bg3);border-radius:10px;padding:14px;margin-bottom:14px;font-size:12px">
+        <div style="font-weight:600;color:var(--text2);margin-bottom:10px">Datos extraídos del formulario</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div><div style="color:var(--text3);font-size:10px;margin-bottom:2px">Nombre</div><input id="op-nombre" class="fi" value="${nombreFinal}" style="font-size:11px;padding:6px 8px"/></div>
+          <div><div style="color:var(--text3);font-size:10px;margin-bottom:2px">Teléfono</div><input id="op-tel" class="fi" value="${telFinal}" style="font-size:11px;padding:6px 8px"/></div>
+          <div><div style="color:var(--text3);font-size:10px;margin-bottom:2px">Correo</div><input id="op-email" class="fi" value="${emailFinal}" style="font-size:11px;padding:6px 8px"/></div>
+          <div><div style="color:var(--text3);font-size:10px;margin-bottom:2px">Nivel de interés</div><input id="op-nivel" class="fi" value="${nivelFinal}" style="font-size:11px;padding:6px 8px"/></div>
+        </div>
+        ${mensajeFinal?`<div style="margin-top:8px"><div style="color:var(--text3);font-size:10px;margin-bottom:2px">Mensaje del padre</div><div style="background:var(--bg2);padding:8px;border-radius:6px;font-size:11px;color:var(--text2)">${mensajeFinal}</div></div>`:''}
+      </div>
+
+      ${r.mensajes?.length?`
+      <div style="background:var(--bg3);border-radius:10px;padding:12px;margin-bottom:14px;font-size:11px">
+        <div style="font-weight:600;color:var(--text2);margin-bottom:8px">Mensajes en el chatter</div>
+        ${r.mensajes.map(m=>`<div style="margin-bottom:6px;padding:6px;background:var(--bg2);border-radius:6px"><div style="color:var(--text3);font-size:10px">${m.autor||'Sistema'} · ${m.fecha?.substring(0,16)||''}</div><div style="color:var(--text);margin-top:2px">${m.cuerpo}</div></div>`).join('')}
+      </div>`:''}
+
+      <div style="display:flex;gap:8px">
+        ${telFinal?`<button onclick="atenderConKAI(${leadId},'${telFinal}');document.getElementById('modal-odoo').remove()" style="flex:1;background:var(--g);border:none;color:#fff;border-radius:8px;padding:10px;font-size:12px;cursor:pointer;font-weight:500">🤖 KAI contacta por WhatsApp</button>`:''}
+        <button onclick="trasladarAOdoo(${leadId})" style="flex:1;background:var(--blue,#378ADD);border:none;color:#fff;border-radius:8px;padding:10px;font-size:12px;cursor:pointer;font-weight:500">💾 Actualizar en Odoo</button>
+        <button onclick="asignarVendedorLead(${leadId});document.getElementById('modal-odoo').remove()" style="flex:1;background:var(--bg3);border:1px solid var(--border);color:var(--text2);border-radius:8px;padding:10px;font-size:12px;cursor:pointer">👤 Asignar vendedor</button>
+      </div>`;
+
+  }catch(e){
+    modal.querySelector('div').innerHTML = `<div style="color:var(--red);padding:20px">Error: ${e.message}</div><button onclick="document.getElementById('modal-odoo').remove()" class="btn-g" style="margin-top:10px">Cerrar</button>`;
   }
+}
+
+async function trasladarAOdoo(leadId){
+  const nombre = document.getElementById('op-nombre')?.value;
+  const telefono = document.getElementById('op-tel')?.value;
+  const correo = document.getElementById('op-email')?.value;
+  const nivel = document.getElementById('op-nivel')?.value;
+  
+  try{
+    const r = await fetch(API+'/api/odoo/actualizar-lead',{
+      method:'POST',
+      headers:{Authorization:'Bearer '+TOKEN,'Content-Type':'application/json'},
+      body: JSON.stringify({ lead_id: leadId, nombre, telefono, correo, nivel })
+    }).then(r=>r.json());
+    if(r.ok){
+      showToast('✅ Lead actualizado en Odoo correctamente','ok');
+      document.getElementById('modal-odoo')?.remove();
+      escanearLeadsNuevos();
+    } else showToast(r.error||'Error','error');
+  }catch(e){ showToast('Error de conexión','error'); }
 }
 
 
