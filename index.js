@@ -2577,6 +2577,73 @@ app.post('/api/odoo/limpiar-tags-kai', authMiddleware, async (req, res) => {
   } catch(e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
+// Contactar un lead específico con KAI por WhatsApp
+app.post('/api/motor/contactar-lead', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+    const { lead_id, telefono } = req.body;
+    if (!lead_id || !telefono) return res.status(400).json({ ok: false, error: 'lead_id y telefono requeridos' });
+
+    const tenant = await Tenant.findOne({ _id: req.user.tenant_id });
+    const tagContactadoId = await getOdooTagId(TAG_KAI_CONTACTADO);
+    const tagSinWAId = await getOdooTagId(TAG_KAI_SIN_WHATSAPP);
+
+    // Obtener datos del lead
+    const leads = await odooCallLocal('crm.lead', 'read', [[lead_id]], {});
+    if (!leads?.length) return res.status(404).json({ ok: false, error: 'Lead no encontrado' });
+    const lead = leads[0];
+
+    let telefonoLimpio = String(telefono).replace(/\D/g, '');
+    if (telefonoLimpio.length === 8) telefonoLimpio = '502' + telefonoLimpio;
+
+    const nombre = lead.partner_name || lead.contact_name || null;
+    const primerNombre = nombre ? nombre.split(' ')[0] : null;
+    const saludo = primerNombre ? `Hola ${primerNombre}` : 'Hola';
+    const mensaje = `${saludo} 👋 Te escribimos del *Colegio Capouilliez*.\n\nRecibimos tu información y queremos ayudarte con el proceso de admisiones 🏫\n\n¿Para qué nivel educativo estás buscando información?\n\n1️⃣ Preprimaria (2-6 años)\n2️⃣ Primaria (7-12 años)\n3️⃣ Secundaria (13-16 años)`;
+
+    const resultado = await enviarWhatsAppMeta(telefonoLimpio, mensaje);
+    if (resultado?.messages?.length) {
+      await odooCallLocal('crm.lead', 'write', [[lead_id], { tag_ids: [[4, tagContactadoId]] }]);
+      await odooCallLocal('crm.lead', 'message_post', [[lead_id]], {
+        body: `📱 KAI contactó por WhatsApp (${telefonoLimpio}) — iniciado manualmente desde el panel.`
+      }).catch(() => {});
+
+      // Crear contacto en MongoDB si no existe
+      let contacto = await Contacto.findOne({ tenant_id: tenant._id, numero: telefonoLimpio });
+      if (!contacto) {
+        await Contacto.create({ tenant_id: tenant._id, numero: telefonoLimpio, nombre, odoo_lead_id: lead_id, canal_origen: 'lead_ads', ultimo_contacto: new Date(), primer_contacto: new Date() });
+      }
+      res.json({ ok: true, mensaje: `KAI contactó a ${nombre||telefonoLimpio} por WhatsApp` });
+    } else {
+      await odooCallLocal('crm.lead', 'write', [[lead_id], { tag_ids: [[4, tagSinWAId]] }]);
+      res.json({ ok: false, error: 'No se pudo enviar el mensaje — número inválido o fuera de la ventana de 24h' });
+    }
+  } catch(e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Asignar un lead a un vendedor específico
+app.post('/api/motor/asignar-vendedor', authMiddleware, async (req, res) => {
+  try {
+    const { lead_id, vendedor_id } = req.body;
+    if (!lead_id || !vendedor_id) return res.status(400).json({ ok: false, error: 'lead_id y vendedor_id requeridos' });
+
+    const vendedor = await UsuarioPanel.findOne({ _id: vendedor_id, tenant_id: req.user.tenant_id });
+    if (!vendedor) return res.status(404).json({ ok: false, error: 'Vendedor no encontrado' });
+
+    // Registrar nota en Odoo
+    await odooCallLocal('crm.lead', 'message_post', [[lead_id]], {
+      body: `👤 Lead asignado manualmente desde el panel KAI a ${vendedor.nombre || vendedor.email}.`
+    }).catch(() => {});
+
+    // Si el vendedor tiene odoo_user_id, asignarlo en Odoo también
+    if (vendedor.odoo_user_id) {
+      await odooCallLocal('crm.lead', 'write', [[lead_id], { user_id: vendedor.odoo_user_id }]).catch(() => {});
+    }
+
+    res.json({ ok: true, mensaje: `Lead asignado a ${vendedor.nombre || vendedor.email}` });
+  } catch(e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 // ===== ESCÁNER DE LEADS — ver qué hay en Odoo antes de contactar =====
 app.get('/api/motor/escanear', authMiddleware, async (req, res) => {
   try {
