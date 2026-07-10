@@ -2159,13 +2159,43 @@ app.get('/api/odoo/leer-mensajes/:id', authMiddleware, async (req, res) => {
       if (TEMAS_ADMISIONES.some(t => bodyLower.includes(t))) esAdmisiones = true;
 
       // Buscar patrones
-      const patrones = [
-        { campo: 'nombre', regex: /(?:nombre|name)[:\s]+([A-Za-záéíóúÁÉÍÓÚñÑ\s]{3,60})/i },
-        { campo: 'telefono', regex: /(?:tel[eé]fono|tel|phone|celular|n[uú]mero)[:\s]+([\d\s\+\-]{6,20})/i },
-        { campo: 'correo', regex: /(?:correo|email|e-mail)[:\s]+([\w\.\-]+@[\w\.\-]+\.\w+)/i },
-        { campo: 'mensaje', regex: /(?:mensaje|message|comentario|asunto|tema)[:\s]+(.{5,300})/i },
-        { campo: 'nivel', regex: /(?:nivel|grado|inter[eé]s|para)[:\s]+([A-Za-záéíóúÁÉÍÓÚñÑ\s]{3,50})/i },
-      ];
+      // Parsear por campo — el formato es "Campo Valor Campo2 Valor2..."
+      // Estrategia: extraer cada campo hasta que aparezca el siguiente campo conocido
+      const CAMPOS_CONOCIDOS = ['nombre','correo','n','número de telefono','telefono','tel','tema','mensaje','nivel','por qué medio','cómo se enteró'];
+      const campoRegex = new RegExp(
+        '(' + CAMPOS_CONOCIDOS.map(c => c.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('|') + ')[:\s]+([\s\S]+?)(?=(?:' +
+        CAMPOS_CONOCIDOS.map(c => c.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('|') + '|lead\/oportunidad|$))',
+        'gi'
+      );
+      let match;
+      while ((match = campoRegex.exec(bodyLower)) !== null) {
+        const campo = match[1].trim().toLowerCase();
+        const valor = body.substring(match.index + match[1].length).match(/[:\s]+([\s\S]+?)(?=(?:Nombre|Correo|N[úu]mero|Tema|Mensaje|Nivel|Lead|Por qué|Cómo|$))/i)?.[1]?.trim();
+        if (!valor) continue;
+        if ((campo === 'nombre') && !datosParseados.nombre) datosParseados.nombre = valor.split(/\s{2,}/)[0].trim();
+        if ((campo.includes('tel') || campo.includes('número')) && !datosParseados.telefono) {
+          const num = valor.replace(/\D/g,'');
+          if (num.length >= 8) datosParseados.telefono = num.length === 8 ? '502'+num : num;
+        }
+        if (campo === 'correo' && !datosParseados.correo) {
+          const em = valor.match(/[\w\.\-]+@[\w\.\-]+\.\w+/);
+          if (em && !em[0].includes('capouilliez')) datosParseados.correo = em[0];
+        }
+        if (campo === 'tema' && !datosParseados.tema) datosParseados.tema = valor.split(/\s{2,}/)[0].trim();
+        if (campo === 'mensaje' && !datosParseados.mensaje) datosParseados.mensaje = valor.split(/\s{2,}/)[0].trim().substring(0,200);
+        if (campo === 'nivel' && !datosParseados.nivel) datosParseados.nivel = valor.split(/\s{2,}/)[0].trim();
+      }
+
+      // Fallback — correo suelto
+      if (!datosParseados.correo) {
+        const em = body.match(/[\w\.\-]+@[\w\.\-]+\.\w+/);
+        if (em && !em[0].includes('capouilliez')) datosParseados.correo = em[0];
+      }
+      // Fallback — teléfono suelto
+      if (!datosParseados.telefono) {
+        const t = body.match(/\b([2345]\d{7})\b/);
+        if (t) datosParseados.telefono = '502' + t[1];
+      }
 
       for (const { campo, regex } of patrones) {
         if (!datosParseados[campo]) {
