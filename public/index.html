@@ -1627,11 +1627,14 @@ async function prepararParaOdoo(leadId, nombre, email, nivel, zona){
     const d = r.datos_parseados || {};
     
     // Combinar con datos que ya teníamos
-    const nombreFinal = d.nombre || nombre || '';
-    const telFinal = d.telefono || '';
-    const emailFinal = d.correo || email || '';
-    const nivelFinal = d.nivel || nivel || '';
-    const mensajeFinal = d.mensaje || '';
+    // Escapar datos para evitar errores en el template HTML
+    const esc = s => (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    const nombreFinal = esc(d.nombre || nombre || '');
+    const telFinal = esc(d.telefono || '');
+    const emailFinal = esc(d.correo || email || '');
+    const nivelFinal = esc(d.nivel || nivel || '');
+    const mensajeFinal = esc((d.mensaje || '').substring(0,300));
+    const temaFinal = esc(d.tema || '');
 
     modal.querySelector('div').innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
@@ -1647,13 +1650,14 @@ async function prepararParaOdoo(leadId, nombre, email, nivel, zona){
           <div><div style="color:var(--text3);font-size:10px;margin-bottom:2px">Correo</div><input id="op-email" class="fi" value="${emailFinal}" style="font-size:11px;padding:6px 8px"/></div>
           <div><div style="color:var(--text3);font-size:10px;margin-bottom:2px">Nivel de interés</div><input id="op-nivel" class="fi" value="${nivelFinal}" style="font-size:11px;padding:6px 8px"/></div>
         </div>
+        ${temaFinal?`<div style="margin-top:8px"><div style="color:var(--text3);font-size:10px;margin-bottom:2px">Tema</div><div style="background:var(--bg2);padding:8px;border-radius:6px;font-size:11px;color:var(--text2)">${temaFinal}</div></div>`:''}
         ${mensajeFinal?`<div style="margin-top:8px"><div style="color:var(--text3);font-size:10px;margin-bottom:2px">Mensaje del padre</div><div style="background:var(--bg2);padding:8px;border-radius:6px;font-size:11px;color:var(--text2)">${mensajeFinal}</div></div>`:''}
       </div>
 
       ${r.mensajes?.length?`
       <div style="background:var(--bg3);border-radius:10px;padding:12px;margin-bottom:14px;font-size:11px">
         <div style="font-weight:600;color:var(--text2);margin-bottom:8px">Mensajes en el chatter</div>
-        ${r.mensajes.map(m=>`<div style="margin-bottom:6px;padding:6px;background:var(--bg2);border-radius:6px"><div style="color:var(--text3);font-size:10px">${m.autor||'Sistema'} · ${m.fecha?.substring(0,16)||''}</div><div style="color:var(--text);margin-top:2px">${m.cuerpo}</div></div>`).join('')}
+        ${r.mensajes.map(m=>`<div style="margin-bottom:6px;padding:6px;background:var(--bg2);border-radius:6px"><div style="color:var(--text3);font-size:10px">${(m.autor||'Sistema').replace(/</g,'&lt;')} · ${(m.fecha||'').substring(0,16)}</div><div style="color:var(--text);margin-top:2px;word-break:break-word">${(m.cuerpo||'').replace(/</g,'&lt;').substring(0,300)}</div></div>`).join('')}
       </div>`:''}
 
       <div style="display:flex;gap:8px">
