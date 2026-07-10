@@ -1057,6 +1057,7 @@ function pintarListaChats(convs){
         ${canalBadge(c)}
         <div style="font-size:11px;color:var(--text3)">${c.numero}</div>
       </div>
+      ${c.nombre_alumno||c.nivel_interes?`<div style="font-size:10px;color:var(--text3);margin-bottom:3px">${c.nombre_alumno?'👦 '+c.nombre_alumno:''}${c.nombre_alumno&&c.nivel_interes?' · ':''}${c.nivel_interes?'📚 '+c.nivel_interes:''}</div>`:''}
       <div style="font-size:11px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.mensajes?.length?c.mensajes[c.mensajes.length-1].texto:''}</div>
       ${c.agente_nombre?`<div style="font-size:10px;color:var(--g);margin-top:4px">👤 ${c.agente_nombre}</div>`:''}
     </div>
@@ -1511,19 +1512,25 @@ async function escanearLeadsNuevos(){
     const r = await fetch(API+'/api/motor/escanear',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
     if(!r.ok){ tablaEl.innerHTML=`<div style="padding:16px;color:var(--red)">Error: ${r.error}</div>`; return; }
 
-    const pendientes = r.pendientes || [];
-    const conTel = pendientes.filter(l=>l.telefono);
-    const sinTel = pendientes.filter(l=>!l.telefono);
+    // Filtrar solo admisiones reales — excluir spam/internos
+    const EXCLUIR = ['admisiones','contactanos','calendario','capacitacion','rrhh','empleo','trabajo','re:','fwd:'];
+    const todos = (r.pendientes||[]).filter(l => {
+      const n = (l.nombre||'').toLowerCase();
+      return !EXCLUIR.some(ex => n.startsWith(ex));
+    });
 
-    // Tarjetas
+    const conTel = todos.filter(l=>l.telefono);
+    const sinTel = todos.filter(l=>!l.telefono);
+
+    // Tarjetas resumen
     resumenEl.innerHTML = `
-      <div class="mc"><div class="mc-lbl">Sin asignar</div><div class="mc-val" style="color:var(--amber)">${pendientes.length}</div><div class="mc-sub">total en Odoo</div></div>
+      <div class="mc"><div class="mc-lbl">Sin asignar</div><div class="mc-val" style="color:var(--amber)">${todos.length}</div><div class="mc-sub">admisiones reales</div></div>
       <div class="mc"><div class="mc-lbl">Con teléfono</div><div class="mc-val" style="color:var(--g)">${conTel.length}</div><div class="mc-sub">KAI puede contactar</div></div>
-      <div class="mc"><div class="mc-lbl">Solo correo</div><div class="mc-val" style="color:var(--text3)">${sinTel.length}</div><div class="mc-sub">equipo contacta</div></div>`;
+      <div class="mc"><div class="mc-lbl">Solo correo</div><div class="mc-val" style="color:var(--text3)">${sinTel.length}</div><div class="mc-sub">preparar para Odoo</div></div>`;
 
-    // Tabla principal
-    if(!pendientes.length){
-      tablaEl.innerHTML='<div style="text-align:center;padding:24px;color:var(--g);font-size:12px">✅ No hay leads sin asignar en Odoo</div>';
+    // Tabla CON teléfono
+    if(!conTel.length){
+      tablaEl.innerHTML='<div style="text-align:center;padding:24px;color:var(--g);font-size:12px">✅ No hay leads pendientes con teléfono</div>';
     } else {
       tablaEl.innerHTML = `
         <table style="width:100%;border-collapse:collapse;font-size:12px">
@@ -1535,33 +1542,29 @@ async function escanearLeadsNuevos(){
             <th style="text-align:left;padding:8px 12px;color:var(--text3);font-weight:500">Llegó</th>
             <th style="text-align:left;padding:8px 12px;color:var(--text3);font-weight:500">Acción</th>
           </tr></thead>
-          <tbody>${pendientes.map(l=>`
+          <tbody>${conTel.map(l=>`
             <tr style="border-bottom:0.5px solid var(--border)">
               <td style="padding:10px 12px;color:var(--text)">
                 <div style="font-weight:500">${l.contacto||l.nombre||'Sin nombre'}</div>
-                <div style="font-size:10px;color:var(--text3);margin-top:2px">${l.nombre||''}</div>
+                <div style="font-size:10px;color:var(--text3);margin-top:2px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${l.nombre||''}">${l.nombre||''}</div>
               </td>
-              <td style="padding:10px 12px;font-size:11px;color:var(--text2)">
-                ${l.telefono?`<div style="font-weight:500">${l.telefono}</div>`:''}
+              <td style="padding:10px 12px;font-size:11px">
+                <div style="font-weight:500;color:var(--text2)">${l.telefono}</div>
                 ${l.email?`<div style="color:var(--text3);margin-top:2px">📧 ${l.email}</div>`:''}
-                ${!l.telefono&&!l.email?'<span style="color:var(--text3)">Sin contacto</span>':''}
               </td>
               <td style="padding:10px 12px;font-size:11px">
                 ${l.nivel?`<div style="color:var(--g)">${l.nivel}</div>`:''}
                 ${l.zona&&!l.zona.startsWith('http')?`<div style="color:var(--text3);margin-top:2px">📍 ${l.zona}</div>`:''}
-                ${!l.nivel&&(!l.zona||l.zona.startsWith('http'))?'<span style="color:var(--text3)">—</span>':''}
               </td>
-              <td style="padding:10px 12px;font-size:11px;color:var(--text3)">${l.formulario||l.equipo||'—'}</td>
+              <td style="padding:10px 12px;font-size:11px;color:var(--text3)">${l.formulario||'—'}</td>
               <td style="padding:10px 12px;font-size:11px;color:var(--text3)">${l.fecha_creacion||'—'}</td>
               <td style="padding:10px 12px">
-                ${l.telefono?`
-                  <button onclick="atenderConKAI(${l.id},'${(l.telefono||'').replace(/'/g,'')}')" 
-                    style="display:block;width:100%;margin-bottom:4px;background:var(--g);border:none;color:#fff;border-radius:6px;padding:5px 8px;font-size:10px;cursor:pointer;font-weight:500">
-                    🤖 Atender con KAI
-                  </button>
-                `:'<div style="font-size:10px;color:var(--text3);margin-bottom:4px">Sin tel — KAI no puede contactar</div>'}
-                <button onclick="asignarVendedorLead(${l.id})" 
-                  style="display:block;width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text2);border-radius:6px;padding:5px 8px;font-size:10px;cursor:pointer">
+                <button onclick="atenderConKAI(${l.id},'${(l.telefono||'').replace(/'/g,'')}')"
+                  style="display:block;width:100%;margin-bottom:4px;background:var(--g);border:none;color:#fff;border-radius:6px;padding:6px 8px;font-size:10px;cursor:pointer;font-weight:500">
+                  🤖 Atender con KAI
+                </button>
+                <button onclick="asignarVendedorLead(${l.id})"
+                  style="display:block;width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text2);border-radius:6px;padding:6px 8px;font-size:10px;cursor:pointer">
                   👤 Asignar vendedor
                 </button>
               </td>
@@ -1569,9 +1572,60 @@ async function escanearLeadsNuevos(){
           </tbody>
         </table>`;
     }
-    sinTelEl.innerHTML='';
+
+    // Tabla SIN teléfono — solo admisiones, con botón preparar para Odoo
+    if(!sinTel.length){
+      sinTelEl.innerHTML='<div style="text-align:center;padding:16px;color:var(--text3);font-size:12px">Sin leads sin teléfono en este período</div>';
+    } else {
+      sinTelEl.innerHTML = `
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="border-bottom:1px solid var(--border)">
+            <th style="text-align:left;padding:8px 12px;color:var(--text3);font-weight:500">Padre/Madre</th>
+            <th style="text-align:left;padding:8px 12px;color:var(--text3);font-weight:500">Correo</th>
+            <th style="text-align:left;padding:8px 12px;color:var(--text3);font-weight:500">Nivel / Zona</th>
+            <th style="text-align:left;padding:8px 12px;color:var(--text3);font-weight:500">Formulario</th>
+            <th style="text-align:left;padding:8px 12px;color:var(--text3);font-weight:500">Acción</th>
+          </tr></thead>
+          <tbody>${sinTel.map(l=>`
+            <tr style="border-bottom:0.5px solid var(--border)">
+              <td style="padding:10px 12px;font-weight:500;color:var(--text)">${l.contacto||'Sin nombre'}</td>
+              <td style="padding:10px 12px;font-size:11px;color:var(--text2)">${l.email||'Sin correo'}</td>
+              <td style="padding:10px 12px;font-size:11px">
+                ${l.nivel?`<div style="color:var(--g)">${l.nivel}</div>`:'<span style="color:var(--text3)">—</span>'}
+                ${l.zona&&!l.zona.startsWith('http')?`<div style="color:var(--text3)">📍 ${l.zona}</div>`:''}
+              </td>
+              <td style="padding:10px 12px;font-size:11px;color:var(--text3)">${l.formulario||'—'}</td>
+              <td style="padding:10px 12px">
+                <button onclick="prepararParaOdoo(${l.id},'${(l.contacto||'Sin nombre').replace(/'/g,'')}','${(l.email||'').replace(/'/g,'')}','${(l.nivel||'').replace(/'/g,'')}','${(l.zona||'').replace(/'/g,'').replace(/https[^\s]*/g,'')}')"
+                  style="display:block;width:100%;background:var(--amber-bg,#2a1f00);border:1px solid var(--amber,#D4860A);color:var(--amber,#D4860A);border-radius:6px;padding:6px 8px;font-size:10px;cursor:pointer;font-weight:500">
+                  📋 Ver datos y preparar
+                </button>
+              </td>
+            </tr>`).join('')}
+          </tbody>
+        </table>`;
+    }
+
   }catch(e){
     tablaEl.innerHTML=`<div style="padding:16px;color:var(--red);font-size:12px">Error: ${e.message}</div>`;
+  }
+}
+
+function prepararParaOdoo(leadId, nombre, email, nivel, zona){
+  // Mostrar modal con vista previa de los datos antes de confirmar en Odoo
+  const info = `
+📋 VISTA PREVIA DEL LEAD
+
+Nombre: ${nombre}
+Correo: ${email}
+Nivel de interés: ${nivel||'No especificado'}
+Zona: ${zona||'No especificada'}
+ID en Odoo: #${leadId}
+
+¿Deseas asignar este lead a un vendedor para que dé seguimiento?`;
+  
+  if(confirm(info)){
+    asignarVendedorLead(leadId);
   }
 }
 
