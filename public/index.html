@@ -1465,6 +1465,40 @@ async function enviarCampanaMasiva(){
   }catch(e){ showToast('Error de conexión','error'); }
 }
 
+async function atenderConKAI(leadId, telefono){
+  if(!confirm(`¿Confirmas que KAI contactará a este lead por WhatsApp?\nTeléfono: ${telefono}`)) return;
+  try{
+    const r = await fetch(API+'/api/motor/contactar-lead',{
+      method:'POST',
+      headers:{Authorization:'Bearer '+TOKEN,'Content-Type':'application/json'},
+      body: JSON.stringify({ lead_id: leadId, telefono })
+    }).then(r=>r.json());
+    if(r.ok){ showToast('✅ KAI enviará el mensaje en breve','ok'); escanearLeadsNuevos(); }
+    else showToast(r.error||'Error','error');
+  }catch(e){ showToast('Error de conexión','error'); }
+}
+
+async function asignarVendedorLead(leadId){
+  // Obtener lista de vendedores disponibles
+  const rv = await fetch(API+'/api/usuarios',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+  const vendedores = (rv.usuarios||[]).filter(u=>u.role==='vendedor');
+  if(!vendedores.length){ showToast('No hay vendedores disponibles','error'); return; }
+  
+  const opciones = vendedores.map(v=>`${v.nombre||v.email}`).join('\n');
+  const idx = vendedores.findIndex(v=>v.nombre===prompt(`Selecciona vendedor (escribe el nombre exacto):\n${opciones}`));
+  if(idx<0){ showToast('Vendedor no encontrado','error'); return; }
+  
+  try{
+    const r = await fetch(API+'/api/motor/asignar-vendedor',{
+      method:'POST',
+      headers:{Authorization:'Bearer '+TOKEN,'Content-Type':'application/json'},
+      body: JSON.stringify({ lead_id: leadId, vendedor_id: vendedores[idx]._id })
+    }).then(r=>r.json());
+    if(r.ok){ showToast(`✅ Lead asignado a ${vendedores[idx].nombre||vendedores[idx].email}`,'ok'); escanearLeadsNuevos(); }
+    else showToast(r.error||'Error','error');
+  }catch(e){ showToast('Error de conexión','error'); }
+}
+
 async function escanearLeadsNuevos(){
   const resumenEl = document.getElementById('leads-nuevos-resumen');
   const tablaEl = document.getElementById('leads-nuevos-tabla');
@@ -1499,12 +1533,13 @@ async function escanearLeadsNuevos(){
             <th style="text-align:left;padding:8px 12px;color:var(--text3);font-weight:500">Nivel / Zona</th>
             <th style="text-align:left;padding:8px 12px;color:var(--text3);font-weight:500">Origen</th>
             <th style="text-align:left;padding:8px 12px;color:var(--text3);font-weight:500">Llegó</th>
+            <th style="text-align:left;padding:8px 12px;color:var(--text3);font-weight:500">Acción</th>
           </tr></thead>
           <tbody>${pendientes.map(l=>`
             <tr style="border-bottom:0.5px solid var(--border)">
               <td style="padding:10px 12px;color:var(--text)">
-                <div style="font-weight:500">${l.contacto||'Sin nombre'}</div>
-                <div style="font-size:10px;color:var(--text3);margin-top:2px">${l.tipo==='lead'?'📋 Lead':'🎯 Oportunidad'}</div>
+                <div style="font-weight:500">${l.contacto||l.nombre||'Sin nombre'}</div>
+                <div style="font-size:10px;color:var(--text3);margin-top:2px">${l.nombre||''}</div>
               </td>
               <td style="padding:10px 12px;font-size:11px;color:var(--text2)">
                 ${l.telefono?`<div style="font-weight:500">${l.telefono}</div>`:''}
@@ -1514,10 +1549,22 @@ async function escanearLeadsNuevos(){
               <td style="padding:10px 12px;font-size:11px">
                 ${l.nivel?`<div style="color:var(--g)">${l.nivel}</div>`:''}
                 ${l.zona&&!l.zona.startsWith('http')?`<div style="color:var(--text3);margin-top:2px">📍 ${l.zona}</div>`:''}
-                ${!l.nivel&&!l.zona?'<span style="color:var(--text3)">—</span>':''}
+                ${!l.nivel&&(!l.zona||l.zona.startsWith('http'))?'<span style="color:var(--text3)">—</span>':''}
               </td>
               <td style="padding:10px 12px;font-size:11px;color:var(--text3)">${l.formulario||l.equipo||'—'}</td>
               <td style="padding:10px 12px;font-size:11px;color:var(--text3)">${l.fecha_creacion||'—'}</td>
+              <td style="padding:10px 12px">
+                ${l.telefono?`
+                  <button onclick="atenderConKAI(${l.id},'${(l.telefono||'').replace(/'/g,'')}')" 
+                    style="display:block;width:100%;margin-bottom:4px;background:var(--g);border:none;color:#fff;border-radius:6px;padding:5px 8px;font-size:10px;cursor:pointer;font-weight:500">
+                    🤖 Atender con KAI
+                  </button>
+                `:'<div style="font-size:10px;color:var(--text3);margin-bottom:4px">Sin tel — KAI no puede contactar</div>'}
+                <button onclick="asignarVendedorLead(${l.id})" 
+                  style="display:block;width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text2);border-radius:6px;padding:5px 8px;font-size:10px;cursor:pointer">
+                  👤 Asignar vendedor
+                </button>
+              </td>
             </tr>`).join('')}
           </tbody>
         </table>`;
