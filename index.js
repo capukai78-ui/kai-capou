@@ -2186,7 +2186,9 @@ app.get('/api/odoo/leer-mensajes/:id', authMiddleware, async (req, res) => {
         } else if (llave === 'mensaje' && !datosParseados.mensaje) {
           datosParseados.mensaje = valor.replace(/[|]+.*/,'').trim().substring(0,200); i++;
         } else if ((llave === 'nivel' || llave === 'grado') && !datosParseados.nivel) {
-          datosParseados.nivel = valor.replace(/[|]+.*/,'').trim(); i++;
+          // Limpiar basura — tomar solo la primera palabra/frase antes de signos de pregunta o undefined
+          const nivelLimpio = valor.replace(/[|]+.*/,'').replace(/\s*¿.*$/,'').replace(/undefined/gi,'').trim();
+          if (nivelLimpio) { datosParseados.nivel = nivelLimpio; i++; }
         }
       }
 
