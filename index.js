@@ -1507,8 +1507,12 @@ app.post('/webhook', async (req, res) => {
       else if (canal === 'messenger') await enviarMensajeMessenger(idExterno, texto);
     };
 
-    // ── PROCESAR CON KAI ────────────────────────────────────────────────────
-    await procesarMensajeOmnichannel(numeroOrigen, nombreCliente, mensajeUsuario, canal, tenant);
+    // ── PROCESAR CON KAI (crea lead en Odoo) ────────────────────────────────
+    // Canales en modo solo lectura NO deben crear lead en Odoo todavía —
+    // solo se guardan en MongoDB/panel más abajo, sin tocar Odoo.
+    if (!CANALES_SOLO_LECTURA.includes(canal)) {
+      await procesarMensajeOmnichannel(numeroOrigen, nombreCliente, mensajeUsuario, canal, tenant);
+    }
 
     // Canales en solo lectura: solo guardar en MongoDB y mostrar en panel — sin Odoo, sin respuesta
     if (CANALES_SOLO_LECTURA.includes(canal)) {
@@ -2224,9 +2228,10 @@ app.post('/api/odoo/actualizar-lead', authMiddleware, async (req, res) => {
     if (!lead_id) return res.status(400).json({ ok: false, error: 'lead_id requerido' });
 
     const updates = {};
-    if (nombre) updates.partner_name = nombre;
+    if (nombre) updates.contact_name = nombre;
     if (telefono) updates.phone = telefono;
     if (correo) updates.email_from = correo;
+    // TODO: pendiente confirmar el campo técnico real de "Nivel" en Odoo — por ahora sigue igual, sin tocar.
     if (nivel) updates.x_studio_comentarios = nivel;
     if (zona) updates.x_studio_notas_1 = zona;
 
