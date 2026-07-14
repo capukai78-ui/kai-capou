@@ -2949,26 +2949,64 @@ app.get('/api/debug/acrux-mensajes', authMiddleware, async (req, res) => {
 });
 
 // Paso 2: Leer conversaciones activas del ChatRoom
+// Nota: el modelo "acrux.chat.conversation" puede no existir con ese nombre exacto
+// en esta instalación de AcruxLab (o el usuario Odoo no tiene permiso sobre él).
+// Por eso separamos cada intento en su propio try/catch: si "conversation" falla,
+// igual devolvemos algo útil armando conversaciones a partir de acrux.chat.message
+// (que ya confirmamos que SÍ funciona), agrupando por contact_number.
 app.get('/api/debug/acrux-conversaciones', authMiddleware, async (req, res) => {
-  try {
-    if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
 
-    // Primero verificar qué campos existen en el modelo
+  const resultado = { ok: true, modelo_conversation: { disponible: false }, fallback_agrupado: null };
+
+  // Intento 1: modelo dedicado acrux.chat.conversation (puede no existir)
+  try {
     const campos = await odooCallLocal('acrux.chat.conversation', 'fields_get', [], { attributes: ['string', 'type'] });
     const camposDisponibles = campos ? Object.keys(campos).slice(0, 30) : [];
-
-    // Leer con solo los campos básicos que sabemos que existen
     const convs = await odooCallLocal('acrux.chat.conversation', 'search_read',
       [[]],
       { fields: ['id', 'create_date', 'write_date'], limit: 5, order: 'write_date desc' }
     );
-
-    if (!convs) return res.json({ ok: false, error: 'No se pudo leer acrux.chat.conversation' });
-
-    res.json({ ok: true, total: convs.length, campos_disponibles: camposDisponibles, conversaciones: convs });
-  } catch(e) {
-    res.status(500).json({ ok: false, error: e.message });
+    resultado.modelo_conversation = {
+      disponible: true,
+      campos_disponibles: camposDisponibles,
+      total: convs ? convs.length : 0,
+      conversaciones: convs || []
+    };
+  } catch (e) {
+    resultado.modelo_conversation = {
+      disponible: false,
+      error: e.message,
+      nota: 'No se pudo usar acrux.chat.conversation. Puede que el nombre del modelo sea otro, o que no exista como tal. Usar el fallback agrupado en su lugar.'
+    };
   }
+
+  // Intento 2 (fallback confiable): agrupar acrux.chat.message por contact_number
+  try {
+    const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
+      [[]],
+      { fields: ['id', 'text', 'date_message', 'contact_name', 'contact_number', 'from_me'], limit: 200, order: 'date_message desc' }
+    );
+    const porNumero = {};
+    (mensajes || []).forEach(m => {
+      const num = m.contact_number || 'sin_numero';
+      if (!porNumero[num]) porNumero[num] = { numero: num, nombre: m.contact_name || num, total_mensajes: 0, ultimo_mensaje: null, ultima_fecha: null };
+      porNumero[num].total_mensajes++;
+      if (!porNumero[num].ultima_fecha || m.date_message > porNumero[num].ultima_fecha) {
+        porNumero[num].ultima_fecha = m.date_message;
+        porNumero[num].ultimo_mensaje = (m.text || '').substring(0, 100);
+      }
+    });
+    resultado.fallback_agrupado = {
+      disponible: true,
+      total_conversaciones: Object.keys(porNumero).length,
+      conversaciones: Object.values(porNumero).sort((a, b) => (b.ultima_fecha || '').localeCompare(a.ultima_fecha || ''))
+    };
+  } catch (e) {
+    resultado.fallback_agrupado = { disponible: false, error: e.message };
+  }
+
+  res.json(resultado);
 });
 
 // Paso 3: Método de envío — probar que podemos responder por AcruxLab
@@ -2987,6 +3025,227 @@ app.post('/api/debug/acrux-enviar-prueba', authMiddleware, async (req, res) => {
   } catch(e) {
     res.status(500).json({ ok: false, error: e.message, nota: 'El método action_send_message puede tener un nombre diferente en tu versión de AcruxLab' });
   }
+});
+
+// ===== ACRUXLAB CHATROOM — Lectura real para el panel (Fase 1: solo lectura) =====
+// Estos endpoints NO escriben nada en Odoo. Solo leen acrux.chat.message y arman
+// conversaciones agrupando por contact_number, para mostrarlas en "Chats en Vivo".
+// Cuando se autorice la Fase 2 (KAI respondiendo por este número), se agregará
+// un endpoint de envío aparte — este bloque se queda solo de lectura.
+
+app.get('/api/acrux/conversaciones', authMiddleware, async (req, res) => {
+  try {
+    const limite = Math.min(parseInt(req.query.limit) || 300, 1000);
+    const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
+      [[]],
+      { fields: ['id', 'text', 'date_message', 'contact_name', 'contact_number', 'from_me', 'read_date'], limit: limite, order: 'date_message desc' }
+    );
+
+    if (!mensajes) return res.json({ ok: false, error: 'No se pudo leer acrux.chat.message' });
+
+    const porNumero = {};
+    mensajes.forEach(m => {
+      const num = m.contact_number || 'sin_numero';
+      if (!porNumero[num]) {
+        porNumero[num] = {
+          numero: num,
+          nombre: m.contact_name || num,
+          total_mensajes: 0,
+          no_leidos: 0,
+          ultimo_mensaje: null,
+          ultima_fecha: null,
+          ultimo_de: null,
+          etiquetas: [],
+          prioridad: '0'
+        };
+      }
+      const c = porNumero[num];
+      c.total_mensajes++;
+      if (!m.from_me && !m.read_date) c.no_leidos++;
+      if (!c.ultima_fecha || m.date_message > c.ultima_fecha) {
+        c.ultima_fecha = m.date_message;
+        c.ultimo_mensaje = (m.text || '').substring(0, 120);
+        c.ultimo_de = m.from_me ? 'agente' : 'padre';
+      }
+    });
+
+    // Cruce con Odoo — una sola consulta para todos los números, en vez de una por chat
+    // (solo lectura, igual que el resto de este bloque de AcruxLab)
+    try {
+      const leads = await odooCallLocal('crm.lead', 'search_read',
+        [[['type', '=', 'opportunity']]],
+        { fields: ['id', 'phone', 'mobile', 'priority', 'tag_ids'], limit: 1000, order: 'write_date desc' }
+      ) || [];
+
+      const idsTagsUsados = [...new Set(leads.flatMap(l => l.tag_ids || []))];
+      let nombresTag = {};
+      if (idsTagsUsados.length) {
+        const tags = await odooCallLocal('crm.tag', 'search_read', [[['id', 'in', idsTagsUsados]]], { fields: ['id', 'name'] });
+        (tags || []).forEach(t => { nombresTag[t.id] = t.name; });
+      }
+
+      Object.values(porNumero).forEach(c => {
+        const numLimpio = String(c.numero).replace(/\D/g, '').slice(-8);
+        const lead = leads.find(l => {
+          const tel = String(l.phone || '').replace(/\D/g, '').slice(-8);
+          const mov = String(l.mobile || '').replace(/\D/g, '').slice(-8);
+          return numLimpio && (tel === numLimpio || mov === numLimpio);
+        });
+        if (lead) {
+          c.etiquetas = (lead.tag_ids || []).map(id => nombresTag[id]).filter(Boolean);
+          c.prioridad = lead.priority || '0';
+        }
+      });
+    } catch (e) {
+      // Si el cruce con Odoo falla, seguimos mostrando los chats sin etiquetas (no bloqueante)
+    }
+
+    const conversaciones = Object.values(porNumero).sort((a, b) => (b.ultima_fecha || '').localeCompare(a.ultima_fecha || ''));
+    res.json({ ok: true, canal: 'acrux_whatsapp', solo_lectura: true, total: conversaciones.length, conversaciones });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.get('/api/acrux/conversaciones/:numero', authMiddleware, async (req, res) => {
+  try {
+    const numero = req.params.numero;
+    const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
+      [[['contact_number', '=', numero]]],
+      { fields: ['id', 'text', 'date_message', 'contact_name', 'from_me', 'read_date'], limit: 500, order: 'date_message asc' }
+    );
+
+    if (!mensajes) return res.json({ ok: false, error: 'No se pudo leer los mensajes de este número' });
+
+    res.json({
+      ok: true,
+      canal: 'acrux_whatsapp',
+      solo_lectura: true,
+      numero,
+      nombre: mensajes.find(m => m.contact_name)?.contact_name || numero,
+      mensajes: mensajes.map(m => ({
+        de: m.from_me ? 'agente' : 'padre',
+        texto: m.text || '',
+        fecha: m.date_message,
+        leido: !!m.read_date
+      }))
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Cruce solo-lectura: dado un número de WhatsApp, buscar el lead de Odoo asociado
+// y devolver los campos que Sylvia usa para clasificar (Prioridad / Etiquetas / Nota).
+// No escribe nada — únicamente lectura, para mostrarlo junto al chat de AcruxLab.
+app.get('/api/acrux/lead-por-telefono/:numero', authMiddleware, async (req, res) => {
+  try {
+    const numero = (req.params.numero || '').replace(/\D/g, '').slice(-8); // últimos 8 dígitos, sin +502 ni espacios
+    if (!numero) return res.json({ ok: false, error: 'Número inválido' });
+
+    const leads = await odooCallLocal('crm.lead', 'search_read',
+      [[['type', '=', 'opportunity']]],
+      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'mobile', 'priority', 'tag_ids', 'x_studio_notas_1', 'x_studio_comentarios'], limit: 200, order: 'write_date desc' }
+    ) || [];
+
+    const lead = leads.find(l => {
+      const tel = String(l.phone || '').replace(/\D/g, '').slice(-8);
+      const mov = String(l.mobile || '').replace(/\D/g, '').slice(-8);
+      return tel === numero || mov === numero;
+    });
+
+    if (!lead) return res.json({ ok: true, encontrado: false });
+
+    let etiquetas = [];
+    if (lead.tag_ids && lead.tag_ids.length) {
+      const tags = await odooCallLocal('crm.tag', 'search_read', [[['id', 'in', lead.tag_ids]]], { fields: ['id', 'name'] });
+      etiquetas = (tags || []).map(t => t.name);
+    }
+
+    res.json({
+      ok: true,
+      encontrado: true,
+      lead_id: lead.id,
+      nombre_alumno: lead.partner_name || lead.contact_name || null,
+      prioridad: lead.priority || '0', // Odoo: '0'..'3' = número de estrellas
+      etiquetas,
+      nota: lead.x_studio_notas_1 || null,
+      nivel: lead.x_studio_comentarios || null // ⚠️ pendiente #1: este mapeo de "Nivel" está sin confirmar
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ===== DIAGNÓSTICO — Automatizaciones/alias de Odoo que crean leads desde correo =====
+// El formulario de admisiones NO pasa por KAI: llega por correo a capouilliez@gmail.com
+// y Odoo lo convierte en lead solo (alias de correo / email-to-lead). Este endpoint es
+// SOLO LECTURA — busca qué automatización o alias está mapeando mal "Nombre" y "Nivel",
+// para que se corrija desde Odoo Studio (no desde aquí).
+// ===== DIAGNÓSTICO — Nombre técnico real de los campos personalizados de crm.lead =====
+// Solo lectura. Sirve para identificar, por ejemplo, cuál es el campo técnico real de
+// "Nivel" (el que se ve en el formulario de Odoo), para corregir el mapeo en
+// /api/odoo/actualizar-lead sin adivinar nombres de campo.
+app.get('/api/debug/campos-crm-lead', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const campos = await odooCallLocal('crm.lead', 'fields_get', [], { attributes: ['string', 'type'] });
+    if (!campos) return res.json({ ok: false, error: 'No se pudo leer fields_get de crm.lead' });
+
+    const personalizados = Object.entries(campos)
+      .filter(([tecnico]) => tecnico.startsWith('x_studio_'))
+      .map(([tecnico, def]) => ({ campo_tecnico: tecnico, etiqueta: def.string, tipo: def.type }));
+
+    // También incluir los estándar más relevantes para nombre/contacto, para comparar
+    const estandar = ['name', 'partner_name', 'contact_name', 'phone', 'mobile', 'email_from', 'priority', 'tag_ids']
+      .filter(k => campos[k])
+      .map(k => ({ campo_tecnico: k, etiqueta: campos[k].string, tipo: campos[k].type }));
+
+    res.json({ ok: true, campos_personalizados_studio: personalizados, campos_estandar_relevantes: estandar });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.get('/api/debug/automatizaciones-crm-lead', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  const resultado = { ok: true };
+
+  // 1) Automatizaciones (base.automation) ligadas al modelo crm.lead
+  try {
+    const modelos = await odooCallLocal('ir.model', 'search_read', [[['model', '=', 'crm.lead']]], { fields: ['id'], limit: 1 });
+    const modeloId = modelos?.[0]?.id;
+    const automatizaciones = await odooCallLocal('base.automation', 'search_read',
+      [modeloId ? [['model_id', '=', modeloId]] : [['model_id.model', '=', 'crm.lead']]],
+      { fields: ['id', 'name', 'active', 'trigger', 'action_server_ids', 'filter_domain'], limit: 50 }
+    );
+    resultado.automatizaciones = automatizaciones || [];
+
+    // Traer el código/detalle de cada acción de servidor asociada
+    const accionIds = [...new Set((automatizaciones || []).flatMap(a => a.action_server_ids || []))];
+    if (accionIds.length) {
+      const acciones = await odooCallLocal('ir.actions.server', 'search_read',
+        [[['id', 'in', accionIds]]],
+        { fields: ['id', 'name', 'state', 'code', 'update_field_id', 'update_path', 'value', 'evaluation_type'] }
+      );
+      resultado.acciones_servidor = acciones || [];
+    }
+  } catch (e) {
+    resultado.automatizaciones_error = e.message;
+  }
+
+  // 2) Alias de correo (mail.alias) que apunten a crm.lead — ej. capouilliez@gmail.com / admisiones
+  try {
+    const alias = await odooCallLocal('mail.alias', 'search_read',
+      [[['alias_model_id.model', '=', 'crm.lead']]],
+      { fields: ['id', 'alias_name', 'alias_defaults', 'alias_force_thread_id', 'alias_domain'], limit: 20 }
+    );
+    resultado.alias_correo = alias || [];
+  } catch (e) {
+    resultado.alias_error = e.message;
+  }
+
+  res.json(resultado);
 });
 
 app.get('/api/logs/no-procesados', authMiddleware, async (req, res) => {
