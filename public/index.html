@@ -1238,7 +1238,7 @@ async function abrirChat(id){
 
 // ===== ACRUXLAB / CHATROOM — Número oficial (Fase 1: solo lectura) =====
 let _clTabActual = 'omni';
-let _acruxNumeroActivo = null;
+let _acruxContactoActivo = null;
 let _acruxPollInterval = null;
 
 function cambiarClTab(tab){
@@ -1269,13 +1269,13 @@ async function loadAcruxLista(){
       return;
     }
     lista.innerHTML = r.conversaciones.map(c => `
-      <div onclick="abrirAcruxChat('${c.numero}')" style="padding:12px;border-radius:10px;cursor:pointer;margin-bottom:6px;background:${_acruxNumeroActivo===c.numero?'var(--acrux2)':'transparent'};border:1px solid ${_acruxNumeroActivo===c.numero?'var(--acrux3)':'transparent'}" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='${_acruxNumeroActivo===c.numero?'var(--acrux2)':'transparent'}'">
+      <div onclick="abrirAcruxChat(${c.contacto_id})" style="padding:12px;border-radius:10px;cursor:pointer;margin-bottom:6px;background:${_acruxContactoActivo===c.contacto_id?'var(--acrux2)':'transparent'};border:1px solid ${_acruxContactoActivo===c.contacto_id?'var(--acrux3)':'transparent'}" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='${_acruxContactoActivo===c.contacto_id?'var(--acrux2)':'transparent'}'">
         <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:4px">
-          <div style="font-weight:600;font-size:13px">${c.nombre || c.numero}</div>
+          <div style="font-weight:600;font-size:13px">${c.nombre || c.numero || 'Sin nombre'}</div>
           ${c.no_leidos ? `<span style="font-size:9px;padding:2px 6px;border-radius:5px;background:var(--acrux2);color:var(--acrux)">${c.no_leidos} nuevo${c.no_leidos>1?'s':''}</span>` : ''}
         </div>
         ${c.etiquetas?.length ? `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px">${c.etiquetas.map(t=>`<span style="font-size:9px;background:var(--bg4);color:var(--text2);padding:1px 7px;border-radius:8px">${t}</span>`).join('')}</div>` : ''}
-        <div style="font-size:11px;color:var(--text3);margin-bottom:4px">${c.numero}</div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:4px">${c.numero || 'sin número identificado'}</div>
         <div style="font-size:11px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.ultimo_de==='agente'?'Tú: ':''}${c.ultimo_mensaje||''}</div>
       </div>
     `).join('');
@@ -1288,22 +1288,19 @@ async function loadAcruxLista(){
   }, 8000);
 }
 
-async function abrirAcruxChat(numero){
-  _acruxNumeroActivo = numero;
+async function abrirAcruxChat(contactoId){
+  _acruxContactoActivo = contactoId;
   document.getElementById('acrux-chat-header').style.display='block';
   const mensajesEl = document.getElementById('acrux-mensajes');
   mensajesEl.innerHTML = '<div style="text-align:center;color:var(--text3);font-size:12px">Cargando...</div>';
   document.getElementById('acrux-lead-panel').innerHTML = '<div style="font-size:11px;color:var(--text3)">Buscando lead en Odoo...</div>';
 
   try {
-    const [hilo, lead] = await Promise.all([
-      fetch(API+'/api/acrux/conversaciones/'+encodeURIComponent(numero),{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json()),
-      fetch(API+'/api/acrux/lead-por-telefono/'+encodeURIComponent(numero),{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json())
-    ]);
+    const hilo = await fetch(API+'/api/acrux/conversaciones/'+contactoId,{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
 
     if(hilo.ok){
-      document.getElementById('acrux-chat-nombre').textContent = hilo.nombre || numero;
-      document.getElementById('acrux-chat-numero').textContent = numero;
+      document.getElementById('acrux-chat-nombre').textContent = hilo.nombre || 'Sin nombre';
+      document.getElementById('acrux-chat-numero').textContent = hilo.numero || 'sin número identificado';
       mensajesEl.innerHTML = (hilo.mensajes||[]).map(m=>{
         const esPadre = m.de==='padre';
         const bg = esPadre ? 'var(--bg3)' : 'var(--acrux)';
@@ -1317,35 +1314,40 @@ async function abrirAcruxChat(numero){
         </div>`;
       }).join('');
       mensajesEl.scrollTop = mensajesEl.scrollHeight;
+
+      // Panel de clasificación (vista de Sylvia) — solo lectura, requiere el número real
+      const panel = document.getElementById('acrux-lead-panel');
+      if(!hilo.numero){
+        panel.innerHTML = `<div style="font-size:11px;color:var(--text3)">No se pudo identificar el número de este contacto para buscarlo en Odoo.</div>`;
+      } else {
+        const lead = await fetch(API+'/api/acrux/lead-por-telefono/'+encodeURIComponent(hilo.numero),{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+        if(!lead.ok){
+          panel.innerHTML = `<div style="font-size:11px;color:var(--text3)">Error al buscar en Odoo: ${lead.error||'desconocido'}</div>`;
+        } else if(!lead.encontrado){
+          panel.innerHTML = `<div style="font-size:11px;color:var(--text3)">No se encontró un lead en Odoo con este número.</div>`;
+        } else {
+          const estrellas = '★'.repeat(parseInt(lead.prioridad||'0')) + '☆'.repeat(3-parseInt(lead.prioridad||'0'));
+          panel.innerHTML = `
+            <div style="margin-bottom:14px">
+              <div style="font-size:10px;color:var(--text3);margin-bottom:4px">PRIORIDAD</div>
+              <div style="font-size:16px;color:var(--amber)">${estrellas}</div>
+            </div>
+            <div style="margin-bottom:14px">
+              <div style="font-size:10px;color:var(--text3);margin-bottom:4px">ETIQUETAS</div>
+              <div style="display:flex;flex-wrap:wrap;gap:5px">
+                ${lead.etiquetas.length ? lead.etiquetas.map(t=>`<span style="font-size:10px;background:var(--acrux2);color:var(--acrux);border:1px solid var(--acrux3);padding:2px 8px;border-radius:10px">${t}</span>`).join('') : '<span style="font-size:11px;color:var(--text3)">Sin etiquetas</span>'}
+              </div>
+            </div>
+            <div style="margin-bottom:14px">
+              <div style="font-size:10px;color:var(--text3);margin-bottom:4px">NOTA</div>
+              <div style="font-size:12px;color:var(--text2);white-space:pre-wrap">${lead.nota || lead.nombre_alumno || 'Sin nota'}</div>
+            </div>
+            <div style="font-size:9px;color:var(--text3);margin-top:16px;padding-top:10px;border-top:1px solid var(--border)">Lead #${lead.lead_id} — solo lectura</div>
+          `;
+        }
+      }
     } else {
       mensajesEl.innerHTML = '<div style="text-align:center;color:var(--text3);font-size:12px">No se pudo cargar el hilo: '+(hilo.error||'error desconocido')+'</div>';
-    }
-
-    // Panel de clasificación (vista de Sylvia) — solo lectura
-    const panel = document.getElementById('acrux-lead-panel');
-    if(!lead.ok){
-      panel.innerHTML = `<div style="font-size:11px;color:var(--text3)">Error al buscar en Odoo: ${lead.error||'desconocido'}</div>`;
-    } else if(!lead.encontrado){
-      panel.innerHTML = `<div style="font-size:11px;color:var(--text3)">No se encontró un lead en Odoo con este número.</div>`;
-    } else {
-      const estrellas = '★'.repeat(parseInt(lead.prioridad||'0')) + '☆'.repeat(3-parseInt(lead.prioridad||'0'));
-      panel.innerHTML = `
-        <div style="margin-bottom:14px">
-          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">PRIORIDAD</div>
-          <div style="font-size:16px;color:var(--amber)">${estrellas}</div>
-        </div>
-        <div style="margin-bottom:14px">
-          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">ETIQUETAS</div>
-          <div style="display:flex;flex-wrap:wrap;gap:5px">
-            ${lead.etiquetas.length ? lead.etiquetas.map(t=>`<span style="font-size:10px;background:var(--acrux2);color:var(--acrux);border:1px solid var(--acrux3);padding:2px 8px;border-radius:10px">${t}</span>`).join('') : '<span style="font-size:11px;color:var(--text3)">Sin etiquetas</span>'}
-          </div>
-        </div>
-        <div style="margin-bottom:14px">
-          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">NOTA</div>
-          <div style="font-size:12px;color:var(--text2);white-space:pre-wrap">${lead.nota || lead.nombre_alumno || 'Sin nota'}</div>
-        </div>
-        <div style="font-size:9px;color:var(--text3);margin-top:16px;padding-top:10px;border-top:1px solid var(--border)">Lead #${lead.lead_id} — solo lectura</div>
-      `;
     }
 
     // Refrescar lista para marcar el seleccionado
