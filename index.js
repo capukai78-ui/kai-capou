@@ -3186,6 +3186,33 @@ app.get('/api/acrux/lead-por-telefono/:numero', authMiddleware, async (req, res)
 // Solo lectura. Sirve para identificar, por ejemplo, cuál es el campo técnico real de
 // "Nivel" (el que se ve en el formulario de Odoo), para corregir el mapeo en
 // /api/odoo/actualizar-lead sin adivinar nombres de campo.
+// ===== DIAGNÓSTICO — Campos reales de acrux.chat.message =====
+// contact_name / contact_number vienen en false en los mensajes reales — hay que
+// encontrar el campo correcto que identifica al contacto/conversación en este modelo.
+app.get('/api/debug/acrux-campos-mensaje', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const campos = await odooCallLocal('acrux.chat.message', 'fields_get', [], { attributes: ['string', 'type', 'relation'] });
+    if (!campos) return res.json({ ok: false, error: 'No se pudo leer fields_get' });
+
+    const listaCampos = Object.entries(campos).map(([tecnico, def]) => ({
+      campo_tecnico: tecnico, etiqueta: def.string, tipo: def.type, relacion: def.relation || null
+    }));
+
+    // Traer 1 mensaje completo con TODOS los campos (sin especificar 'fields') para ver qué trae valor real
+    const idsMuestra = await odooCallLocal('acrux.chat.message', 'search', [[]], { limit: 1, order: 'date_message desc' });
+    let mensajeCompleto = null;
+    if (idsMuestra && idsMuestra.length) {
+      const detalle = await odooCallLocal('acrux.chat.message', 'read', [idsMuestra, []]);
+      mensajeCompleto = detalle?.[0] || null;
+    }
+
+    res.json({ ok: true, total_campos: listaCampos.length, campos: listaCampos, mensaje_de_muestra_completo: mensajeCompleto });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get('/api/debug/campos-crm-lead', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
