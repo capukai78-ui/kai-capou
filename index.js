@@ -1507,12 +1507,8 @@ app.post('/webhook', async (req, res) => {
       else if (canal === 'messenger') await enviarMensajeMessenger(idExterno, texto);
     };
 
-    // ── PROCESAR CON KAI (crea lead en Odoo) ────────────────────────────────
-    // Canales en modo solo lectura NO deben crear lead en Odoo todavía —
-    // solo se guardan en MongoDB/panel más abajo, sin tocar Odoo.
-    if (!CANALES_SOLO_LECTURA.includes(canal)) {
-      await procesarMensajeOmnichannel(numeroOrigen, nombreCliente, mensajeUsuario, canal, tenant);
-    }
+    // ── PROCESAR CON KAI ────────────────────────────────────────────────────
+    await procesarMensajeOmnichannel(numeroOrigen, nombreCliente, mensajeUsuario, canal, tenant);
 
     // Canales en solo lectura: solo guardar en MongoDB y mostrar en panel — sin Odoo, sin respuesta
     if (CANALES_SOLO_LECTURA.includes(canal)) {
@@ -1921,19 +1917,7 @@ app.get('/api/crm-leads', authMiddleware, async (req, res) => {
   } catch (err) { res.json({ ok:false, total:0, porEtapa:{}, leads:[] }); }
 });
 
-// ===== TEMPORAL — Diagnóstico de solo lectura para encontrar el modelo de ChatRoom/Acruxlab =====
-// No escribe nada en Odoo. Solo busca y lista. Borrar este endpoint cuando ya no se necesite.
-app.get('/api/debug/buscar-modelo-chatroom', authMiddleware, async (req, res) => {
-  try {
-    const acrux = await odooCallLocal('ir.model', 'search_read', [[['model', 'like', 'acrux']]], { fields: ['model', 'name'] });
-    const chatroom = await odooCallLocal('ir.model', 'search_read', [[['model', 'like', 'chatroom']]], { fields: ['model', 'name'] });
-    res.json({ ok: true, modelos_encontrados: [...acrux, ...chatroom] });
-  } catch (err) {
-    res.json({ ok: false, error: err.message });
-  }
-});
-
-
+// ===== FAQs =====
 app.get('/api/faqs',    authMiddleware, async (req, res) => { try { res.json(await FAQ.find({ tenant_id: req.user.tenant_id, activo: true }).sort({ creado: -1 })); } catch (err) { res.status(500).json({ error: err.message }); } });
 app.post('/api/faqs',   authMiddleware, async (req, res) => { try { const { pregunta, respuesta, categoria } = req.body; if (!pregunta||!respuesta) return res.status(400).json({ error: 'Pregunta y respuesta requeridas' }); res.json({ ok:true, faq: await FAQ.create({ tenant_id: req.user.tenant_id, pregunta, respuesta, categoria: categoria||'general' }) }); } catch (err) { res.status(500).json({ error: err.message }); } });
 app.put('/api/faqs/:id', authMiddleware, async (req, res) => { try { res.json({ ok:true, faq: await FAQ.findOneAndUpdate({ _id: req.params.id, tenant_id: req.user.tenant_id }, req.body, { new:true }) }); } catch (err) { res.status(500).json({ error: err.message }); } });
@@ -2240,10 +2224,9 @@ app.post('/api/odoo/actualizar-lead', authMiddleware, async (req, res) => {
     if (!lead_id) return res.status(400).json({ ok: false, error: 'lead_id requerido' });
 
     const updates = {};
-    if (nombre) updates.contact_name = nombre;
+    if (nombre) updates.partner_name = nombre;
     if (telefono) updates.phone = telefono;
     if (correo) updates.email_from = correo;
-    // TODO: pendiente confirmar el campo técnico real de "Nivel" en Odoo — por ahora sigue igual, sin tocar.
     if (nivel) updates.x_studio_comentarios = nivel;
     if (zona) updates.x_studio_notas_1 = zona;
 
@@ -2848,6 +2831,83 @@ app.post('/api/motor/activar', authMiddleware, async (req, res) => {
     res.json({ ok: true, mensaje: 'Motor de contacto proactivo iniciado — revisa los logs de Railway' });
     motorContactoProactivo(); // corre en segundo plano
   } catch(e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// ===== ACRUXLAB CHATROOM — Diagnóstico y lectura de mensajes =====
+
+// Paso 1: Diagnóstico — confirmar que podemos leer acrux.chat.message
+app.get('/api/debug/acrux-mensajes', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+
+    // Leer los últimos 10 mensajes entrantes (from_me = false = del padre)
+    const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
+      [[['from_me', '=', false]]],
+      {
+        fields: ['id', 'text', 'date_message', 'contact_name', 'contact_number', 'from_me', 'msgid', 'read_date', 'event'],
+        limit: 10,
+        order: 'date_message desc'
+      }
+    );
+
+    if (!mensajes) return res.json({ ok: false, error: 'No se pudo leer acrux.chat.message — verificar permisos' });
+
+    res.json({
+      ok: true,
+      total_leidos: mensajes.length,
+      mensaje: 'Lectura exitosa de AcruxLab ChatRoom',
+      mensajes: mensajes.map(m => ({
+        id: m.id,
+        fecha: m.date_message,
+        de: m.contact_name || m.contact_number,
+        texto: (m.text || '').substring(0, 100),
+        leido: !!m.read_date,
+        evento: m.event
+      }))
+    });
+  } catch(e) {
+    res.status(500).json({ ok: false, error: e.message, nota: 'Si el error es "Model not found", AcruxLab no está instalado o el usuario no tiene permisos' });
+  }
+});
+
+// Paso 2: Leer conversaciones activas del ChatRoom
+app.get('/api/debug/acrux-conversaciones', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+
+    const convs = await odooCallLocal('acrux.chat.conversation', 'search_read',
+      [[['agent_id', '=', false]]],  // sin agente asignado = KAI puede atender
+      {
+        fields: ['id', 'contact_id', 'connector_id', 'create_date'],
+        limit: 10,
+        order: 'create_date desc'
+      }
+    );
+
+    if (!convs) return res.json({ ok: false, error: 'No se pudo leer acrux.chat.conversation' });
+
+    res.json({ ok: true, total: convs.length, conversaciones: convs });
+  } catch(e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Paso 3: Método de envío — probar que podemos responder por AcruxLab
+app.post('/api/debug/acrux-enviar-prueba', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+    const { conversation_id, texto } = req.body;
+    if (!conversation_id || !texto) return res.status(400).json({ ok: false, error: 'conversation_id y texto requeridos' });
+
+    // Intentar enviar por el método de AcruxLab
+    const resultado = await odooCallLocal('acrux.chat.conversation', 'action_send_message',
+      [[parseInt(conversation_id)], texto]
+    );
+
+    res.json({ ok: true, resultado, nota: 'Si resultado es null pero no hay error, el mensaje se envió' });
+  } catch(e) {
+    res.status(500).json({ ok: false, error: e.message, nota: 'El método action_send_message puede tener un nombre diferente en tu versión de AcruxLab' });
+  }
 });
 
 app.get('/api/logs/no-procesados', authMiddleware, async (req, res) => {
