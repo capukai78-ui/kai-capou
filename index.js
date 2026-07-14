@@ -1921,7 +1921,19 @@ app.get('/api/crm-leads', authMiddleware, async (req, res) => {
   } catch (err) { res.json({ ok:false, total:0, porEtapa:{}, leads:[] }); }
 });
 
-// ===== FAQs =====
+// ===== TEMPORAL — Diagnóstico de solo lectura para encontrar el modelo de ChatRoom/Acruxlab =====
+// No escribe nada en Odoo. Solo busca y lista. Borrar este endpoint cuando ya no se necesite.
+app.get('/api/debug/buscar-modelo-chatroom', authMiddleware, async (req, res) => {
+  try {
+    const acrux = await odooCallLocal('ir.model', 'search_read', [[['model', 'like', 'acrux']]], { fields: ['model', 'name'] });
+    const chatroom = await odooCallLocal('ir.model', 'search_read', [[['model', 'like', 'chatroom']]], { fields: ['model', 'name'] });
+    res.json({ ok: true, modelos_encontrados: [...acrux, ...chatroom] });
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
+
 app.get('/api/faqs',    authMiddleware, async (req, res) => { try { res.json(await FAQ.find({ tenant_id: req.user.tenant_id, activo: true }).sort({ creado: -1 })); } catch (err) { res.status(500).json({ error: err.message }); } });
 app.post('/api/faqs',   authMiddleware, async (req, res) => { try { const { pregunta, respuesta, categoria } = req.body; if (!pregunta||!respuesta) return res.status(400).json({ error: 'Pregunta y respuesta requeridas' }); res.json({ ok:true, faq: await FAQ.create({ tenant_id: req.user.tenant_id, pregunta, respuesta, categoria: categoria||'general' }) }); } catch (err) { res.status(500).json({ error: err.message }); } });
 app.put('/api/faqs/:id', authMiddleware, async (req, res) => { try { res.json({ ok:true, faq: await FAQ.findOneAndUpdate({ _id: req.params.id, tenant_id: req.user.tenant_id }, req.body, { new:true }) }); } catch (err) { res.status(500).json({ error: err.message }); } });
