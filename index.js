@@ -2833,6 +2833,84 @@ app.post('/api/motor/activar', authMiddleware, async (req, res) => {
   } catch(e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
+// ===== DASHBOARD DE MONITOREO — para Sylvia =====
+app.get('/api/monitoreo/dashboard', authMiddleware, async (req, res) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    const ahora = new Date();
+    const hace1h = new Date(ahora - 60*60*1000);
+    const hace24h = new Date(ahora - 24*60*60*1000);
+
+    // Chats activos por asesora
+    const chatsActivos = await Conversacion.aggregate([
+      { $match: { tenant_id: tenantId, estado: { $in: ['humano', 'esperando_agente'] } } },
+      { $group: { _id: '$agente_nombre', total: { $sum: 1 }, ids: { $push: '$_id' } } }
+    ]);
+
+    // Chats sin respuesta hace más de 30 minutos
+    const hace30min = new Date(ahora - 30*60*1000);
+    const sinRespuesta = await Conversacion.find({
+      tenant_id: tenantId,
+      estado: { $in: ['humano', 'esperando_agente'] },
+      ultimaActividad: { $lt: hace30min }
+    }).select('numero nombre agente_nombre ultimaActividad');
+
+    // Tiempo promedio de respuesta por asesora (últimas 24h)
+    const convs24h = await Conversacion.find({
+      tenant_id: tenantId,
+      estado: { $ne: 'bot' },
+      creado: { $gte: hace24h }
+    }).select('agente_nombre mensajes creado ultimaActividad');
+
+    // Calcular tiempo promedio de primera respuesta por asesora
+    const tiemposPorAgente = {};
+    convs24h.forEach(conv => {
+      if (!conv.agente_nombre || !conv.mensajes?.length) return;
+      const primerMsgPadre = conv.mensajes.find(m => m.de === 'padre');
+      const primerRespAgente = conv.mensajes.find(m => m.de === 'agente');
+      if (primerMsgPadre && primerRespAgente) {
+        const espera = new Date(primerRespAgente.fecha) - new Date(primerMsgPadre.fecha);
+        if (espera > 0) {
+          if (!tiemposPorAgente[conv.agente_nombre]) tiemposPorAgente[conv.agente_nombre] = [];
+          tiemposPorAgente[conv.agente_nombre].push(Math.round(espera / 60000)); // en minutos
+        }
+      }
+    });
+
+    const promediosPorAgente = Object.entries(tiemposPorAgente).map(([agente, tiempos]) => ({
+      agente,
+      promedio_minutos: Math.round(tiempos.reduce((a,b)=>a+b,0) / tiempos.length),
+      total_atendidos: tiempos.length
+    }));
+
+    // Resumen general
+    const totalActivos = await Conversacion.countDocuments({ tenant_id: tenantId, estado: { $in: ['humano','esperando_agente'] } });
+    const totalBot = await Conversacion.countDocuments({ tenant_id: tenantId, estado: 'bot' });
+    const totalHoy = await Conversacion.countDocuments({ tenant_id: tenantId, creado: { $gte: hace24h } });
+
+    res.json({
+      ok: true,
+      resumen: {
+        chats_activos_total: totalActivos,
+        chats_con_kai: totalBot,
+        chats_nuevos_24h: totalHoy,
+        sin_respuesta_30min: sinRespuesta.length
+      },
+      por_asesora: chatsActivos.map(a => ({
+        asesora: a._id || 'Sin asignar',
+        chats_activos: a.total
+      })),
+      sin_respuesta: sinRespuesta.map(c => ({
+        numero: c.numero,
+        nombre: c.nombre || 'Sin nombre',
+        asesora: c.agente_nombre || 'Sin asignar',
+        minutos_sin_respuesta: Math.round((ahora - new Date(c.ultimaActividad)) / 60000)
+      })),
+      tiempos_respuesta: promediosPorAgente
+    });
+  } catch(e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 // ===== ACRUXLAB CHATROOM — Diagnóstico y lectura de mensajes =====
 
 // Paso 1: Diagnóstico — confirmar que podemos leer acrux.chat.message
@@ -2875,18 +2953,19 @@ app.get('/api/debug/acrux-conversaciones', authMiddleware, async (req, res) => {
   try {
     if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
 
+    // Primero verificar qué campos existen en el modelo
+    const campos = await odooCallLocal('acrux.chat.conversation', 'fields_get', [], { attributes: ['string', 'type'] });
+    const camposDisponibles = campos ? Object.keys(campos).slice(0, 30) : [];
+
+    // Leer con solo los campos básicos que sabemos que existen
     const convs = await odooCallLocal('acrux.chat.conversation', 'search_read',
-      [[['agent_id', '=', false]]],  // sin agente asignado = KAI puede atender
-      {
-        fields: ['id', 'contact_id', 'connector_id', 'create_date'],
-        limit: 10,
-        order: 'create_date desc'
-      }
+      [[]],
+      { fields: ['id', 'create_date', 'write_date'], limit: 5, order: 'write_date desc' }
     );
 
     if (!convs) return res.json({ ok: false, error: 'No se pudo leer acrux.chat.conversation' });
 
-    res.json({ ok: true, total: convs.length, conversaciones: convs });
+    res.json({ ok: true, total: convs.length, campos_disponibles: camposDisponibles, conversaciones: convs });
   } catch(e) {
     res.status(500).json({ ok: false, error: e.message });
   }
