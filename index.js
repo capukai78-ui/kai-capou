@@ -3177,7 +3177,7 @@ async function seedImagenes() {
 }
 
 app.listen(PORT, () => {
-  console.log(`✅ KAI — Colegio Capouilliez corriendo en puerto ${PORT}`);
+  console.log(`✅ KAI — Colegio Capouilliez corriendo en puerto ${PORT} | v2026.07.14-acrux`);
   console.log(`📊 Planes: Básico(${PLANES.basico.mensajes_mes}msg/${PLANES.basico.max_usuarios}usr) | Profesional(${PLANES.profesional.mensajes_mes}msg/${PLANES.profesional.max_usuarios}usr) | Empresarial(${PLANES.empresarial.mensajes_mes}msg/${PLANES.empresarial.max_usuarios}usr)`);
   // Cargar imágenes del colegio en MongoDB al iniciar (si no existen)
   setTimeout(seedImagenes, 5000); // esperar 5s a que MongoDB esté listo
