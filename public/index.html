@@ -231,6 +231,9 @@ tr:hover td{background:var(--g4)}
     <a class="nl" id="nav-marketing" onclick="nav('marketing',this)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>Marketing
     </a>
+    <a class="nl" id="nav-monitoreo" onclick="nav('monitoreo',this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/><path d="M6 8h.01M9 8h6M6 11h12"/></svg>Monitoreo
+    </a>
     <div class="ns" style="margin-top:6px" id="ns-admin">Config</div>
     <a class="nl" id="nav-faqs" onclick="nav('faqs',this)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>FAQs del Bot
@@ -807,6 +810,44 @@ tr:hover td{background:var(--g4)}
       </div>
     </div>
 
+    <!-- MONITOREO -->
+    <div class="page" id="p-monitoreo">
+      <div class="ph">
+        <div><div class="ph-title">Monitoreo en tiempo real</div><div class="ph-sub">Supervisión de chats · Tiempos de respuesta · Asesoras</div></div>
+        <button class="rpill" onclick="loadMonitoreo()">↻ Actualizar</button>
+      </div>
+
+      <!-- Tarjetas resumen -->
+      <div class="dash-metrics" id="mon-resumen">
+        <div class="mc"><div class="mc-lbl">Cargando...</div><div class="mc-val">⏳</div></div>
+      </div>
+
+      <!-- Alerta chats sin respuesta -->
+      <div id="mon-alerta" style="display:none;background:#2a0a0a;border:1px solid var(--red);border-radius:10px;padding:14px 18px;margin-bottom:16px">
+        <div style="font-size:13px;font-weight:600;color:var(--red);margin-bottom:10px">⚠️ Chats sin respuesta hace más de 30 minutos</div>
+        <div id="mon-alerta-lista"></div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+        <!-- Por asesora -->
+        <div class="tw">
+          <div class="tw-h"><div class="tw-t">👤 Chats activos por asesora</div></div>
+          <div id="mon-asesoras" style="padding:8px"></div>
+        </div>
+        <!-- Tiempos de respuesta -->
+        <div class="tw">
+          <div class="tw-h"><div class="tw-t">⏱️ Tiempo promedio de respuesta (24h)</div></div>
+          <div id="mon-tiempos" style="padding:8px"></div>
+        </div>
+      </div>
+
+      <!-- Lista completa sin respuesta -->
+      <div class="tw">
+        <div class="tw-h"><div class="tw-t">📋 Detalle — chats pendientes de atención</div></div>
+        <div id="mon-pendientes" style="padding:8px;text-align:center;color:var(--text3);font-size:12px">Haz clic en Actualizar para cargar</div>
+      </div>
+    </div>
+
     <div class="page" id="p-marketing">
       <div class="ph">
         <div><div class="ph-title">Marketing &amp; Rendimiento</div><div class="ph-sub">Pipeline real · Equipo · Motivos de pérdida — Odoo producción</div></div>
@@ -999,6 +1040,7 @@ function nav(page,el){
   if(page==='citas')renderCitas();
   if(page==='comisiones'){calcCom();renderVentas();}
   if(page==='campanas')loadCampanas();
+  if(page==='monitoreo')loadMonitoreo();
   if(page==='usuarios'){loadUsuarios();loadSedes();}
   if(page==='faqs')loadFaqs();
   if(page==='docs')loadDocs();
@@ -1701,6 +1743,89 @@ async function trasladarAOdoo(leadId){
   }catch(e){ showToast('Error de conexión','error'); }
 }
 
+
+// ===== MONITOREO — Dashboard de Sylvia =====
+async function loadMonitoreo(){
+  const resumenEl = document.getElementById('mon-resumen');
+  const alertaEl = document.getElementById('mon-alerta');
+  const alertaListaEl = document.getElementById('mon-alerta-lista');
+  const asesorasEl = document.getElementById('mon-asesoras');
+  const tiemposEl = document.getElementById('mon-tiempos');
+  const pendientesEl = document.getElementById('mon-pendientes');
+
+  resumenEl.innerHTML = '<div class="mc"><div class="mc-lbl">Cargando...</div><div class="mc-val">⏳</div></div>';
+
+  try {
+    const r = await fetch(API+'/api/monitoreo/dashboard',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+    if(!r.ok){ resumenEl.innerHTML=`<div style="color:var(--red);padding:16px">Error: ${r.error}</div>`; return; }
+
+    const { resumen, por_asesora, sin_respuesta, tiempos_respuesta } = r;
+
+    // Tarjetas resumen
+    resumenEl.innerHTML = `
+      <div class="mc"><div class="mc-lbl">Chats activos</div><div class="mc-val" style="color:var(--g)">${resumen.chats_activos_total}</div><div class="mc-sub">con asesora humana</div></div>
+      <div class="mc"><div class="mc-lbl">Con KAI</div><div class="mc-val" style="color:var(--blue,#378ADD)">${resumen.chats_con_kai}</div><div class="mc-sub">atendiendo ahora</div></div>
+      <div class="mc"><div class="mc-lbl">Nuevos hoy</div><div class="mc-val">${resumen.chats_nuevos_24h}</div><div class="mc-sub">últimas 24 horas</div></div>
+      <div class="mc ${resumen.sin_respuesta_30min>0?'amber':''}"><div class="mc-lbl">Sin respuesta</div><div class="mc-val" style="color:${resumen.sin_respuesta_30min>0?'var(--red)':'var(--g)'}">${resumen.sin_respuesta_30min}</div><div class="mc-sub">más de 30 min</div></div>`;
+
+    // Alerta si hay chats sin respuesta
+    if(sin_respuesta.length > 0){
+      alertaEl.style.display = 'block';
+      alertaListaEl.innerHTML = sin_respuesta.map(c=>`
+        <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:0.5px solid #3a1010;font-size:12px">
+          <div style="color:var(--text)">${c.nombre} <span style="color:var(--text3)">${c.numero}</span></div>
+          <div style="color:var(--amber)">${c.asesora || 'Sin asignar'} · <span style="color:var(--red)">${c.minutos_sin_respuesta} min</span></div>
+        </div>`).join('');
+    } else {
+      alertaEl.style.display = 'none';
+    }
+
+    // Por asesora
+    asesorasEl.innerHTML = por_asesora.length ? por_asesora.map(a=>`
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:0.5px solid var(--border)">
+        <div style="font-size:13px;font-weight:500;color:var(--text)">${a.asesora}</div>
+        <div style="background:var(--g4);color:var(--g);padding:4px 14px;border-radius:20px;font-size:13px;font-weight:600">${a.chats_activos} chats</div>
+      </div>`).join('')
+    : '<div style="color:var(--text3);font-size:12px;padding:12px 0">Sin chats activos ahora mismo ✅</div>';
+
+    // Tiempos de respuesta
+    tiemposEl.innerHTML = tiempos_respuesta.length ? tiempos_respuesta.map(t=>{
+      const color = t.promedio_minutos <= 5 ? 'var(--g)' : t.promedio_minutos <= 15 ? 'var(--amber)' : 'var(--red)';
+      return `
+        <div style="padding:10px 0;border-bottom:0.5px solid var(--border)">
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+            <div style="font-size:13px;font-weight:500;color:var(--text)">${t.agente}</div>
+            <div style="color:${color};font-weight:600;font-size:13px">${t.promedio_minutos} min promedio</div>
+          </div>
+          <div style="font-size:11px;color:var(--text3)">${t.total_atendidos} conversaciones atendidas hoy</div>
+        </div>`;
+    }).join('')
+    : '<div style="color:var(--text3);font-size:12px;padding:12px 0">Sin datos de hoy todavía</div>';
+
+    // Pendientes detalle
+    pendientesEl.innerHTML = sin_respuesta.length ? `
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="border-bottom:1px solid var(--border)">
+          <th style="text-align:left;padding:8px;color:var(--text3)">Padre/Madre</th>
+          <th style="text-align:left;padding:8px;color:var(--text3)">Número</th>
+          <th style="text-align:left;padding:8px;color:var(--text3)">Asesora</th>
+          <th style="text-align:left;padding:8px;color:var(--text3)">Sin respuesta</th>
+        </tr></thead>
+        <tbody>${sin_respuesta.map(c=>`
+          <tr style="border-bottom:0.5px solid var(--border)">
+            <td style="padding:10px 8px;color:var(--text);font-weight:500">${c.nombre}</td>
+            <td style="padding:10px 8px;color:var(--text3)">${c.numero}</td>
+            <td style="padding:10px 8px;color:var(--text2)">${c.asesora||'Sin asignar'}</td>
+            <td style="padding:10px 8px;color:var(--red);font-weight:600">${c.minutos_sin_respuesta} min</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`
+    : '<div style="color:var(--g);font-size:12px;padding:16px;text-align:center">✅ Todos los chats tienen respuesta reciente</div>';
+
+  } catch(e) {
+    resumenEl.innerHTML = `<div style="color:var(--red);padding:16px">Error: ${e.message}</div>`;
+  }
+}
 
 async function loadMarketing(){
   const kpisEl=document.getElementById('mkt-kpis');
