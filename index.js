@@ -3033,23 +3033,32 @@ app.post('/api/debug/acrux-enviar-prueba', authMiddleware, async (req, res) => {
 // Cuando se autorice la Fase 2 (KAI respondiendo por este número), se agregará
 // un endpoint de envío aparte — este bloque se queda solo de lectura.
 
+// Extrae el número de WhatsApp del msgid, formato típico: "false_50256338598@c.us_XXXXX"
+function extraerNumeroDeMsgid(msgid) {
+  const m = String(msgid || '').match(/_(\d{8,15})@/);
+  return m ? m[1] : null;
+}
+
 app.get('/api/acrux/conversaciones', authMiddleware, async (req, res) => {
   try {
     const limite = Math.min(parseInt(req.query.limit) || 300, 1000);
     const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
       [[]],
-      { fields: ['id', 'text', 'date_message', 'contact_name', 'contact_number', 'from_me', 'read_date'], limit: limite, order: 'date_message desc' }
+      { fields: ['id', 'text', 'date_message', 'contact_id', 'msgid', 'from_me', 'read_date'], limit: limite, order: 'date_message desc' }
     );
 
     if (!mensajes) return res.json({ ok: false, error: 'No se pudo leer acrux.chat.message' });
 
-    const porNumero = {};
+    const porContacto = {};
     mensajes.forEach(m => {
-      const num = m.contact_number || 'sin_numero';
-      if (!porNumero[num]) {
-        porNumero[num] = {
-          numero: num,
-          nombre: m.contact_name || num,
+      // contact_id viene como [id, "Nombre"] cuando existe, o false si el mensaje no tiene contacto vinculado
+      if (!m.contact_id) return;
+      const contactoId = m.contact_id[0];
+      if (!porContacto[contactoId]) {
+        porContacto[contactoId] = {
+          contacto_id: contactoId,
+          nombre: m.contact_id[1] || 'Sin nombre',
+          numero: extraerNumeroDeMsgid(m.msgid),
           total_mensajes: 0,
           no_leidos: 0,
           ultimo_mensaje: null,
@@ -3059,9 +3068,10 @@ app.get('/api/acrux/conversaciones', authMiddleware, async (req, res) => {
           prioridad: '0'
         };
       }
-      const c = porNumero[num];
+      const c = porContacto[contactoId];
       c.total_mensajes++;
       if (!m.from_me && !m.read_date) c.no_leidos++;
+      if (!c.numero) c.numero = extraerNumeroDeMsgid(m.msgid); // por si el primer mensaje encontrado no traía msgid parseable
       if (!c.ultima_fecha || m.date_message > c.ultima_fecha) {
         c.ultima_fecha = m.date_message;
         c.ultimo_mensaje = (m.text || '').substring(0, 120);
@@ -3084,7 +3094,8 @@ app.get('/api/acrux/conversaciones', authMiddleware, async (req, res) => {
         (tags || []).forEach(t => { nombresTag[t.id] = t.name; });
       }
 
-      Object.values(porNumero).forEach(c => {
+      Object.values(porContacto).forEach(c => {
+        if (!c.numero) return;
         const numLimpio = String(c.numero).replace(/\D/g, '').slice(-8);
         const lead = leads.find(l => {
           const tel = String(l.phone || '').replace(/\D/g, '').slice(-8);
@@ -3100,29 +3111,35 @@ app.get('/api/acrux/conversaciones', authMiddleware, async (req, res) => {
       // Si el cruce con Odoo falla, seguimos mostrando los chats sin etiquetas (no bloqueante)
     }
 
-    const conversaciones = Object.values(porNumero).sort((a, b) => (b.ultima_fecha || '').localeCompare(a.ultima_fecha || ''));
+    const conversaciones = Object.values(porContacto).sort((a, b) => (b.ultima_fecha || '').localeCompare(a.ultima_fecha || ''));
     res.json({ ok: true, canal: 'acrux_whatsapp', solo_lectura: true, total: conversaciones.length, conversaciones });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
-app.get('/api/acrux/conversaciones/:numero', authMiddleware, async (req, res) => {
+app.get('/api/acrux/conversaciones/:contactoId', authMiddleware, async (req, res) => {
   try {
-    const numero = req.params.numero;
+    const contactoId = parseInt(req.params.contactoId);
+    if (!contactoId) return res.json({ ok: false, error: 'ID de contacto inválido' });
+
     const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
-      [[['contact_number', '=', numero]]],
-      { fields: ['id', 'text', 'date_message', 'contact_name', 'from_me', 'read_date'], limit: 500, order: 'date_message asc' }
+      [[['contact_id', '=', contactoId]]],
+      { fields: ['id', 'text', 'date_message', 'contact_id', 'msgid', 'from_me', 'read_date'], limit: 500, order: 'date_message asc' }
     );
 
-    if (!mensajes) return res.json({ ok: false, error: 'No se pudo leer los mensajes de este número' });
+    if (!mensajes) return res.json({ ok: false, error: 'No se pudo leer los mensajes de este contacto' });
+
+    const numero = mensajes.map(m => extraerNumeroDeMsgid(m.msgid)).find(Boolean) || null;
+    const nombre = mensajes.find(m => m.contact_id)?.contact_id?.[1] || null;
 
     res.json({
       ok: true,
       canal: 'acrux_whatsapp',
       solo_lectura: true,
+      contacto_id: contactoId,
       numero,
-      nombre: mensajes.find(m => m.contact_name)?.contact_name || numero,
+      nombre: nombre || numero || 'Sin nombre',
       mensajes: mensajes.map(m => ({
         de: m.from_me ? 'agente' : 'padre',
         texto: m.text || '',
