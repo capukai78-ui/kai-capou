@@ -1607,9 +1607,12 @@ async function abrirAcruxChat(contactoId){
         const bg = esPadre ? 'var(--bg3)' : 'var(--acrux)';
         const color = esPadre ? 'var(--text)' : '#0B1120';
         const align = esPadre ? 'flex-start' : 'flex-end';
+        const contenido = (m.es_imagen && m.imagen_base64)
+          ? `<img src="data:${m.imagen_mime||'image/jpeg'};base64,${m.imagen_base64}" style="max-width:220px;border-radius:8px;display:block;margin-bottom:${m.texto?'6px':'0'}"/>${m.texto ? m.texto : ''}`
+          : (m.es_imagen ? `<div style="font-size:11px;opacity:.7">📷 ${m.texto || 'Imagen'} (no se pudo cargar la vista previa)</div>` : m.texto);
         return `<div style="display:flex;justify-content:${align}">
           <div style="max-width:70%;background:${bg};color:${color};padding:10px 14px;border-radius:12px;font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word">
-            ${m.texto}
+            ${contenido}
             <div style="font-size:9px;opacity:.6;margin-top:6px">${esPadre?'Padre/Madre':(m.agente?m.agente:'Colegio (AcruxLab)')} · ${tiempoRelativo(m.fecha)}</div>
           </div>
         </div>`;
