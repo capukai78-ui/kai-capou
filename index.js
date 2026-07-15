@@ -3717,11 +3717,11 @@ app.get('/api/debug/vista-formulario-lead', authMiddleware, async (req, res) => 
     const uid = await getOdooUID();
     let resultado;
     try {
-      resultado = await odooRPC('/jsonrpc', { service: 'object', method: 'execute_kw', args: [ODOO_DB, uid, ODOO_PASS_ODOO, 'crm.lead', 'fields_view_get', [], { view_type: 'form' }] });
+      resultado = await odooRPC('/jsonrpc', { service: 'object', method: 'execute_kw', args: [ODOO_DB, uid, ODOO_PASS_ODOO, 'crm.lead', 'get_views', [[[false, 'form']]], { options: {} }] });
     } catch (eInterno) {
-      return res.json({ ok: false, error_completo: eInterno.message, nota: 'Falló fields_view_get — revisa el traceback completo aquí abajo' });
+      return res.json({ ok: false, error_completo: eInterno.message, nota: 'Falló get_views — revisa el traceback completo aquí abajo' });
     }
-    const arch = resultado?.arch || null;
+    const arch = resultado?.views?.form?.arch || null;
     if (!arch) return res.json({ ok: false, error: 'No se pudo obtener el arch de la vista', crudo: resultado });
 
     // Buscar todas las etiquetas de campo cercanas a la palabra "Nivel" en el XML
