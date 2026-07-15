@@ -3084,7 +3084,7 @@ app.get('/api/acrux/conversaciones', authMiddleware, async (req, res) => {
       }
     });
     // Limpiar campo auxiliar interno antes de responder
-    Object.values(porContacto).forEach(c => { delete c._fechaAgente; });
+    Object.values(porContacto).forEach(c => { c.agente_fecha = c._fechaAgente || null; delete c._fechaAgente; });
 
     // Cruce con Odoo — una sola consulta para todos los números, en vez de una por chat
     // (solo lectura, igual que el resto de este bloque de AcruxLab)
@@ -3170,16 +3170,21 @@ app.get('/api/acrux/lead-por-telefono/:numero', authMiddleware, async (req, res)
 
     const leads = await odooCallLocal('crm.lead', 'search_read',
       [[['type', '=', 'opportunity']]],
-      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'mobile', 'email_from', 'city', 'priority', 'tag_ids', 'x_studio_notas_1', 'x_studio_comentarios'], limit: 200, order: 'write_date desc' }
+      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'mobile', 'email_from', 'city', 'priority', 'tag_ids', 'x_studio_notas_1', 'x_studio_comentarios', 'write_date'], limit: 200, order: 'write_date desc' }
     ) || [];
 
-    const lead = leads.find(l => {
+    const coincidencias = leads.filter(l => {
       const tel = String(l.phone || '').replace(/\D/g, '').slice(-8);
       const mov = String(l.mobile || '').replace(/\D/g, '').slice(-8);
       return tel === numero || mov === numero;
     });
 
-    if (!lead) return res.json({ ok: true, encontrado: false });
+    if (!coincidencias.length) return res.json({ ok: true, encontrado: false });
+
+    // Puede haber leads duplicados con el mismo teléfono (mismo padre escribiendo por
+    // más de un canal). No adivinamos cuál es el "correcto" — usamos el más reciente
+    // para mostrar los datos, pero avisamos si hay más de uno para que se revise en Odoo.
+    const lead = coincidencias[0]; // ya viene ordenado por write_date desc
 
     let etiquetas = [];
     if (lead.tag_ids && lead.tag_ids.length) {
@@ -3191,6 +3196,8 @@ app.get('/api/acrux/lead-por-telefono/:numero', authMiddleware, async (req, res)
       ok: true,
       encontrado: true,
       lead_id: lead.id,
+      posible_duplicado: coincidencias.length > 1,
+      otros_leads_mismo_telefono: coincidencias.length > 1 ? coincidencias.slice(1).map(l => ({ id: l.id, nombre: l.name, actualizado: l.write_date })) : [],
       // Contacto = el padre/madre/encargado (quien escribe por WhatsApp), NO el alumno
       contacto_nombre: lead.contact_name || lead.partner_name || null,
       contacto_telefono: lead.phone || lead.mobile || null,
