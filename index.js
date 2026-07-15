@@ -3181,6 +3181,29 @@ app.get('/api/acrux/conversaciones/:contactoId', authMiddleware, async (req, res
 // WhatsApp. Esto hay que probarlo con un mensaje de prueba real antes de confiar en él.
 // Diagnóstico: revisar el último mensaje SALIENTE (from_me=true) ya creado para un contacto,
 // sin tener que mandar otro — útil para ver por qué el que ya se probó no llegó de verdad.
+// Diagnóstico: comparar leads duplicados directamente por ID, para confirmar si
+// realmente ninguno tiene la Nota llena (y por eso cae al más reciente) o si hay
+// algún otro problema en la selección.
+app.get('/api/debug/comparar-leads/:ids', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const ids = req.params.ids.split(',').map(Number).filter(Boolean);
+    const leads = await odooCallLocal('crm.lead', 'search_read',
+      [[['id', 'in', ids]]],
+      { fields: ['id', 'name', 'partner_name', 'contact_name', 'type', 'stage_id', 'phone', 'mobile', 'priority', 'tag_ids', 'x_studio_notas_1', 'x_studio_comentarios', 'write_date', 'create_date'] }
+    );
+    let etiquetas = {};
+    const idsTagsUsados = [...new Set((leads || []).flatMap(l => l.tag_ids || []))];
+    if (idsTagsUsados.length) {
+      const tags = await odooCallLocal('crm.tag', 'search_read', [[['id', 'in', idsTagsUsados]]], { fields: ['id', 'name'] });
+      (tags || []).forEach(t => { etiquetas[t.id] = t.name; });
+    }
+    res.json({ ok: true, leads: (leads || []).map(l => ({ ...l, tag_ids: (l.tag_ids || []).map(id => etiquetas[id]) })) });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get('/api/debug/acrux-ultimo-saliente/:contactoId', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
