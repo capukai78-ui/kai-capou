@@ -3714,15 +3714,8 @@ app.get('/api/debug/acrux-campos-mensaje', authMiddleware, async (req, res) => {
 app.get('/api/debug/vista-formulario-lead', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
-    const resultado = await odooCallLocal('crm.lead', 'get_views',
-      [[{ view_id: false, view_type: 'form' }]],
-      { options: { toolbar: false } }
-    ).catch(async () => {
-      // Fallback para versiones de Odoo que todavía usan fields_view_get
-      return await odooCallLocal('crm.lead', 'fields_view_get', [], { view_type: 'form' });
-    });
-
-    const arch = resultado?.views?.form?.arch || resultado?.arch || null;
+    const resultado = await odooCallLocal('crm.lead', 'fields_view_get', [], { view_type: 'form' });
+    const arch = resultado?.arch || null;
     if (!arch) return res.json({ ok: false, error: 'No se pudo obtener el arch de la vista', crudo: resultado });
 
     // Buscar todas las etiquetas de campo cercanas a la palabra "Nivel" en el XML
