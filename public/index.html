@@ -1613,7 +1613,7 @@ async function abrirAcruxChat(contactoId){
         const color = esPadre ? 'var(--text)' : '#0B1120';
         const align = esPadre ? 'flex-start' : 'flex-end';
         const contenido = (m.es_imagen && m.imagen_base64)
-          ? `<img src="data:${m.imagen_mime||'image/jpeg'};base64,${m.imagen_base64}" style="max-width:220px;border-radius:8px;display:block;margin-bottom:${m.texto?'6px':'0'}"/>${m.texto ? m.texto : ''}`
+          ? `<img src="data:${m.imagen_mime||'image/jpeg'};base64,${m.imagen_base64}" onclick="abrirImagenAmpliada(this.src)" style="max-width:220px;border-radius:8px;display:block;margin-bottom:${m.texto?'6px':'0'};cursor:zoom-in"/>${m.texto ? m.texto : ''}`
           : (m.es_imagen ? `<div style="font-size:11px;opacity:.7">📷 ${m.texto || 'Imagen'} (no se pudo cargar la vista previa)</div>` : m.texto);
         return `<div style="display:flex;justify-content:${align}">
           <div style="max-width:70%;background:${bg};color:${color};padding:10px 14px;border-radius:12px;font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word">
@@ -1653,6 +1653,18 @@ async function abrirAcruxChat(contactoId){
             <div style="font-size:10px;color:var(--text3);margin-bottom:4px">NOTA (alumno/a)</div>
             <div style="font-size:12px;color:var(--text2);white-space:pre-wrap">${clas.nota || 'Sin nota'}</div>
           </div>
+          ${clas.imagenes_sugeridas?.length ? `
+          <div style="margin-bottom:14px">
+            <div style="font-size:10px;color:var(--text3);margin-bottom:6px">🖼️ IMÁGENES SUGERIDAS${clas.nivel_inferido ? ` (${clas.nivel_inferido})` : ''}</div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              ${clas.imagenes_sugeridas.map(img=>`
+                <div title="${img.nombre}" style="width:64px;text-align:center">
+                  <div style="width:64px;height:52px;background:var(--acrux2);border:1px solid var(--acrux3);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:18px">🖼️</div>
+                  <div style="font-size:8px;color:var(--text3);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${img.nombre}</div>
+                </div>`).join('')}
+            </div>
+            <div style="font-size:8px;color:var(--text3);margin-top:6px">⚠️ Envío desde catálogo aún en preparación para AcruxLab</div>
+          </div>` : ''}
           <div style="font-size:9px;color:var(--text3);margin-top:16px;padding-top:10px;border-top:1px solid var(--border)">Conversación #${clas.contacto_id} — solo lectura</div>
         `;
       }
@@ -2778,6 +2790,15 @@ function calcCom(){
 function renderVentas(){
   const el=document.getElementById('t-ventas');if(!el)return;
   el.innerHTML=`<table><thead><tr><th>Cliente</th><th>Plan</th><th>Duración</th><th>Valor contrato</th><th>Mi comisión</th><th>Estado</th></tr></thead><tbody>${VENTAS.map(v=>`<tr><td style="font-weight:500">${v.cliente}</td><td><span class="bx blue">${v.plan}</span></td><td style="font-size:12px">${v.meses} meses</td><td style="font-family:var(--font-h);font-weight:700">Q${v.total.toLocaleString()}</td><td style="font-family:var(--font-h);font-weight:700;color:var(--g)">Q${v.com.toLocaleString()}</td><td><span class="bx ok">${v.estado}</span></td></tr>`).join('')}<tr style="background:var(--bg3)"><td colspan="4" style="font-weight:600;text-align:right;font-size:13px">Total mis comisiones:</td><td style="font-family:var(--font-h);font-weight:800;color:var(--g);font-size:16px">Q${VENTAS.reduce((a,v)=>a+v.com,0).toLocaleString()}</td><td></td></tr></tbody></table>`;
+}
+
+function abrirImagenAmpliada(src){
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:9999;display:flex;align-items:center;justify-content:center;cursor:zoom-out';
+  overlay.onclick = () => overlay.remove();
+  overlay.innerHTML = `<img src="${src}" style="max-width:90vw;max-height:90vh;border-radius:8px;box-shadow:0 10px 40px rgba(0,0,0,.5)"/>
+    <button onclick="event.stopPropagation();this.closest('div').remove()" style="position:absolute;top:20px;right:24px;background:rgba(255,255,255,.15);border:none;color:#fff;width:36px;height:36px;border-radius:50%;font-size:18px;cursor:pointer">✕</button>`;
+  document.body.appendChild(overlay);
 }
 
 function showToast(msg,type='ok'){
