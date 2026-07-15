@@ -3090,7 +3090,7 @@ app.get('/api/acrux/conversaciones', authMiddleware, async (req, res) => {
     // (solo lectura, igual que el resto de este bloque de AcruxLab)
     try {
       const leads = await odooCallLocal('crm.lead', 'search_read',
-        [[['type', '=', 'opportunity']]],
+        [[['type', 'in', ['lead', 'opportunity']]]],
         { fields: ['id', 'phone', 'mobile', 'priority', 'tag_ids'], limit: 1000, order: 'write_date desc' }
       ) || [];
 
@@ -3169,7 +3169,7 @@ app.get('/api/acrux/lead-por-telefono/:numero', authMiddleware, async (req, res)
     if (!numero) return res.json({ ok: false, error: 'Número inválido' });
 
     const leads = await odooCallLocal('crm.lead', 'search_read',
-      [[['type', '=', 'opportunity']]],
+      [[['type', 'in', ['lead', 'opportunity']]]],
       { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'mobile', 'email_from', 'city', 'priority', 'tag_ids', 'x_studio_notas_1', 'x_studio_comentarios', 'write_date'], limit: 200, order: 'write_date desc' }
     ) || [];
 
