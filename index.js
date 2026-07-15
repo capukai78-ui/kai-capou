@@ -3723,6 +3723,30 @@ app.post('/api/acrux/responder', authMiddleware, async (req, res) => {
 // conversación de AcruxLab, identificado por el mismo contacto_id que ya usamos.
 // Esto reemplaza el cruce por teléfono contra crm.lead (que dependía de encontrar
 // el lead correcto entre posibles duplicados) — aquí no hay ambigüedad posible.
+// Infiere el nivel educativo (mismo enum que usa el catálogo de imágenes) a partir de
+// las etiquetas de grado que ya tenemos en AcruxLab (ej. "Kinder", "10°", "Jardín").
+// Los números solos (sin la palabra) se interpretan con la numeración típica de
+// Guatemala: 1°-6° = Primaria, 7°-9° = Básico, 10°-12° = Bachillerato/Diversificado.
+function inferirNivelDesdeEtiquetas(etiquetas) {
+  for (const et of (etiquetas || [])) {
+    const v = et.toLowerCase();
+    if (/jard[ií]n/.test(v)) return 'Jardín';
+    if (/kinder|k[ií]nder|p[aá]rvulos|prepa|infantil/.test(v)) return 'Kínder';
+    if (/bachillerato|diversificado/.test(v)) return 'Bachillerato';
+    if (/b[aá]sico/.test(v)) return 'Básico';
+    if (/secundaria/.test(v)) return 'Secundaria';
+    if (/primaria/.test(v)) return 'Primaria';
+    const soloNumero = v.match(/^(\d{1,2})°?$/);
+    if (soloNumero) {
+      const n = parseInt(soloNumero[1]);
+      if (n >= 1 && n <= 6) return 'Primaria';
+      if (n >= 7 && n <= 9) return 'Básico';
+      if (n >= 10 && n <= 12) return 'Bachillerato';
+    }
+  }
+  return null;
+}
+
 app.get('/api/acrux/clasificacion/:contactoId', authMiddleware, async (req, res) => {
   try {
     const contactoId = parseInt(req.params.contactoId);
@@ -3747,6 +3771,24 @@ app.get('/api/acrux/clasificacion/:contactoId', authMiddleware, async (req, res)
       if (/^ubicaci/i.test(linea)) ubicacion = linea.split(':').slice(1).join(':').trim();
     });
 
+    // Inferir el nivel educativo real a partir de las etiquetas de grado que ya
+    // tenemos (ej. "Kinder", "10°", "Jardín") — para sugerir imágenes del catálogo
+    // igual que ya se hace en el canal de WhatsApp/IG/Messenger.
+    // ⚠️ IMAGENES_SUGERIDAS_ACRUX_ACTIVO: construido y probado, pero apagado a propósito
+    // hasta que se autorice pasar AcruxLab a producción. Cambiar a `true` para activarlo.
+    const IMAGENES_SUGERIDAS_ACRUX_ACTIVO = false;
+    const nivelInferido = inferirNivelDesdeEtiquetas(etiquetas);
+    let imagenesSugeridas = [];
+    if (IMAGENES_SUGERIDAS_ACRUX_ACTIVO) {
+      try {
+        imagenesSugeridas = await ImagenMarketing.find({
+          tenant_id: req.user.tenant_id,
+          activo: true,
+          $or: nivelInferido ? [{ nivel_educativo: nivelInferido }, { nivel_educativo: 'Todos' }] : [{ nivel_educativo: 'Todos' }]
+        }).select('nombre categoria nivel_educativo').limit(6);
+      } catch (e) { /* si falla, seguimos sin sugerencias — no bloqueante */ }
+    }
+
     res.json({
       ok: true,
       contacto_id: conv.id,
@@ -3759,7 +3801,9 @@ app.get('/api/acrux/clasificacion/:contactoId', authMiddleware, async (req, res)
       nota: (conv.note || '').trim() || null,
       estado: conv.status || null,
       sin_responder: !!conv.unanswered,
-      ultima_actividad: conv.last_activity || null
+      ultima_actividad: conv.last_activity || null,
+      nivel_inferido: nivelInferido,
+      imagenes_sugeridas: imagenesSugeridas
     });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
