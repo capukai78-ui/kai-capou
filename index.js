@@ -3148,7 +3148,8 @@ app.get('/api/acrux/conversaciones', authMiddleware, async (req, res) => {
           ultimo_de: null,
           agente: null, // último agente humano que respondió (user_id del mensaje saliente más reciente)
           etiquetas: [],
-          prioridad: '0'
+          prioridad: '0',
+          nota: null
         };
       }
       const c = porContacto[contactoId];
@@ -3168,38 +3169,31 @@ app.get('/api/acrux/conversaciones', authMiddleware, async (req, res) => {
     // Limpiar campo auxiliar interno antes de responder
     Object.values(porContacto).forEach(c => { c.agente_fecha = c._fechaAgente || null; delete c._fechaAgente; });
 
-    // Cruce con Odoo — una sola consulta para todos los números, en vez de una por chat
-    // (solo lectura, igual que el resto de este bloque de AcruxLab)
+    // Clasificación real (Prioridad/Etiquetas/Nota) — directo desde acrux.chat.conversation
+    // en un solo lote, usando los mismos contacto_id que ya tenemos. Ya no se cruza por
+    // teléfono contra crm.lead (eso generaba ambigüedad con leads duplicados).
     try {
-      const leads = await odooCallLocal('crm.lead', 'search_read',
-        [[['type', 'in', ['lead', 'opportunity']]]],
-        { fields: ['id', 'phone', 'mobile', 'priority', 'tag_ids', 'x_studio_notas_1'], limit: 8000, order: 'write_date desc' }
-      ) || [];
+      const contactoIds = Object.keys(porContacto).map(Number);
+      if (contactoIds.length) {
+        const conversacionesOdoo = await odooCallLocal('acrux.chat.conversation', 'read',
+          [contactoIds, ['id', 'priority', 'tag_ids', 'note']]
+        ) || [];
 
-      const idsTagsUsados = [...new Set(leads.flatMap(l => l.tag_ids || []))];
-      let nombresTag = {};
-      if (idsTagsUsados.length) {
-        const tags = await odooCallLocal('crm.tag', 'search_read', [[['id', 'in', idsTagsUsados]]], { fields: ['id', 'name'] });
-        (tags || []).forEach(t => { nombresTag[t.id] = t.name; });
-      }
-
-      Object.values(porContacto).forEach(c => {
-        if (!c.numero) return;
-        const numLimpio = String(c.numero).replace(/\D/g, '').slice(-8);
-        const posibles = leads.filter(l => {
-          const tel = String(l.phone || '').replace(/\D/g, '').slice(-8);
-          const mov = String(l.mobile || '').replace(/\D/g, '').slice(-8);
-          return numLimpio && (tel === numLimpio || mov === numLimpio);
-        });
-        // Igual que en el panel individual: si hay varios, preferimos el que tenga
-        // la Nota (nombre del alumno) llena en vez del más reciente.
-        const conNota = posibles.filter(l => l.x_studio_notas_1 && l.x_studio_notas_1.trim());
-        const lead = conNota.length ? conNota[0] : posibles[0];
-        if (lead) {
-          c.etiquetas = (lead.tag_ids || []).map(id => nombresTag[id]).filter(Boolean);
-          c.prioridad = lead.priority || '0';
+        const idsTagsUsados = [...new Set(conversacionesOdoo.flatMap(c => c.tag_ids || []))];
+        let nombresTag = {};
+        if (idsTagsUsados.length) {
+          const tags = await odooCallLocal('acrux.chat.conversation.tag', 'read', [idsTagsUsados, ['id', 'name']]);
+          (tags || []).forEach(t => { nombresTag[t.id] = t.name; });
         }
-      });
+
+        conversacionesOdoo.forEach(co => {
+          const c = porContacto[co.id];
+          if (!c) return;
+          c.etiquetas = (co.tag_ids || []).map(id => nombresTag[id]).filter(Boolean);
+          c.prioridad = co.priority || '0';
+          c.nota = (co.note || '').trim() || null;
+        });
+      }
     } catch (e) {
       // Si el cruce con Odoo falla, seguimos mostrando los chats sin etiquetas (no bloqueante)
     }
@@ -3275,12 +3269,17 @@ app.get('/api/debug/acrux-campos-conversacion/:contactoId', authMiddleware, asyn
     const listaCampos = campos ? Object.entries(campos).map(([tecnico, def]) => ({ campo_tecnico: tecnico, etiqueta: def.string, tipo: def.type, relacion: def.relation || null })) : [];
 
     let registroCompleto = null;
+    let etiquetasResueltas = [];
     if (contactoId) {
       const detalle = await odooCallLocal('acrux.chat.conversation', 'read', [[contactoId], []]);
       registroCompleto = detalle?.[0] || null;
+      if (registroCompleto?.tag_ids?.length) {
+        const tags = await odooCallLocal('acrux.chat.conversation.tag', 'read', [registroCompleto.tag_ids, ['id', 'name', 'color']]);
+        etiquetasResueltas = tags || [];
+      }
     }
 
-    res.json({ ok: true, total_campos: listaCampos.length, campos: listaCampos, registro: registroCompleto });
+    res.json({ ok: true, total_campos: listaCampos.length, campos: listaCampos, registro: registroCompleto, etiquetas_resueltas: etiquetasResueltas });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
@@ -3374,6 +3373,54 @@ app.post('/api/acrux/responder', authMiddleware, async (req, res) => {
 // Cruce solo-lectura: dado un número de WhatsApp, buscar el lead de Odoo asociado
 // y devolver los campos que Sylvia usa para clasificar (Prioridad / Etiquetas / Nota).
 // No escribe nada — únicamente lectura, para mostrarlo junto al chat de AcruxLab.
+// ===== CLASIFICACIÓN REAL — directo desde acrux.chat.conversation (no crm.lead) =====
+// Descubrimos que Prioridad, Etiquetas y Nota viven en el propio registro de la
+// conversación de AcruxLab, identificado por el mismo contacto_id que ya usamos.
+// Esto reemplaza el cruce por teléfono contra crm.lead (que dependía de encontrar
+// el lead correcto entre posibles duplicados) — aquí no hay ambigüedad posible.
+app.get('/api/acrux/clasificacion/:contactoId', authMiddleware, async (req, res) => {
+  try {
+    const contactoId = parseInt(req.params.contactoId);
+    if (!contactoId) return res.json({ ok: false, error: 'ID de contacto inválido' });
+
+    const detalle = await odooCallLocal('acrux.chat.conversation', 'read',
+      [[contactoId], ['id', 'name', 'number', 'number_format', 'priority', 'tag_ids', 'note', 'status', 'unanswered', 'last_activity', 'partner_info']]
+    );
+    const conv = detalle?.[0];
+    if (!conv) return res.json({ ok: false, error: 'No se encontró la conversación en AcruxLab' });
+
+    let etiquetas = [];
+    if (conv.tag_ids && conv.tag_ids.length) {
+      const tags = await odooCallLocal('acrux.chat.conversation.tag', 'read', [conv.tag_ids, ['id', 'name']]);
+      etiquetas = (tags || []).map(t => t.name);
+    }
+
+    // partner_info trae texto libre tipo "Email: x\nTeléfono: y\nUbicación: z"
+    let correo = null, ubicacion = null;
+    (conv.partner_info || '').split('\n').forEach(linea => {
+      if (/^email:/i.test(linea)) correo = linea.split(':').slice(1).join(':').trim();
+      if (/^ubicaci/i.test(linea)) ubicacion = linea.split(':').slice(1).join(':').trim();
+    });
+
+    res.json({
+      ok: true,
+      contacto_id: conv.id,
+      nombre_contacto: conv.name,
+      numero: conv.number_format || conv.number,
+      correo,
+      ubicacion,
+      prioridad: conv.priority || '0',
+      etiquetas,
+      nota: (conv.note || '').trim() || null,
+      estado: conv.status || null,
+      sin_responder: !!conv.unanswered,
+      ultima_actividad: conv.last_activity || null
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get('/api/acrux/lead-por-telefono/:numero', authMiddleware, async (req, res) => {
   try {
     const numero = (req.params.numero || '').replace(/\D/g, '').slice(-8); // últimos 8 dígitos, sin +502 ni espacios
