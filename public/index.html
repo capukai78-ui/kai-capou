@@ -8,18 +8,18 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <style>
 :root{
-  --g:#5BA8F5;--g2:#3D8FE0;--g3:rgba(91,168,245,.12);--g4:rgba(91,168,245,.06);
-  --bg:#0B1120;--bg2:#111827;--bg3:#1A2233;--bg4:#212B3D;
-  --border:rgba(255,255,255,.08);--border2:rgba(91,168,245,.32);
-  --text:#E5EAF2;--text2:rgba(180,195,220,.62);--text3:rgba(180,195,220,.34);
-  --red:#F76C6C;--amber:#F5B860;--blue:#5BA8F5;--purple:#B89AE8;--green:#5FC79E;
-  --acrux:#14C4B5;--acrux2:rgba(20,196,181,.14);--acrux3:rgba(20,196,181,.3);
+  --g:#3E7BFA;--g2:#2C63D9;--g3:rgba(62,123,250,.10);--g4:rgba(62,123,250,.05);
+  --bg:#F6F8FC;--bg2:#FFFFFF;--bg3:#F1F4F9;--bg4:#E9EDF5;
+  --border:rgba(20,30,50,.09);--border2:rgba(62,123,250,.35);
+  --text:#1B2333;--text2:rgba(30,40,60,.62);--text3:rgba(30,40,60,.4);
+  --red:#F0555C;--amber:#F0A63C;--blue:#3E7BFA;--purple:#9B6DE8;--green:#2FB37C;
+  --acrux:#0FB5A6;--acrux2:rgba(15,181,166,.12);--acrux3:rgba(15,181,166,.35);
   --font-h:'Outfit',sans-serif;--font:'Plus Jakarta Sans',sans-serif;--r:14px;--r2:10px;
 }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-font-smoothing:antialiased}
-body{font-family:var(--font);background:linear-gradient(135deg,#0B1120 0%,#111827 40%,#1A2233 70%,#1E2940 100%);color:var(--text);min-height:100vh}
+body{font-family:var(--font);background:linear-gradient(135deg,#F6F8FC 0%,#EFF3FA 40%,#E8EEFA 70%,#E3EBFB 100%);color:var(--text);min-height:100vh}
 body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
-  background-image:linear-gradient(rgba(91,168,245,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(91,168,245,.04) 1px,transparent 1px);background-size:56px 56px;}
+  background-image:linear-gradient(rgba(62,123,250,.05) 1px,transparent 1px),linear-gradient(90deg,rgba(62,123,250,.05) 1px,transparent 1px);background-size:56px 56px;}
 .app{display:flex;min-height:100vh;position:relative;z-index:1}
 .sb{width:228px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;position:fixed;height:100vh;z-index:50;overflow-y:auto}
 .main{margin-left:228px;flex:1;padding:26px 30px}
@@ -88,7 +88,7 @@ tr:hover td{background:var(--g4)}
 .fs{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 13px;font-size:13px;color:var(--text);outline:none;font-family:var(--font)}
 .fta{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 13px;font-size:13px;color:var(--text);outline:none;font-family:var(--font);resize:vertical;min-height:110px;transition:border-color .2s}
 .fta:focus{border-color:var(--border2)}
-.btn-p{background:linear-gradient(135deg,#5BA8F5,#3D8FE0);color:#0B1120;font-weight:800;font-size:13px;border:none;border-radius:8px;padding:10px 20px;cursor:pointer;font-family:var(--font-h);letter-spacing:.02em;transition:opacity .2s}
+.btn-p{background:linear-gradient(135deg,#3E7BFA,#2C63D9);color:#fff;font-weight:800;font-size:13px;border:none;border-radius:8px;padding:10px 20px;cursor:pointer;font-family:var(--font-h);letter-spacing:.02em;transition:opacity .2s}
 .btn-p:hover{opacity:.88}
 .btn-g{background:var(--bg3);color:var(--text2);border:1px solid var(--border);font-size:13px;border-radius:8px;padding:10px 18px;cursor:pointer;font-family:var(--font);transition:all .15s}
 .btn-g:hover{color:var(--text);border-color:var(--border2)}
@@ -407,7 +407,7 @@ tr:hover td{background:var(--g4)}
 
       <!-- Vista AcruxLab / ChatRoom — Fase 1: SOLO LECTURA -->
       <div id="cl-acrux-view" style="display:none">
-        <div style="background:linear-gradient(90deg,#0B1120,#0E2A28);border:1px solid var(--acrux3);border-radius:var(--r) var(--r) 0 0;padding:10px 16px;display:flex;align-items:center;justify-content:space-between">
+        <div style="background:linear-gradient(90deg,#E0F7F5,#D6F2FB);border:1px solid var(--acrux3);border-radius:var(--r) var(--r) 0 0;padding:10px 16px;display:flex;align-items:center;justify-content:space-between">
           <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--acrux);font-weight:700">
             🔷 ChatRoom — Número Oficial (AcruxLab)
             <span style="background:var(--acrux2);border:1px solid var(--acrux3);color:var(--acrux);font-size:9px;font-weight:700;padding:2px 8px;border-radius:10px">SOLO LECTURA</span>
