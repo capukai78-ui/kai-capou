@@ -1419,43 +1419,37 @@ async function abrirAcruxChat(contactoId){
       }).join('');
       mensajesEl.scrollTop = mensajesEl.scrollHeight;
 
-      // Panel de clasificación (vista de Sylvia) — solo lectura, requiere el número real
+      // Panel de clasificación (vista de Sylvia) — ahora directo desde acrux.chat.conversation,
+      // usando el mismo contacto_id (ya no depende de encontrar el número/lead correcto).
       const panel = document.getElementById('acrux-lead-panel');
-      if(!hilo.numero){
-        panel.innerHTML = `<div style="font-size:11px;color:var(--text3)">No se pudo identificar el número de este contacto para buscarlo en Odoo.</div>`;
+      const clas = await fetch(API+'/api/acrux/clasificacion/'+contactoId,{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+      if(!clas.ok){
+        panel.innerHTML = `<div style="font-size:11px;color:var(--text3)">Error al buscar en Odoo: ${clas.error||'desconocido'}</div>`;
       } else {
-        const lead = await fetch(API+'/api/acrux/lead-por-telefono/'+encodeURIComponent(hilo.numero),{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
-        if(!lead.ok){
-          panel.innerHTML = `<div style="font-size:11px;color:var(--text3)">Error al buscar en Odoo: ${lead.error||'desconocido'}</div>`;
-        } else if(!lead.encontrado){
-          panel.innerHTML = `<div style="font-size:11px;color:var(--text3)">No se encontró un lead en Odoo con este número.</div>`;
-        } else {
-          const estrellas = '★'.repeat(parseInt(lead.prioridad||'0')) + '☆'.repeat(3-parseInt(lead.prioridad||'0'));
-          panel.innerHTML = `
-            <div style="margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid var(--border)">
-              <div style="font-size:13px;font-weight:600;margin-bottom:6px">${lead.contacto_nombre || 'Sin nombre de contacto'}</div>
-              ${lead.contacto_telefono ? `<div style="font-size:11px;color:var(--text3);margin-bottom:2px">📞 ${lead.contacto_telefono}</div>` : ''}
-              ${lead.contacto_correo ? `<div style="font-size:11px;color:var(--text3);margin-bottom:2px;word-break:break-all">✉️ ${lead.contacto_correo}</div>` : ''}
-              ${lead.contacto_ubicacion ? `<div style="font-size:11px;color:var(--text3)">📍 ${lead.contacto_ubicacion}</div>` : ''}
+        const estrellas = '★'.repeat(parseInt(clas.prioridad||'0')) + '☆'.repeat(3-parseInt(clas.prioridad||'0'));
+        panel.innerHTML = `
+          <div style="margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid var(--border)">
+            <div style="font-size:13px;font-weight:600;margin-bottom:6px">${clas.nombre_contacto || 'Sin nombre de contacto'}</div>
+            ${clas.numero ? `<div style="font-size:11px;color:var(--text3);margin-bottom:2px">📞 ${clas.numero}</div>` : ''}
+            ${clas.correo ? `<div style="font-size:11px;color:var(--text3);margin-bottom:2px;word-break:break-all">✉️ ${clas.correo}</div>` : ''}
+            ${clas.ubicacion ? `<div style="font-size:11px;color:var(--text3)">📍 ${clas.ubicacion}</div>` : ''}
+          </div>
+          <div style="margin-bottom:14px">
+            <div style="font-size:10px;color:var(--text3);margin-bottom:4px">PRIORIDAD</div>
+            <div style="font-size:16px;color:var(--amber)">${estrellas}</div>
+          </div>
+          <div style="margin-bottom:14px">
+            <div style="font-size:10px;color:var(--text3);margin-bottom:4px">ETIQUETAS</div>
+            <div style="display:flex;flex-wrap:wrap;gap:5px">
+              ${clas.etiquetas?.length ? clas.etiquetas.map(t=>{const col=colorEtiqueta(t);return `<span style="font-size:10px;font-weight:600;background:${col.bg};color:${col.fg};padding:2px 9px;border-radius:10px">${t}</span>`;}).join('') : '<span style="font-size:11px;color:var(--text3)">Sin etiquetas</span>'}
             </div>
-            <div style="margin-bottom:14px">
-              <div style="font-size:10px;color:var(--text3);margin-bottom:4px">PRIORIDAD</div>
-              <div style="font-size:16px;color:var(--amber)">${estrellas}</div>
-            </div>
-            <div style="margin-bottom:14px">
-              <div style="font-size:10px;color:var(--text3);margin-bottom:4px">ETIQUETAS</div>
-              <div style="display:flex;flex-wrap:wrap;gap:5px">
-                ${lead.etiquetas.length ? lead.etiquetas.map(t=>{const col=colorEtiqueta(t);return `<span style="font-size:10px;font-weight:600;background:${col.bg};color:${col.fg};padding:2px 9px;border-radius:10px">${t}</span>`;}).join('') : '<span style="font-size:11px;color:var(--text3)">Sin etiquetas</span>'}
-              </div>
-            </div>
-            <div style="margin-bottom:14px">
-              <div style="font-size:10px;color:var(--text3);margin-bottom:4px">NOTA (alumno/a)</div>
-              <div style="font-size:12px;color:var(--text2);white-space:pre-wrap">${lead.nota || 'Sin nota'}</div>
-            </div>
-            ${lead.posible_duplicado ? `<div style="font-size:10px;background:#3D2A0A;color:#F5B860;border:1px solid #6B4A0F;border-radius:8px;padding:8px 10px;margin-top:10px">⚠️ Hay ${lead.otros_leads_mismo_telefono.length+1} leads en Odoo con este mismo teléfono (posible duplicado). Se muestra el más reciente. Revisar: ${[lead.lead_id, ...lead.otros_leads_mismo_telefono.map(o=>o.id)].map(id=>'#'+id).join(', ')}</div>` : ''}
-            <div style="font-size:9px;color:var(--text3);margin-top:16px;padding-top:10px;border-top:1px solid var(--border)">Lead #${lead.lead_id} — solo lectura</div>
-          `;
-        }
+          </div>
+          <div style="margin-bottom:14px">
+            <div style="font-size:10px;color:var(--text3);margin-bottom:4px">NOTA (alumno/a)</div>
+            <div style="font-size:12px;color:var(--text2);white-space:pre-wrap">${clas.nota || 'Sin nota'}</div>
+          </div>
+          <div style="font-size:9px;color:var(--text3);margin-top:16px;padding-top:10px;border-top:1px solid var(--border)">Conversación #${clas.contacto_id} — solo lectura</div>
+        `;
       }
     } else {
       mensajesEl.innerHTML = '<div style="text-align:center;color:var(--text3);font-size:12px">No se pudo cargar el hilo: '+(hilo.error||'error desconocido')+'</div>';
