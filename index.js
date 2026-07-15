@@ -1495,9 +1495,11 @@ app.post('/webhook', async (req, res) => {
     }
 
     // ── FUNCIÓN DE RESPUESTA POR CANAL ──────────────────────────────────────
-    // ── CANALES EN MODO LECTURA (sin respuesta automática) ──────────────────
-    // Instagram y Messenger: KAI captura contacto y lead en Odoo pero NO responde.
-    // Para activar respuestas, quitar el canal de este array.
+    // ── CANALES EN MODO LECTURA PARA KAI (el bot NO auto-responde ni crea lead en Odoo) ──
+    // Instagram y Messenger: el mensaje SÍ aparece en "Chats en Vivo" para que un agente
+    // humano lo atienda manualmente (y sí se le puede responder — ver /api/conversaciones/:id/responder).
+    // KAI simplemente no interviene en estos canales todavía, mientras se observa qué piden.
+    // Para que KAI empiece a responder solo aquí también, quitar el canal de este array.
     const CANALES_SOLO_LECTURA = ['instagram', 'messenger'];
 
     const enviarRespuesta = async (numero, texto) => {
@@ -1651,7 +1653,7 @@ app.post('/api/login', async (req, res) => {
 
     const role = isPanel ? user.role : (user.rol || 'admin');
     const token = jwt.sign(
-      { id: user._id, email: user.email, tenant_id: user.tenant_id, role, sedes: user.sedes || [] },
+      { id: user._id, email: user.email, nombre: user.nombre, tenant_id: user.tenant_id, role, sedes: user.sedes || [] },
       JWT_SECRET, { expiresIn: '7d' }
     );
 
@@ -3091,7 +3093,7 @@ app.get('/api/acrux/conversaciones', authMiddleware, async (req, res) => {
     try {
       const leads = await odooCallLocal('crm.lead', 'search_read',
         [[['type', 'in', ['lead', 'opportunity']]]],
-        { fields: ['id', 'phone', 'mobile', 'priority', 'tag_ids'], limit: 1000, order: 'write_date desc' }
+        { fields: ['id', 'phone', 'mobile', 'priority', 'tag_ids'], limit: 8000, order: 'write_date desc' }
       ) || [];
 
       const idsTagsUsados = [...new Set(leads.flatMap(l => l.tag_ids || []))];
@@ -3118,8 +3120,16 @@ app.get('/api/acrux/conversaciones', authMiddleware, async (req, res) => {
       // Si el cruce con Odoo falla, seguimos mostrando los chats sin etiquetas (no bloqueante)
     }
 
-    const conversaciones = Object.values(porContacto).sort((a, b) => (b.ultima_fecha || '').localeCompare(a.ultima_fecha || ''));
-    res.json({ ok: true, canal: 'acrux_whatsapp', solo_lectura: true, total: conversaciones.length, conversaciones });
+    let conversaciones = Object.values(porContacto).sort((a, b) => (b.ultima_fecha || '').localeCompare(a.ultima_fecha || ''));
+
+    // Filtro por usuario: admin y viewer supervisan todo; vendedor solo ve lo suyo + lo sin atender
+    const esSupervisor = req.user.role === 'admin' || req.user.role === 'viewer';
+    if (!esSupervisor) {
+      const miNombre = (req.user.nombre || '').trim().toLowerCase();
+      conversaciones = conversaciones.filter(c => !c.agente || (c.agente || '').trim().toLowerCase() === miNombre);
+    }
+
+    res.json({ ok: true, canal: 'acrux_whatsapp', solo_lectura: false, es_supervisor: esSupervisor, total: conversaciones.length, conversaciones });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
@@ -3143,7 +3153,7 @@ app.get('/api/acrux/conversaciones/:contactoId', authMiddleware, async (req, res
     res.json({
       ok: true,
       canal: 'acrux_whatsapp',
-      solo_lectura: true,
+      solo_lectura: false, // Fase 2: el agente ya puede responder (ver /api/acrux/responder)
       contacto_id: contactoId,
       numero,
       nombre: nombre || numero || 'Sin nombre',
@@ -3160,6 +3170,50 @@ app.get('/api/acrux/conversaciones/:contactoId', authMiddleware, async (req, res
   }
 });
 
+// ===== ACRUXLAB — Fase 2: el agente responde de verdad por el número oficial =====
+// PRIMERA vez que escribimos algo hacia AcruxLab (todo lo anterior era solo lectura).
+// Creamos un registro en acrux.chat.message con from_me=true; si el módulo de AcruxLab
+// está bien instalado, su propio create()/write() debería disparar el envío real por
+// WhatsApp. Esto hay que probarlo con un mensaje de prueba real antes de confiar en él.
+app.post('/api/acrux/responder', authMiddleware, async (req, res) => {
+  try {
+    const { contacto_id, mensaje } = req.body;
+    if (!contacto_id || !mensaje) return res.status(400).json({ ok: false, error: 'contacto_id y mensaje son requeridos' });
+
+    // Tomamos el connector_id de un mensaje reciente de este mismo contacto —
+    // así el envío sale por el mismo número/conector con el que ya conversa la familia.
+    const referencia = await odooCallLocal('acrux.chat.message', 'search_read',
+      [[['contact_id', '=', contacto_id]]],
+      { fields: ['connector_id'], limit: 1, order: 'date_message desc' }
+    );
+    const connectorId = referencia?.[0]?.connector_id?.[0] || null;
+    if (!connectorId) {
+      return res.json({ ok: false, error: 'No se encontró el conector de WhatsApp de este contacto — no hay mensajes previos para tomar la referencia.' });
+    }
+
+    const nuevoId = await odooCallLocal('acrux.chat.message', 'create', [{
+      contact_id: contacto_id,
+      connector_id: connectorId,
+      text: mensaje,
+      from_me: true,
+      ttype: 'text',
+      date_message: new Date().toISOString().replace('T', ' ').substring(0, 19)
+    }]);
+
+    if (!nuevoId) {
+      return res.json({ ok: false, error: 'Odoo no confirmó la creación del mensaje. Puede que no se haya enviado de verdad — hay que revisarlo directamente en el ChatRoom.' });
+    }
+
+    res.json({
+      ok: true,
+      mensaje_id: nuevoId,
+      aviso: 'Mensaje creado en Odoo. IMPORTANTE: esto es una prueba — confirma en el ChatRoom real (o que el padre lo reciba) que sí llegó de verdad por WhatsApp antes de confiar en este botón para todos los agentes.'
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Cruce solo-lectura: dado un número de WhatsApp, buscar el lead de Odoo asociado
 // y devolver los campos que Sylvia usa para clasificar (Prioridad / Etiquetas / Nota).
 // No escribe nada — únicamente lectura, para mostrarlo junto al chat de AcruxLab.
@@ -3169,8 +3223,8 @@ app.get('/api/acrux/lead-por-telefono/:numero', authMiddleware, async (req, res)
     if (!numero) return res.json({ ok: false, error: 'Número inválido' });
 
     const leads = await odooCallLocal('crm.lead', 'search_read',
-      [[['type', 'in', ['lead', 'opportunity']]]],
-      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'mobile', 'email_from', 'city', 'priority', 'tag_ids', 'x_studio_notas_1', 'x_studio_comentarios', 'write_date'], limit: 200, order: 'write_date desc' }
+      [[['type', 'in', ['lead', 'opportunity']], '|', ['phone', 'like', numero], ['mobile', 'like', numero]]],
+      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'mobile', 'email_from', 'city', 'priority', 'tag_ids', 'x_studio_notas_1', 'x_studio_comentarios', 'write_date'], limit: 50, order: 'write_date desc' }
     ) || [];
 
     const coincidencias = leads.filter(l => {
@@ -3409,12 +3463,30 @@ app.post('/api/conversaciones/:id/responder', authMiddleware, async (req, res) =
       resultado = await enviarImagenDesdeDB(img, conv.numero, mensaje || '');
       conv.mensajes.push({ de: 'agente', texto: mensaje ? `📷 ${img.nombre} — ${mensaje}` : `📷 ${img.nombre}` });
     } else {
-      resultado = await enviarWhatsAppMeta(conv.numero, mensaje);
+      // Enviar por el canal real de la conversación — antes esto SIEMPRE mandaba por WhatsApp,
+      // aunque la conversación fuera de Instagram o Messenger (el mensaje no llegaba a nadie).
+      if (conv.canal === 'instagram') {
+        resultado = await enviarMensajeInstagram(conv.numero, mensaje);
+      } else if (conv.canal === 'messenger') {
+        resultado = await enviarMensajeMessenger(conv.numero, mensaje);
+      } else {
+        resultado = await enviarWhatsAppMeta(conv.numero, mensaje);
+      }
       conv.mensajes.push({ de: 'agente', texto: mensaje });
     }
 
     conv.ultimaActividad = new Date();
     await conv.save();
+
+    // Si Meta devolvió un error (ej. falta INSTAGRAM_PAGE_TOKEN/MESSENGER_PAGE_TOKEN en Railway),
+    // el mensaje quedó guardado en el historial pero NO llegó realmente al padre — avisamos.
+    if (resultado && resultado.error) {
+      return res.json({
+        ok: false,
+        error: `El mensaje se guardó pero no se pudo entregar por ${conv.canal}: ${resultado.error.message || 'error desconocido de Meta'}. Revisa que el token de página (${conv.canal === 'instagram' ? 'INSTAGRAM_PAGE_TOKEN' : conv.canal === 'messenger' ? 'MESSENGER_PAGE_TOKEN' : 'WHATSAPP_TOKEN'}) esté bien configurado en Railway.`,
+        conversacion: conv
+      });
+    }
 
     res.json({ ok: true, conversacion: conv, whatsapp: resultado });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
