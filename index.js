@@ -3093,7 +3093,7 @@ app.get('/api/acrux/conversaciones', authMiddleware, async (req, res) => {
     try {
       const leads = await odooCallLocal('crm.lead', 'search_read',
         [[['type', 'in', ['lead', 'opportunity']]]],
-        { fields: ['id', 'phone', 'mobile', 'priority', 'tag_ids'], limit: 8000, order: 'write_date desc' }
+        { fields: ['id', 'phone', 'mobile', 'priority', 'tag_ids', 'x_studio_notas_1'], limit: 8000, order: 'write_date desc' }
       ) || [];
 
       const idsTagsUsados = [...new Set(leads.flatMap(l => l.tag_ids || []))];
@@ -3106,11 +3106,15 @@ app.get('/api/acrux/conversaciones', authMiddleware, async (req, res) => {
       Object.values(porContacto).forEach(c => {
         if (!c.numero) return;
         const numLimpio = String(c.numero).replace(/\D/g, '').slice(-8);
-        const lead = leads.find(l => {
+        const posibles = leads.filter(l => {
           const tel = String(l.phone || '').replace(/\D/g, '').slice(-8);
           const mov = String(l.mobile || '').replace(/\D/g, '').slice(-8);
           return numLimpio && (tel === numLimpio || mov === numLimpio);
         });
+        // Igual que en el panel individual: si hay varios, preferimos el que tenga
+        // la Nota (nombre del alumno) llena en vez del más reciente.
+        const conNota = posibles.filter(l => l.x_studio_notas_1 && l.x_studio_notas_1.trim());
+        const lead = conNota.length ? conNota[0] : posibles[0];
         if (lead) {
           c.etiquetas = (lead.tag_ids || []).map(id => nombresTag[id]).filter(Boolean);
           c.prioridad = lead.priority || '0';
@@ -3264,9 +3268,12 @@ app.get('/api/acrux/lead-por-telefono/:numero', authMiddleware, async (req, res)
     if (!coincidencias.length) return res.json({ ok: true, encontrado: false });
 
     // Puede haber leads duplicados con el mismo teléfono (mismo padre escribiendo por
-    // más de un canal). No adivinamos cuál es el "correcto" — usamos el más reciente
-    // para mostrar los datos, pero avisamos si hay más de uno para que se revise en Odoo.
-    const lead = coincidencias[0]; // ya viene ordenado por write_date desc
+    // más de un canal — típicamente uno real donde Sylvia trabaja, y otro que KAI crea
+    // solo por el canal de Meta). Entre duplicados, preferimos el que tenga la Nota
+    // (x_studio_notas_1) llena — ahí es donde vive el nombre real del alumno — en vez
+    // de simplemente el más recientemente actualizado, que suele ser el auto-generado.
+    const conNota = coincidencias.filter(l => l.x_studio_notas_1 && l.x_studio_notas_1.trim());
+    const lead = conNota.length ? conNota[0] : coincidencias[0];
 
     let etiquetas = [];
     if (lead.tag_ids && lead.tag_ids.length) {
@@ -3279,7 +3286,7 @@ app.get('/api/acrux/lead-por-telefono/:numero', authMiddleware, async (req, res)
       encontrado: true,
       lead_id: lead.id,
       posible_duplicado: coincidencias.length > 1,
-      otros_leads_mismo_telefono: coincidencias.length > 1 ? coincidencias.slice(1).map(l => ({ id: l.id, nombre: l.name, actualizado: l.write_date })) : [],
+      otros_leads_mismo_telefono: coincidencias.length > 1 ? coincidencias.filter(l => l.id !== lead.id).map(l => ({ id: l.id, nombre: l.name, actualizado: l.write_date })) : [],
       // Contacto = el padre/madre/encargado (quien escribe por WhatsApp), NO el alumno
       contacto_nombre: lead.contact_name || lead.partner_name || null,
       contacto_telefono: lead.phone || lead.mobile || null,
