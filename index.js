@@ -3624,30 +3624,70 @@ app.get('/api/debug/acrux-ultimo-saliente/:contactoId', authMiddleware, async (r
   }
 });
 
+// ===== Plantillas de respuesta rápida del ChatRoom (el panel del rayo ⚡) =====
+app.get('/api/acrux/plantillas', authMiddleware, async (req, res) => {
+  try {
+    const uid = await getOdooUID();
+    const plantillas = await odooRPC('/jsonrpc', { service: 'object', method: 'execute_kw', args: [ODOO_DB, uid, ODOO_PASS_ODOO, 'acrux.chat.default.answer', 'get_for_chatroom', [], { context: { is_acrux_chat_room: true } }] });
+    res.json({
+      ok: true,
+      plantillas: (plantillas || []).map(p => ({
+        id: p.id,
+        nombre: p.name,
+        es_imagen: p.ttype === 'image',
+        texto: p.ttype === 'text' ? (p.text || p.name) : null
+      }))
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.post('/api/acrux/responder', authMiddleware, async (req, res) => {
   try {
-    const { contacto_id, mensaje } = req.body;
-    if (!contacto_id || !mensaje) return res.status(400).json({ ok: false, error: 'contacto_id y mensaje son requeridos' });
+    const { contacto_id, mensaje, plantilla_id } = req.body;
+    if (!contacto_id) return res.status(400).json({ ok: false, error: 'contacto_id es requerido' });
+    if (!mensaje && !plantilla_id) return res.status(400).json({ ok: false, error: 'mensaje o plantilla_id son requeridos' });
 
-    // Llamada real capturada del ChatRoom (Network tab): el envío verdadero es un método
-    // propio del modelo acrux.chat.conversation, NO un create() sobre acrux.chat.message.
-    // El contexto "is_acrux_chat_room: true" parece ser la bandera que dispara el envío real.
+    let valoresMensaje;
+    if (plantilla_id) {
+      // Enviar una plantilla del panel de respuestas rápidas — puede ser texto o imagen.
+      // Reutilizamos el mismo attachment (res_model/res_id) al que ya apunta la plantilla,
+      // en vez de subir un archivo nuevo — es la forma más segura de probarlo primero.
+      const plantillas = await odooRPC('/jsonrpc', { service: 'object', method: 'execute_kw', args: [ODOO_DB, await getOdooUID(), ODOO_PASS_ODOO, 'acrux.chat.default.answer', 'get_for_chatroom', [], { context: { is_acrux_chat_room: true } }] });
+      const plantilla = (plantillas || []).find(p => p.id === plantilla_id);
+      if (!plantilla) return res.json({ ok: false, error: 'Plantilla no encontrada' });
+
+      valoresMensaje = {
+        text: plantilla.ttype === 'text' ? (plantilla.text || plantilla.name) : (mensaje || ''),
+        from_me: true,
+        ttype: plantilla.ttype || 'text',
+        res_model: plantilla.res_model || '',
+        res_id: plantilla.res_id || 0,
+        id: -2,
+        date_message: new Date().toISOString().replace('T', ' ').substring(0, 19),
+        button_ids: []
+      };
+    } else {
+      // Llamada real capturada del ChatRoom (Network tab): el envío verdadero es un método
+      // propio del modelo acrux.chat.conversation, NO un create() sobre acrux.chat.message.
+      // El contexto "is_acrux_chat_room: true" parece ser la bandera que dispara el envío real.
+      valoresMensaje = {
+        text: mensaje,
+        from_me: true,
+        ttype: 'text',
+        res_model: '',
+        res_id: 0,
+        id: -2,
+        date_message: new Date().toISOString().replace('T', ' ').substring(0, 19),
+        button_ids: []
+      };
+    }
+
     const resultado = await odooCallLocal(
       'acrux.chat.conversation',
       'send_message',
-      [
-        [contacto_id],
-        {
-          text: mensaje,
-          from_me: true,
-          ttype: 'text',
-          res_model: '',
-          res_id: 0,
-          id: -2,
-          date_message: new Date().toISOString().replace('T', ' ').substring(0, 19),
-          button_ids: []
-        }
-      ],
+      [[contacto_id], valoresMensaje],
       { context: { lang: 'es_GT', tz: 'America/Guatemala', is_acrux_chat_room: true } }
     );
 
