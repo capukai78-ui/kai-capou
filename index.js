@@ -3358,8 +3358,8 @@ app.get('/api/acrux/lead-por-telefono/:numero', authMiddleware, async (req, res)
     if (!numero) return res.json({ ok: false, error: 'Número inválido' });
 
     const leads = await odooCallLocal('crm.lead', 'search_read',
-      [[['type', 'in', ['lead', 'opportunity']], '|', ['phone', 'like', numero], ['mobile', 'like', numero]]],
-      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'mobile', 'email_from', 'city', 'priority', 'tag_ids', 'x_studio_notas_1', 'x_studio_comentarios', 'write_date'], limit: 50, order: 'write_date desc' }
+      [[['type', 'in', ['lead', 'opportunity']]]],
+      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'mobile', 'email_from', 'city', 'priority', 'tag_ids', 'x_studio_notas_1', 'x_studio_comentarios', 'write_date'], limit: 8000, order: 'write_date desc' }
     ) || [];
 
     const coincidencias = leads.filter(l => {
