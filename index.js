@@ -3593,9 +3593,13 @@ app.get('/api/debug/acrux-ultimo-saliente/:contactoId', authMiddleware, async (r
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
     const contactoId = parseInt(req.params.contactoId);
+    const limite = Math.min(parseInt(req.query.limit) || 3, 200);
+    const domain = [['contact_id', '=', contactoId]];
+    if (req.query.solo_ttype) domain.push(['ttype', '=', req.query.solo_ttype]);
+    if (!req.query.todos) domain.push(['from_me', '=', true]);
     const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
-      [[['contact_id', '=', contactoId], ['from_me', '=', true]]],
-      { fields: [], limit: 3, order: 'date_message desc' }
+      [domain],
+      { fields: [], limit: limite, order: 'date_message desc' }
     );
     res.json({ ok: true, mensajes });
   } catch (e) {
