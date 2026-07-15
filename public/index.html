@@ -1301,6 +1301,20 @@ function tiempoRelativo(fechaOdoo){
   return `hace ${dias} día${dias>1?'s':''}`;
 }
 
+function formatMinutos(min){
+  if(min == null) return '—';
+  const m = Math.round(min);
+  if(m < 60) return m+' min';
+  const h = Math.floor(m/60), resto = m%60;
+  return h+'h '+(resto>0?resto+'min':'');
+}
+function colorSemaforo(min){
+  if(min == null) return 'var(--text3)';
+  if(min <= 30) return '#22A15D';   // verde: excelente
+  if(min <= 120) return '#D98C0F';  // ámbar: aceptable
+  return '#D8503C';                // rojo: crítico
+}
+
 async function abrirMetricasAcrux(){
   const panel = document.getElementById('acrux-metricas-panel');
   const yaAbierto = panel.style.display === 'block';
@@ -1311,23 +1325,67 @@ async function abrirMetricasAcrux(){
     const d = await fetch(API+'/api/acrux/metricas?dias=30',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
     if(!d.ok){ panel.innerHTML = '<div style="color:var(--text3);font-size:12px">Error: '+(d.error||'desconocido')+'</div>'; return; }
     const g = d.resumen_general;
+    const agentes = (d.por_agente||[]).filter(a=>a.conversaciones_atendidas>0);
+    const maxConv = Math.max(1, ...agentes.map(a=>a.conversaciones_atendidas));
+    const maxTiempo = Math.max(1, ...agentes.map(a=>a.tiempo_promedio_primera_respuesta_min||0));
+    const coloresAgente = ['#3E7BFA','#9B6DE8','#0FB5A6','#D98C0F','#F0555C','#2FB37C'];
+
     panel.innerHTML = `
-      <div style="font-size:11px;font-weight:700;color:var(--text2);letter-spacing:.05em;margin-bottom:14px">MÉTRICAS DE ATENCIÓN — últimos ${d.periodo_dias} días</div>
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px">
-        <div style="background:var(--bg3);border-radius:12px;padding:14px">
-          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">CONVERSACIONES</div>
-          <div style="font-size:26px;font-weight:800;color:var(--text)">${g.total_conversaciones}</div>
+      <div style="font-size:11px;font-weight:700;color:var(--text2);letter-spacing:.05em;margin-bottom:14px">📊 MÉTRICAS DE ATENCIÓN — últimos ${d.periodo_dias} días</div>
+
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:26px">
+        <div style="background:linear-gradient(135deg,var(--bg3),var(--bg4));border-radius:14px;padding:18px;border:1px solid var(--border)">
+          <div style="font-size:22px;margin-bottom:6px">💬</div>
+          <div style="font-size:10px;color:var(--text3);font-weight:700;letter-spacing:.03em;margin-bottom:2px">CONVERSACIONES</div>
+          <div style="font-size:30px;font-weight:800;color:var(--text)">${g.total_conversaciones.toLocaleString()}</div>
         </div>
-        <div style="background:var(--bg3);border-radius:12px;padding:14px">
-          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">TIEMPO PROMEDIO 1RA RESPUESTA</div>
-          <div style="font-size:26px;font-weight:800;color:var(--acrux)">${g.tiempo_promedio_primera_respuesta_min!=null ? Math.round(g.tiempo_promedio_primera_respuesta_min)+' min' : '—'}</div>
+        <div style="background:linear-gradient(135deg,var(--bg3),var(--bg4));border-radius:14px;padding:18px;border:1px solid var(--border)">
+          <div style="font-size:22px;margin-bottom:6px">⏱️</div>
+          <div style="font-size:10px;color:var(--text3);font-weight:700;letter-spacing:.03em;margin-bottom:2px">TIEMPO PROM. 1RA RESPUESTA</div>
+          <div style="font-size:30px;font-weight:800;color:${colorSemaforo(g.tiempo_promedio_primera_respuesta_min)}">${formatMinutos(g.tiempo_promedio_primera_respuesta_min)}</div>
         </div>
-        <div style="background:${g.sin_responder_aun>0?'#FDE4E4':'var(--bg3)'};border-radius:12px;padding:14px">
-          <div style="font-size:10px;color:${g.sin_responder_aun>0?'#D8503C':'var(--text3)'};margin-bottom:4px">SIN RESPONDER AÚN</div>
-          <div style="font-size:26px;font-weight:800;color:${g.sin_responder_aun>0?'#D8503C':'var(--text)'}">${g.sin_responder_aun}</div>
+        <div style="background:${g.sin_responder_aun>0?'linear-gradient(135deg,#FDE4E4,#FCEAEA)':'linear-gradient(135deg,var(--bg3),var(--bg4))'};border-radius:14px;padding:18px;border:1px solid ${g.sin_responder_aun>0?'#F0555C':'var(--border)'}">
+          <div style="font-size:22px;margin-bottom:6px">${g.sin_responder_aun>0?'🚨':'✅'}</div>
+          <div style="font-size:10px;color:${g.sin_responder_aun>0?'#B8362E':'var(--text3)'};font-weight:700;letter-spacing:.03em;margin-bottom:2px">SIN RESPONDER AÚN</div>
+          <div style="font-size:30px;font-weight:800;color:${g.sin_responder_aun>0?'#B8362E':'var(--text)'}">${g.sin_responder_aun}</div>
         </div>
       </div>
-      <div style="font-size:11px;font-weight:700;color:var(--text2);letter-spacing:.05em;margin-bottom:10px">POR AGENTE</div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px">
+        <div>
+          <div style="font-size:11px;font-weight:700;color:var(--text2);letter-spacing:.05em;margin-bottom:14px">👥 CONVERSACIONES POR AGENTE</div>
+          ${agentes.map((a,i)=>`
+            <div style="margin-bottom:12px">
+              <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
+                <span style="font-weight:600">${a.agente}</span>
+                <span style="font-weight:700;color:${coloresAgente[i%coloresAgente.length]}">${a.conversaciones_atendidas}</span>
+              </div>
+              <div style="background:var(--bg4);border-radius:6px;height:10px;overflow:hidden">
+                <div style="background:${coloresAgente[i%coloresAgente.length]};height:100%;width:${(a.conversaciones_atendidas/maxConv*100).toFixed(0)}%;border-radius:6px;transition:width .4s"></div>
+              </div>
+            </div>
+          `).join('') || '<div style="font-size:12px;color:var(--text3)">Sin datos</div>'}
+        </div>
+        <div>
+          <div style="font-size:11px;font-weight:700;color:var(--text2);letter-spacing:.05em;margin-bottom:14px">⏱️ TIEMPO PROM. 1RA RESPUESTA POR AGENTE</div>
+          ${agentes.map(a=>`
+            <div style="margin-bottom:12px">
+              <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
+                <span style="font-weight:600">${a.agente}</span>
+                <span style="font-weight:700;color:${colorSemaforo(a.tiempo_promedio_primera_respuesta_min)}">${formatMinutos(a.tiempo_promedio_primera_respuesta_min)}</span>
+              </div>
+              <div style="background:var(--bg4);border-radius:6px;height:10px;overflow:hidden">
+                <div style="background:${colorSemaforo(a.tiempo_promedio_primera_respuesta_min)};height:100%;width:${((a.tiempo_promedio_primera_respuesta_min||0)/maxTiempo*100).toFixed(0)}%;border-radius:6px;transition:width .4s"></div>
+              </div>
+            </div>
+          `).join('') || '<div style="font-size:12px;color:var(--text3)">Sin datos</div>'}
+          <div style="display:flex;gap:14px;margin-top:16px;font-size:9px;color:var(--text3)">
+            <span>🟢 ≤30 min</span><span>🟠 30–120 min</span><span>🔴 &gt;120 min</span>
+          </div>
+        </div>
+      </div>
+
+      <div style="font-size:11px;font-weight:700;color:var(--text2);letter-spacing:.05em;margin:26px 0 10px">DETALLE POR AGENTE</div>
       <table style="width:100%;border-collapse:collapse;font-size:12px">
         <thead><tr style="text-align:left;color:var(--text3);font-size:10px">
           <th style="padding:6px 10px;border-bottom:1px solid var(--border)">Agente</th>
@@ -1339,7 +1397,7 @@ async function abrirMetricasAcrux(){
           ${d.por_agente.map(a=>`<tr>
             <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-weight:600">${a.agente}</td>
             <td style="padding:8px 10px;border-bottom:1px solid var(--border)">${a.conversaciones_atendidas}</td>
-            <td style="padding:8px 10px;border-bottom:1px solid var(--border)">${a.tiempo_promedio_primera_respuesta_min!=null ? Math.round(a.tiempo_promedio_primera_respuesta_min)+' min' : '—'}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid var(--border);color:${colorSemaforo(a.tiempo_promedio_primera_respuesta_min)};font-weight:600">${formatMinutos(a.tiempo_promedio_primera_respuesta_min)}</td>
             <td style="padding:8px 10px;border-bottom:1px solid var(--border)">${a.mensajes_enviados}</td>
           </tr>`).join('') || '<tr><td colspan="4" style="padding:14px;text-align:center;color:var(--text3)">Sin datos en este periodo</td></tr>'}
         </tbody>
