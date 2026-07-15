@@ -3196,37 +3196,35 @@ app.post('/api/acrux/responder', authMiddleware, async (req, res) => {
     const { contacto_id, mensaje } = req.body;
     if (!contacto_id || !mensaje) return res.status(400).json({ ok: false, error: 'contacto_id y mensaje son requeridos' });
 
-    // Tomamos el connector_id de un mensaje reciente de este mismo contacto —
-    // así el envío sale por el mismo número/conector con el que ya conversa la familia.
-    const referencia = await odooCallLocal('acrux.chat.message', 'search_read',
-      [[['contact_id', '=', contacto_id]]],
-      { fields: ['connector_id'], limit: 1, order: 'date_message desc' }
+    // Llamada real capturada del ChatRoom (Network tab): el envío verdadero es un método
+    // propio del modelo acrux.chat.conversation, NO un create() sobre acrux.chat.message.
+    // El contexto "is_acrux_chat_room: true" parece ser la bandera que dispara el envío real.
+    const resultado = await odooCallLocal(
+      'acrux.chat.conversation',
+      'send_message',
+      [
+        [contacto_id],
+        {
+          text: mensaje,
+          from_me: true,
+          ttype: 'text',
+          res_model: '',
+          res_id: 0,
+          id: -2,
+          date_message: new Date().toISOString().replace('T', ' ').substring(0, 19),
+          button_ids: []
+        }
+      ],
+      { context: { lang: 'es_GT', tz: 'America/Guatemala', is_acrux_chat_room: true } }
     );
-    const connectorId = referencia?.[0]?.connector_id?.[0] || null;
-    if (!connectorId) {
-      return res.json({ ok: false, error: 'No se encontró el conector de WhatsApp de este contacto — no hay mensajes previos para tomar la referencia.' });
-    }
 
-    const nuevoId = await odooCallLocal('acrux.chat.message', 'create', [{
-      contact_id: contacto_id,
-      connector_id: connectorId,
-      text: mensaje,
-      from_me: true,
-      ttype: 'text',
-      date_message: new Date().toISOString().replace('T', ' ').substring(0, 19)
-    }]);
-
-    if (!nuevoId) {
-      return res.json({ ok: false, error: 'Odoo no confirmó la creación del mensaje. Puede que no se haya enviado de verdad — hay que revisarlo directamente en el ChatRoom.' });
-    }
-
-    // Diagnóstico: releer el mensaje recién creado con los campos que suelen indicar
-    // el estado real del envío en este tipo de conector (error, reintentos, evento, msgid).
+    // Diagnóstico: releer el último mensaje saliente de este contacto para confirmar
+    // que esta vez sí quedó con msgid real (señal de que WhatsApp lo recibió).
     let diagnostico = null;
     try {
-      const releido = await odooCallLocal('acrux.chat.message', 'read',
-        [[nuevoId]],
-        { fields: ['id', 'msgid', 'error_msg', 'event', 'try_count', 'date_message'] }
+      const releido = await odooCallLocal('acrux.chat.message', 'search_read',
+        [[['contact_id', '=', contacto_id], ['from_me', '=', true]]],
+        { fields: ['id', 'msgid', 'error_msg', 'event', 'try_count', 'date_message'], limit: 1, order: 'date_message desc' }
       );
       diagnostico = releido?.[0] || null;
     } catch (e) {
@@ -3235,9 +3233,9 @@ app.post('/api/acrux/responder', authMiddleware, async (req, res) => {
 
     res.json({
       ok: true,
-      mensaje_id: nuevoId,
+      resultado,
       diagnostico,
-      aviso: 'Mensaje creado en Odoo. IMPORTANTE: esto es una prueba — confirma en el ChatRoom real (o que el padre lo reciba) que sí llegó de verdad por WhatsApp antes de confiar en este botón para todos los agentes.'
+      aviso: 'Mensaje enviado con send_message. Confirma con el destinatario real que le llegó, y revisa que "diagnostico.msgid" ya no venga vacío.'
     });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
