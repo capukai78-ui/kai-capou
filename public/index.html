@@ -441,9 +441,14 @@ tr:hover td{background:var(--g4)}
             <div id="acrux-mensajes" style="flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:10px">
               <div style="text-align:center;color:var(--text3);margin-top:40px;font-size:13px">Selecciona una conversación de la lista</div>
             </div>
+            <div id="acrux-plantillas-panel" style="display:none;max-height:260px;overflow-y:auto;border-bottom:1px solid var(--border);padding:10px 18px;background:var(--bg3)">
+              <div style="font-size:10px;color:var(--text3);margin-bottom:8px">Respuestas rápidas — clic para enviar</div>
+              <div id="acrux-plantillas-lista" style="display:grid;grid-template-columns:1fr 1fr;gap:6px"></div>
+            </div>
             <div id="acrux-input-area" style="padding:14px 18px;border-top:1px solid var(--border);display:none">
               <div style="font-size:9px;color:var(--amber);margin-bottom:6px">⚠️ Envío en prueba (nuevo método send_message) — confirma con el destinatario real que le llegó antes de usarlo con familias.</div>
               <div style="display:flex;gap:8px">
+                <button onclick="togglePlantillasAcrux()" title="Respuestas rápidas" style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px 12px;font-size:16px;cursor:pointer;color:var(--text)">⚡</button>
                 <input type="text" id="acrux-input-msg" placeholder="Escribe tu respuesta (prueba)..." style="flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px 14px;color:var(--text);font-size:13px;outline:none" onkeypress="if(event.key==='Enter')enviarMensajeAcrux()">
                 <button class="btn-p" onclick="enviarMensajeAcrux()">Enviar</button>
               </div>
@@ -1661,6 +1666,46 @@ async function abrirAcruxChat(contactoId){
     console.error(e);
     mensajesEl.innerHTML = '<div style="text-align:center;color:var(--text3);font-size:12px">Error al cargar</div>';
   }
+}
+
+let _acruxPlantillasCache = null;
+
+async function togglePlantillasAcrux(){
+  const panel = document.getElementById('acrux-plantillas-panel');
+  const yaAbierto = panel.style.display === 'block';
+  if(yaAbierto){ panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  const lista = document.getElementById('acrux-plantillas-lista');
+
+  if(!_acruxPlantillasCache){
+    lista.innerHTML = '<div style="font-size:11px;color:var(--text3);grid-column:1/-1">Cargando...</div>';
+    try {
+      const r = await fetch(API+'/api/acrux/plantillas',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+      if(!r.ok){ lista.innerHTML = '<div style="font-size:11px;color:var(--text3);grid-column:1/-1">Error: '+(r.error||'desconocido')+'</div>'; return; }
+      _acruxPlantillasCache = r.plantillas;
+    } catch(e){ lista.innerHTML = '<div style="font-size:11px;color:var(--text3);grid-column:1/-1">Error al cargar</div>'; return; }
+  }
+
+  lista.innerHTML = _acruxPlantillasCache.map(p => `
+    <div onclick="enviarPlantillaAcrux(${p.id})" style="display:flex;align-items:center;gap:6px;padding:8px 10px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;cursor:pointer;font-size:11px" onmouseover="this.style.background='var(--acrux2)'" onmouseout="this.style.background='var(--bg2)'">
+      <span>${p.es_imagen ? '🖼️' : '➡️'}</span>
+      <span style="overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">${p.nombre}</span>
+    </div>
+  `).join('');
+}
+
+async function enviarPlantillaAcrux(plantillaId){
+  if(!_acruxContactoActivo) return;
+  document.getElementById('acrux-plantillas-panel').style.display = 'none';
+  try {
+    const r = await fetch(API+'/api/acrux/responder',{
+      method:'POST',
+      headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'},
+      body: JSON.stringify({ contacto_id: _acruxContactoActivo, plantilla_id: plantillaId })
+    }).then(r=>r.json());
+    if(r.ok){ showToast(r.aviso || 'Plantilla enviada — confirma que llegó ✓','ok'); abrirAcruxChat(_acruxContactoActivo); }
+    else { showToast(r.error || 'No se pudo enviar la plantilla','error'); }
+  } catch(e) { showToast('Error de conexión','error'); }
 }
 
 async function enviarMensajeAcrux(){
