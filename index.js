@@ -3044,7 +3044,7 @@ app.get('/api/acrux/conversaciones', authMiddleware, async (req, res) => {
     const limite = Math.min(parseInt(req.query.limit) || 300, 1000);
     const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
       [[]],
-      { fields: ['id', 'text', 'date_message', 'contact_id', 'msgid', 'from_me', 'read_date'], limit: limite, order: 'date_message desc' }
+      { fields: ['id', 'text', 'date_message', 'contact_id', 'msgid', 'from_me', 'read_date', 'user_id'], limit: limite, order: 'date_message desc' }
     );
 
     if (!mensajes) return res.json({ ok: false, error: 'No se pudo leer acrux.chat.message' });
@@ -3064,6 +3064,7 @@ app.get('/api/acrux/conversaciones', authMiddleware, async (req, res) => {
           ultimo_mensaje: null,
           ultima_fecha: null,
           ultimo_de: null,
+          agente: null, // último agente humano que respondió (user_id del mensaje saliente más reciente)
           etiquetas: [],
           prioridad: '0'
         };
@@ -3077,7 +3078,13 @@ app.get('/api/acrux/conversaciones', authMiddleware, async (req, res) => {
         c.ultimo_mensaje = (m.text || '').substring(0, 120);
         c.ultimo_de = m.from_me ? 'agente' : 'padre';
       }
+      if (m.from_me && m.user_id && (!c._fechaAgente || m.date_message > c._fechaAgente)) {
+        c.agente = m.user_id[1];
+        c._fechaAgente = m.date_message;
+      }
     });
+    // Limpiar campo auxiliar interno antes de responder
+    Object.values(porContacto).forEach(c => { delete c._fechaAgente; });
 
     // Cruce con Odoo — una sola consulta para todos los números, en vez de una por chat
     // (solo lectura, igual que el resto de este bloque de AcruxLab)
@@ -3125,7 +3132,7 @@ app.get('/api/acrux/conversaciones/:contactoId', authMiddleware, async (req, res
 
     const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
       [[['contact_id', '=', contactoId]]],
-      { fields: ['id', 'text', 'date_message', 'contact_id', 'msgid', 'from_me', 'read_date'], limit: 500, order: 'date_message asc' }
+      { fields: ['id', 'text', 'date_message', 'contact_id', 'msgid', 'from_me', 'read_date', 'user_id'], limit: 500, order: 'date_message asc' }
     );
 
     if (!mensajes) return res.json({ ok: false, error: 'No se pudo leer los mensajes de este contacto' });
@@ -3144,7 +3151,8 @@ app.get('/api/acrux/conversaciones/:contactoId', authMiddleware, async (req, res
         de: m.from_me ? 'agente' : 'padre',
         texto: m.text || '',
         fecha: m.date_message,
-        leido: !!m.read_date
+        leido: !!m.read_date,
+        agente: m.from_me ? (m.user_id ? m.user_id[1] : null) : null
       }))
     });
   } catch (e) {
@@ -3162,7 +3170,7 @@ app.get('/api/acrux/lead-por-telefono/:numero', authMiddleware, async (req, res)
 
     const leads = await odooCallLocal('crm.lead', 'search_read',
       [[['type', '=', 'opportunity']]],
-      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'mobile', 'priority', 'tag_ids', 'x_studio_notas_1', 'x_studio_comentarios'], limit: 200, order: 'write_date desc' }
+      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'mobile', 'email_from', 'city', 'priority', 'tag_ids', 'x_studio_notas_1', 'x_studio_comentarios'], limit: 200, order: 'write_date desc' }
     ) || [];
 
     const lead = leads.find(l => {
@@ -3183,9 +3191,14 @@ app.get('/api/acrux/lead-por-telefono/:numero', authMiddleware, async (req, res)
       ok: true,
       encontrado: true,
       lead_id: lead.id,
-      nombre_alumno: lead.partner_name || lead.contact_name || null,
+      // Contacto = el padre/madre/encargado (quien escribe por WhatsApp), NO el alumno
+      contacto_nombre: lead.contact_name || lead.partner_name || null,
+      contacto_telefono: lead.phone || lead.mobile || null,
+      contacto_correo: lead.email_from || null,
+      contacto_ubicacion: lead.city || null,
       prioridad: lead.priority || '0', // Odoo: '0'..'3' = número de estrellas
       etiquetas,
+      // Nota = donde Sylvia escribe el/los nombre(s) del alumno + anotaciones breves
       nota: lead.x_studio_notas_1 || null,
       nivel: lead.x_studio_comentarios || null // ⚠️ pendiente #1: este mapeo de "Nivel" está sin confirmar
     });
