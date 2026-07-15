@@ -1315,6 +1315,41 @@ function colorSemaforo(min){
   return '#D8503C';                // rojo: crítico
 }
 
+function semaforoIcono(min){
+  if(min == null) return '⚪';
+  if(min <= 30) return '🟢';
+  if(min <= 120) return '🟠';
+  return '🔴';
+}
+
+// Interpretación tipo especialista en call center: convierte los números en un
+// mensaje de riesgo/negocio, no solo el dato crudo.
+function generarAlertaGerencial(g, agentes){
+  const prom = g.tiempo_promedio_primera_respuesta_min;
+  const bullets = [];
+  if(prom != null){
+    if(prom > 120){
+      bullets.push(`⚠️ El tiempo promedio de primera respuesta es de <b>${formatMinutos(prom)}</b> — muy por encima del estándar recomendado para atención por WhatsApp (idealmente bajo 15–30 min). Familias interesadas pueden perder el interés o buscar otro colegio mientras esperan.`);
+    } else if(prom > 30){
+      bullets.push(`🟠 El tiempo promedio de primera respuesta (${formatMinutos(prom)}) está en zona aceptable pero mejorable — acercarlo a 30 min o menos reduciría el riesgo de perder familias impacientes.`);
+    } else {
+      bullets.push(`✅ El tiempo promedio de primera respuesta (${formatMinutos(prom)}) está dentro de un rango saludable.`);
+    }
+  }
+  if(agentes.length){
+    const masLento = [...agentes].sort((a,b)=>(b.tiempo_promedio_primera_respuesta_min||0)-(a.tiempo_promedio_primera_respuesta_min||0))[0];
+    const masVolumen = [...agentes].sort((a,b)=>b.conversaciones_atendidas-a.conversaciones_atendidas)[0];
+    if(masLento && masLento.tiempo_promedio_primera_respuesta_min > 120){
+      const esTambienElDeVolumen = masLento.agente === masVolumen.agente;
+      bullets.push(`🔴 <b>${masLento.agente}</b> tiene el tiempo de respuesta más alto (${formatMinutos(masLento.tiempo_promedio_primera_respuesta_min)})${esTambienElDeVolumen ? `, y además maneja el mayor volumen (${masLento.conversaciones_atendidas} conversaciones) — probablemente necesite apoyo o redistribución de carga.` : '.'}`);
+    }
+  }
+  if(g.sin_responder_aun > 0){
+    bullets.push(`🚨 Hay <b>${g.sin_responder_aun}</b> conversación${g.sin_responder_aun>1?'es':''} con mensaje de un padre que todavía no tiene ninguna respuesta — revisar de inmediato.`);
+  }
+  return bullets;
+}
+
 async function abrirMetricasAcrux(){
   const panel = document.getElementById('acrux-metricas-panel');
   const yaAbierto = panel.style.display === 'block';
@@ -1326,21 +1361,20 @@ async function abrirMetricasAcrux(){
     if(!d.ok){ panel.innerHTML = '<div style="color:var(--text3);font-size:12px">Error: '+(d.error||'desconocido')+'</div>'; return; }
     const g = d.resumen_general;
     const agentes = (d.por_agente||[]).filter(a=>a.conversaciones_atendidas>0);
-    const maxConv = Math.max(1, ...agentes.map(a=>a.conversaciones_atendidas));
-    const maxTiempo = Math.max(1, ...agentes.map(a=>a.tiempo_promedio_primera_respuesta_min||0));
-    const coloresAgente = ['#3E7BFA','#9B6DE8','#0FB5A6','#D98C0F','#F0555C','#2FB37C'];
+    const maxTiempo = Math.max(1, ...agentes.map(a=>a.tiempo_promedio_primera_respuesta_min||0), 150); // al menos 150 para que la marca SLA quepa
+    const alertas = generarAlertaGerencial(g, agentes);
 
     panel.innerHTML = `
       <div style="font-size:11px;font-weight:700;color:var(--text2);letter-spacing:.05em;margin-bottom:14px">📊 MÉTRICAS DE ATENCIÓN — últimos ${d.periodo_dias} días</div>
 
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:26px">
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:18px">
         <div style="background:linear-gradient(135deg,var(--bg3),var(--bg4));border-radius:14px;padding:18px;border:1px solid var(--border)">
           <div style="font-size:22px;margin-bottom:6px">💬</div>
           <div style="font-size:10px;color:var(--text3);font-weight:700;letter-spacing:.03em;margin-bottom:2px">CONVERSACIONES</div>
           <div style="font-size:30px;font-weight:800;color:var(--text)">${g.total_conversaciones.toLocaleString()}</div>
         </div>
         <div style="background:linear-gradient(135deg,var(--bg3),var(--bg4));border-radius:14px;padding:18px;border:1px solid var(--border)">
-          <div style="font-size:22px;margin-bottom:6px">⏱️</div>
+          <div style="font-size:22px;margin-bottom:6px">${semaforoIcono(g.tiempo_promedio_primera_respuesta_min)}</div>
           <div style="font-size:10px;color:var(--text3);font-weight:700;letter-spacing:.03em;margin-bottom:2px">TIEMPO PROM. 1RA RESPUESTA</div>
           <div style="font-size:30px;font-weight:800;color:${colorSemaforo(g.tiempo_promedio_primera_respuesta_min)}">${formatMinutos(g.tiempo_promedio_primera_respuesta_min)}</div>
         </div>
@@ -1351,41 +1385,37 @@ async function abrirMetricasAcrux(){
         </div>
       </div>
 
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px">
-        <div>
-          <div style="font-size:11px;font-weight:700;color:var(--text2);letter-spacing:.05em;margin-bottom:14px">👥 CONVERSACIONES POR AGENTE</div>
-          ${agentes.map((a,i)=>`
-            <div style="margin-bottom:12px">
-              <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
-                <span style="font-weight:600">${a.agente}</span>
-                <span style="font-weight:700;color:${coloresAgente[i%coloresAgente.length]}">${a.conversaciones_atendidas}</span>
-              </div>
-              <div style="background:var(--bg4);border-radius:6px;height:10px;overflow:hidden">
-                <div style="background:${coloresAgente[i%coloresAgente.length]};height:100%;width:${(a.conversaciones_atendidas/maxConv*100).toFixed(0)}%;border-radius:6px;transition:width .4s"></div>
-              </div>
-            </div>
-          `).join('') || '<div style="font-size:12px;color:var(--text3)">Sin datos</div>'}
-        </div>
-        <div>
-          <div style="font-size:11px;font-weight:700;color:var(--text2);letter-spacing:.05em;margin-bottom:14px">⏱️ TIEMPO PROM. 1RA RESPUESTA POR AGENTE</div>
-          ${agentes.map(a=>`
-            <div style="margin-bottom:12px">
-              <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
-                <span style="font-weight:600">${a.agente}</span>
-                <span style="font-weight:700;color:${colorSemaforo(a.tiempo_promedio_primera_respuesta_min)}">${formatMinutos(a.tiempo_promedio_primera_respuesta_min)}</span>
-              </div>
-              <div style="background:var(--bg4);border-radius:6px;height:10px;overflow:hidden">
-                <div style="background:${colorSemaforo(a.tiempo_promedio_primera_respuesta_min)};height:100%;width:${((a.tiempo_promedio_primera_respuesta_min||0)/maxTiempo*100).toFixed(0)}%;border-radius:6px;transition:width .4s"></div>
-              </div>
-            </div>
-          `).join('') || '<div style="font-size:12px;color:var(--text3)">Sin datos</div>'}
-          <div style="display:flex;gap:14px;margin-top:16px;font-size:9px;color:var(--text3)">
-            <span>🟢 ≤30 min</span><span>🟠 30–120 min</span><span>🔴 &gt;120 min</span>
-          </div>
-        </div>
-      </div>
+      ${alertas.length ? `
+      <div style="background:#FFF8ED;border:1px solid #F0D9A8;border-radius:12px;padding:14px 16px;margin-bottom:24px">
+        <div style="font-size:10px;font-weight:700;color:#8A5C08;letter-spacing:.05em;margin-bottom:8px">🧭 LECTURA GERENCIAL</div>
+        ${alertas.map(a=>`<div style="font-size:12px;color:#5C4210;line-height:1.6;margin-bottom:4px">${a}</div>`).join('')}
+      </div>` : ''}
 
-      <div style="font-size:11px;font-weight:700;color:var(--text2);letter-spacing:.05em;margin:26px 0 10px">DETALLE POR AGENTE</div>
+      <div style="font-size:11px;font-weight:700;color:var(--text2);letter-spacing:.05em;margin-bottom:14px">👥 ATENCIÓN POR AGENTE — volumen y tiempo de respuesta</div>
+      ${agentes.map(a=>{
+        const pct = Math.min(100, (a.tiempo_promedio_primera_respuesta_min||0)/maxTiempo*100);
+        const marcaVerde = (30/maxTiempo*100).toFixed(1);
+        const marcaAmbar = (120/maxTiempo*100).toFixed(1);
+        return `
+        <div style="display:flex;align-items:center;gap:14px;padding:12px 14px;background:var(--bg3);border-radius:12px;margin-bottom:8px">
+          <div style="font-size:22px">${semaforoIcono(a.tiempo_promedio_primera_respuesta_min)}</div>
+          <div style="flex:0 0 150px">
+            <div style="font-size:13px;font-weight:700">${a.agente}</div>
+            <div style="font-size:10px;color:var(--text3)">${a.conversaciones_atendidas} conversaciones · ${a.mensajes_enviados} mensajes</div>
+          </div>
+          <div style="flex:1;position:relative">
+            <div style="background:var(--bg4);border-radius:6px;height:14px;overflow:hidden;position:relative">
+              <div style="background:${colorSemaforo(a.tiempo_promedio_primera_respuesta_min)};height:100%;width:${pct.toFixed(0)}%;border-radius:6px;transition:width .4s"></div>
+              <div style="position:absolute;top:0;left:${marcaVerde}%;width:1px;height:100%;background:rgba(0,0,0,.25)"></div>
+              <div style="position:absolute;top:0;left:${marcaAmbar}%;width:1px;height:100%;background:rgba(0,0,0,.25)"></div>
+            </div>
+            <div style="font-size:8px;color:var(--text3);margin-top:2px">↑ límite aceptable (30 min) &nbsp; ↑ límite crítico (120 min)</div>
+          </div>
+          <div style="flex:0 0 90px;text-align:right;font-size:16px;font-weight:800;color:${colorSemaforo(a.tiempo_promedio_primera_respuesta_min)}">${formatMinutos(a.tiempo_promedio_primera_respuesta_min)}</div>
+        </div>
+      `;}).join('') || '<div style="font-size:12px;color:var(--text3)">Sin datos en este periodo</div>'}
+
+      <div style="font-size:11px;font-weight:700;color:var(--text2);letter-spacing:.05em;margin:22px 0 10px">DETALLE POR AGENTE</div>
       <table style="width:100%;border-collapse:collapse;font-size:12px">
         <thead><tr style="text-align:left;color:var(--text3);font-size:10px">
           <th style="padding:6px 10px;border-bottom:1px solid var(--border)">Agente</th>
@@ -1397,7 +1427,7 @@ async function abrirMetricasAcrux(){
           ${d.por_agente.map(a=>`<tr>
             <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-weight:600">${a.agente}</td>
             <td style="padding:8px 10px;border-bottom:1px solid var(--border)">${a.conversaciones_atendidas}</td>
-            <td style="padding:8px 10px;border-bottom:1px solid var(--border);color:${colorSemaforo(a.tiempo_promedio_primera_respuesta_min)};font-weight:600">${formatMinutos(a.tiempo_promedio_primera_respuesta_min)}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid var(--border);color:${colorSemaforo(a.tiempo_promedio_primera_respuesta_min)};font-weight:600">${semaforoIcono(a.tiempo_promedio_primera_respuesta_min)} ${formatMinutos(a.tiempo_promedio_primera_respuesta_min)}</td>
             <td style="padding:8px 10px;border-bottom:1px solid var(--border)">${a.mensajes_enviados}</td>
           </tr>`).join('') || '<tr><td colspan="4" style="padding:14px;text-align:center;color:var(--text3)">Sin datos en este periodo</td></tr>'}
         </tbody>
