@@ -3715,11 +3715,21 @@ app.get('/api/debug/vista-formulario-lead', authMiddleware, async (req, res) => 
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
     const uid = await getOdooUID();
+
+    // Buscar el view_id específico de la acción "Admisiones" (la que se ve en pantalla,
+    // action=1018 según la URL) — la vista genérica del modelo puede ser otra distinta.
+    let viewIdEspecifico = false;
+    try {
+      const accion = await odooRPC('/jsonrpc', { service: 'object', method: 'execute_kw', args: [ODOO_DB, uid, ODOO_PASS_ODOO, 'ir.actions.act_window', 'read', [[parseInt(req.query.action_id) || 1018]], { fields: ['view_id', 'views', 'res_model'] }] });
+      const act = accion?.[0];
+      viewIdEspecifico = act?.view_id?.[0] || (act?.views || []).find(v => v[1] === 'form')?.[0] || false;
+    } catch (e) { /* si falla, seguimos con false (vista por defecto) */ }
+
     let resultado;
     try {
-      resultado = await odooRPC('/jsonrpc', { service: 'object', method: 'execute_kw', args: [ODOO_DB, uid, ODOO_PASS_ODOO, 'crm.lead', 'get_views', [[[false, 'form']]], { options: {} }] });
+      resultado = await odooRPC('/jsonrpc', { service: 'object', method: 'execute_kw', args: [ODOO_DB, uid, ODOO_PASS_ODOO, 'crm.lead', 'get_views', [[[viewIdEspecifico, 'form']]], { options: {} }] });
     } catch (eInterno) {
-      return res.json({ ok: false, error_completo: eInterno.message, nota: 'Falló get_views — revisa el traceback completo aquí abajo' });
+      return res.json({ ok: false, error_completo: eInterno.message, nota: 'Falló get_views — revisa el traceback completo aquí abajo', view_id_usado: viewIdEspecifico });
     }
     const arch = resultado?.views?.form?.arch || null;
     if (!arch) return res.json({ ok: false, error: 'No se pudo obtener el arch de la vista', crudo: resultado });
@@ -3734,7 +3744,17 @@ app.get('/api/debug/vista-formulario-lead', authMiddleware, async (req, res) => 
       idx = textoBusqueda.indexOf('nivel', idx + 5);
     }
 
-    res.json({ ok: true, total_apariciones_de_nivel: fragmentos.length, fragmentos, arch_length: arch.length });
+    res.json({ ok: true, view_id_usado: viewIdEspecifico, total_apariciones_de_nivel: fragmentos.length, fragmentos, arch_length: arch.length });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.get('/api/debug/opciones-carrera', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const registros = await odooCallLocal('capouilliez.carrer', 'search_read', [[]], { fields: ['id', 'name'], limit: 50 });
+    res.json({ ok: true, registros });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
