@@ -1217,6 +1217,70 @@ function enviarImagenWhatsAppMeta(numeroDestino, mediaId, caption) {
   });
 }
 
+// Sube una imagen como "adjunto reutilizable" a Instagram/Messenger (mismo mecanismo
+// para ambos vía Graph API) y devuelve el attachment_id para enviarla después.
+function subirImagenAdjuntoMeta(imagenBase64, mimeType, tokenPagina) {
+  return new Promise((resolve) => {
+    if (!tokenPagina) return resolve(null);
+    const buffer = Buffer.from(imagenBase64, 'base64');
+    const boundary = '----KaiBoundary' + Date.now();
+    const mensajePart = JSON.stringify({ message: { attachment: { type: 'image', payload: { is_reusable: true } } } });
+    const parts = [];
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="message"\r\n\r\n${mensajePart}\r\n`));
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="filedata"; filename="imagen.jpg"\r\nContent-Type: ${mimeType}\r\n\r\n`));
+    parts.push(buffer);
+    parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+    const body = Buffer.concat(parts);
+
+    const req2 = https.request({
+      hostname: 'graph.facebook.com',
+      path: `/v22.0/me/message_attachments?access_token=${tokenPagina}`,
+      method: 'POST',
+      headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}`, 'Content-Length': body.length }
+    }, (r) => { let d=''; r.on('data',c=>d+=c); r.on('end',()=>{ try{ resolve(JSON.parse(d).attachment_id || null); }catch(e){ resolve(null); } }); });
+    req2.on('error', () => resolve(null));
+    req2.write(body); req2.end();
+  });
+}
+
+// Envía una imagen ya subida (attachment_id) por Instagram o Messenger
+function enviarImagenAdjuntoMeta(recipientId, attachmentId, tokenPagina, caption) {
+  return new Promise((resolve) => {
+    if (!tokenPagina) return resolve(null);
+    const body = JSON.stringify({
+      recipient: { id: recipientId },
+      message: { attachment: { type: 'image', payload: { attachment_id: attachmentId } } }
+    });
+    const req2 = https.request({
+      hostname: 'graph.facebook.com',
+      path: `/v22.0/me/messages?access_token=${tokenPagina}`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+    }, (r) => { let d=''; r.on('data',c=>d+=c); r.on('end',()=>{
+      try {
+        const parsed = JSON.parse(d);
+        // Si hay caption, mandarlo como mensaje de texto aparte (los adjuntos de imagen no llevan texto junto)
+        if (caption) enviarMensajeMessenger(recipientId, caption).catch(()=>{});
+        resolve(parsed);
+      } catch(e){ resolve(null); }
+    }); });
+    req2.on('error', () => resolve(null));
+    req2.write(body); req2.end();
+  });
+}
+
+// Función de conveniencia: sube + envía una imagen (de la BD o subida ad-hoc) por Instagram/Messenger
+async function enviarImagenInstagramOMessenger(canal, imagenBase64, mimeType, recipientId, caption) {
+  const tokenPagina = canal === 'instagram'
+    ? (process.env.INSTAGRAM_PAGE_TOKEN || process.env.WHATSAPP_TOKEN)
+    : (process.env.MESSENGER_PAGE_TOKEN || process.env.WHATSAPP_TOKEN);
+  const attachmentId = await subirImagenAdjuntoMeta(imagenBase64, mimeType, tokenPagina);
+  if (!attachmentId) return { ok: false, error: 'No se pudo subir la imagen a Meta (revisar token de página)' };
+  const resultado = await enviarImagenAdjuntoMeta(recipientId, attachmentId, tokenPagina, caption);
+  if (resultado && resultado.message_id) return { ok: true, mensaje_id: resultado.message_id };
+  return { ok: false, error: resultado?.error?.message || 'Error desconocido al enviar imagen', detalle: resultado };
+}
+
 // Función de conveniencia: sube + envía una imagen de la base de datos a un número, en un solo paso
 async function enviarImagenDesdeDB(imagenDoc, numeroDestino, caption) {
   const mediaId = await subirImagenAMeta(imagenDoc.imagen_base64, imagenDoc.mime_type);
@@ -3946,8 +4010,8 @@ app.get('/api/conversaciones/:id', authMiddleware, async (req, res) => {
 // Agente toma/responde manualmente una conversación
 app.post('/api/conversaciones/:id/responder', authMiddleware, async (req, res) => {
   try {
-    const { mensaje, imagen_id } = req.body;
-    if (!mensaje && !imagen_id) return res.status(400).json({ ok: false, error: 'Mensaje o imagen requeridos' });
+    const { mensaje, imagen_id, imagen_base64, imagen_mime } = req.body;
+    if (!mensaje && !imagen_id && !imagen_base64) return res.status(400).json({ ok: false, error: 'Mensaje o imagen requeridos' });
 
     const conv = await Conversacion.findOne({ _id: req.params.id, tenant_id: req.user.tenant_id });
     if (!conv) return res.status(404).json({ ok: false, error: 'No encontrada' });
@@ -3964,11 +4028,27 @@ app.post('/api/conversaciones/:id/responder', authMiddleware, async (req, res) =
     // para distinguir el canal en conv.numero — si se lo mandamos con prefijo, Meta
     // rechaza el envío silenciosamente (por eso no llegaba nada por IG/Messenger).
     const idExternoReal = conv.numero.replace(/^(ig_|fb_)/, '');
+
     if (imagen_id) {
+      // Imagen del catálogo preclasificado — ahora enrutada por el canal real,
+      // antes siempre intentaba mandarse por WhatsApp sin importar el canal.
       const img = await ImagenMarketing.findOne({ _id: imagen_id, tenant_id: req.user.tenant_id });
       if (!img) return res.status(404).json({ ok: false, error: 'Imagen no encontrada' });
-      resultado = await enviarImagenDesdeDB(img, conv.canal === 'whatsapp' ? conv.numero : idExternoReal, mensaje || '');
+      if (conv.canal === 'instagram' || conv.canal === 'messenger') {
+        resultado = await enviarImagenInstagramOMessenger(conv.canal, img.imagen_base64, img.mime_type, idExternoReal, mensaje || '');
+      } else {
+        resultado = await enviarImagenDesdeDB(img, conv.numero, mensaje || '');
+      }
       conv.mensajes.push({ de: 'agente', texto: mensaje ? `📷 ${img.nombre} — ${mensaje}` : `📷 ${img.nombre}` });
+    } else if (imagen_base64) {
+      // Imagen subida ad-hoc desde la computadora del agente (no viene del catálogo)
+      if (conv.canal === 'instagram' || conv.canal === 'messenger') {
+        resultado = await enviarImagenInstagramOMessenger(conv.canal, imagen_base64, imagen_mime || 'image/jpeg', idExternoReal, mensaje || '');
+      } else {
+        const mediaId = await subirImagenAMeta(imagen_base64, imagen_mime || 'image/jpeg');
+        resultado = mediaId ? await enviarImagenWhatsAppMeta(conv.numero, mediaId, mensaje || '') : { error: { message: 'No se pudo subir la imagen a WhatsApp' } };
+      }
+      conv.mensajes.push({ de: 'agente', texto: mensaje ? `📷 [imagen adjunta] — ${mensaje}` : '📷 [imagen adjunta]' });
     } else {
       // Enviar por el canal real de la conversación — antes esto SIEMPRE mandaba por WhatsApp,
       // aunque la conversación fuera de Instagram o Messenger (el mensaje no llegaba a nadie).
