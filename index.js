@@ -1875,7 +1875,7 @@ function odooRPC(path, params) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({ jsonrpc: '2.0', method: 'call', id: Math.floor(Math.random() * 99999), params });
     const options = { hostname: ODOO_URL, path, method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } };
-    const req = https.request(options, (res) => { let d = ''; res.on('data', c => d += c); res.on('end', () => { try { const p = JSON.parse(d); if (p.error) reject(new Error(JSON.stringify(p.error).substring(0,200))); else resolve(p.result); } catch(e) { reject(e); } }); });
+    const req = https.request(options, (res) => { let d = ''; res.on('data', c => d += c); res.on('end', () => { try { const p = JSON.parse(d); if (p.error) reject(new Error(JSON.stringify(p.error))); else resolve(p.result); } catch(e) { reject(e); } }); });
     req.on('error', reject); req.write(body); req.end();
   });
 }
@@ -3714,7 +3714,13 @@ app.get('/api/debug/acrux-campos-mensaje', authMiddleware, async (req, res) => {
 app.get('/api/debug/vista-formulario-lead', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
-    const resultado = await odooCallLocal('crm.lead', 'fields_view_get', [], { view_type: 'form' });
+    const uid = await getOdooUID();
+    let resultado;
+    try {
+      resultado = await odooRPC('/jsonrpc', { service: 'object', method: 'execute_kw', args: [ODOO_DB, uid, ODOO_PASS_ODOO, 'crm.lead', 'fields_view_get', [], { view_type: 'form' }] });
+    } catch (eInterno) {
+      return res.json({ ok: false, error_completo: eInterno.message, nota: 'Falló fields_view_get — revisa el traceback completo aquí abajo' });
+    }
     const arch = resultado?.arch || null;
     if (!arch) return res.json({ ok: false, error: 'No se pudo obtener el arch de la vista', crudo: resultado });
 
