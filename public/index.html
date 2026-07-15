@@ -413,8 +413,12 @@ tr:hover td{background:var(--g4)}
             <span style="background:#FFF1D6;border:1px solid #D98C0F;color:#8A5C08;font-size:9px;font-weight:700;padding:2px 8px;border-radius:10px">⚠️ ENVÍO EN PRUEBA</span>
             <span id="cl-vista-usuario" style="background:var(--bg4);color:var(--text2);font-size:9px;font-weight:700;padding:2px 8px;border-radius:10px"></span>
           </div>
-          <button class="rpill" onclick="loadAcruxLista()">↻ Actualizar</button>
+          <div style="display:flex;gap:8px">
+            <button class="rpill" onclick="abrirMetricasAcrux()">📊 Métricas</button>
+            <button class="rpill" onclick="loadAcruxLista()">↻ Actualizar</button>
+          </div>
         </div>
+        <div id="acrux-metricas-panel" style="display:none;background:var(--bg2);border:1px solid var(--acrux3);border-top:none;padding:18px"></div>
         <div style="display:grid;grid-template-columns:280px 1fr 240px;gap:1px;background:var(--border2);border:1px solid var(--acrux3);border-radius:0 0 var(--r) var(--r);height:calc(100vh - 260px);overflow:hidden">
           <!-- Lista de conversaciones AcruxLab -->
           <div id="acrux-lista-scroll" style="background:var(--bg2);overflow-y:auto">
@@ -1295,6 +1299,55 @@ function tiempoRelativo(fechaOdoo){
   if(horas < 24) return `hace ${horas} hora${horas>1?'s':''}`;
   const dias = Math.floor(horas/24);
   return `hace ${dias} día${dias>1?'s':''}`;
+}
+
+async function abrirMetricasAcrux(){
+  const panel = document.getElementById('acrux-metricas-panel');
+  const yaAbierto = panel.style.display === 'block';
+  if(yaAbierto){ panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  panel.innerHTML = '<div style="text-align:center;color:var(--text3);font-size:12px;padding:20px">Calculando métricas...</div>';
+  try {
+    const d = await fetch(API+'/api/acrux/metricas?dias=30',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+    if(!d.ok){ panel.innerHTML = '<div style="color:var(--text3);font-size:12px">Error: '+(d.error||'desconocido')+'</div>'; return; }
+    const g = d.resumen_general;
+    panel.innerHTML = `
+      <div style="font-size:11px;font-weight:700;color:var(--text2);letter-spacing:.05em;margin-bottom:14px">MÉTRICAS DE ATENCIÓN — últimos ${d.periodo_dias} días</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px">
+        <div style="background:var(--bg3);border-radius:12px;padding:14px">
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">CONVERSACIONES</div>
+          <div style="font-size:26px;font-weight:800;color:var(--text)">${g.total_conversaciones}</div>
+        </div>
+        <div style="background:var(--bg3);border-radius:12px;padding:14px">
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">TIEMPO PROMEDIO 1RA RESPUESTA</div>
+          <div style="font-size:26px;font-weight:800;color:var(--acrux)">${g.tiempo_promedio_primera_respuesta_min!=null ? Math.round(g.tiempo_promedio_primera_respuesta_min)+' min' : '—'}</div>
+        </div>
+        <div style="background:${g.sin_responder_aun>0?'#FDE4E4':'var(--bg3)'};border-radius:12px;padding:14px">
+          <div style="font-size:10px;color:${g.sin_responder_aun>0?'#D8503C':'var(--text3)'};margin-bottom:4px">SIN RESPONDER AÚN</div>
+          <div style="font-size:26px;font-weight:800;color:${g.sin_responder_aun>0?'#D8503C':'var(--text)'}">${g.sin_responder_aun}</div>
+        </div>
+      </div>
+      <div style="font-size:11px;font-weight:700;color:var(--text2);letter-spacing:.05em;margin-bottom:10px">POR AGENTE</div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="text-align:left;color:var(--text3);font-size:10px">
+          <th style="padding:6px 10px;border-bottom:1px solid var(--border)">Agente</th>
+          <th style="padding:6px 10px;border-bottom:1px solid var(--border)">Conversaciones</th>
+          <th style="padding:6px 10px;border-bottom:1px solid var(--border)">Tiempo prom. 1ra respuesta</th>
+          <th style="padding:6px 10px;border-bottom:1px solid var(--border)">Mensajes enviados</th>
+        </tr></thead>
+        <tbody>
+          ${d.por_agente.map(a=>`<tr>
+            <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-weight:600">${a.agente}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid var(--border)">${a.conversaciones_atendidas}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid var(--border)">${a.tiempo_promedio_primera_respuesta_min!=null ? Math.round(a.tiempo_promedio_primera_respuesta_min)+' min' : '—'}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid var(--border)">${a.mensajes_enviados}</td>
+          </tr>`).join('') || '<tr><td colspan="4" style="padding:14px;text-align:center;color:var(--text3)">Sin datos en este periodo</td></tr>'}
+        </tbody>
+      </table>
+    `;
+  } catch(e){
+    panel.innerHTML = '<div style="color:var(--text3);font-size:12px">Error al cargar métricas</div>';
+  }
 }
 
 async function loadAcruxLista(){
