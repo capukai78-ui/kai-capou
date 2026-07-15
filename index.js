@@ -2220,24 +2220,49 @@ app.get('/api/odoo/leer-mensajes/:id', authMiddleware, async (req, res) => {
 });
 
 // Actualizar lead en Odoo con datos parseados del formulario
+// Traduce lo que llegue como "nivel" (español, variantes, mayúsculas/minúsculas) a las
+// 3 claves exactas que acepta el campo selection real de Odoo: capo_level_of_interest.
+// Si no reconoce el valor, NO lo escribe (mejor omitirlo que mandar un valor inválido
+// que Odoo rechazaría, o peor, que quede mal etiquetado silenciosamente).
+function normalizarNivelOdoo(valor) {
+  const v = String(valor || '').toLowerCase().trim();
+  if (/pre.?primaria|preprimaria|kinder|inicial|infantil|maternal|p[aá]rvulos/.test(v)) return 'Pre-Primary';
+  if (/primaria/.test(v)) return 'Primary';
+  if (/secundaria|bachillerato|diversificado/.test(v)) return 'Secondary';
+  return null;
+}
+
 app.post('/api/odoo/actualizar-lead', authMiddleware, async (req, res) => {
   try {
     const { lead_id, nombre, telefono, correo, nivel, zona } = req.body;
     if (!lead_id) return res.status(400).json({ ok: false, error: 'lead_id requerido' });
 
     const updates = {};
-    if (nombre) updates.partner_name = nombre;
+    if (nombre) updates.contact_name = nombre; // corregido: antes iba a partner_name (Nombre de compañía), no al "Nombre del contacto"
     if (telefono) updates.phone = telefono;
     if (correo) updates.email_from = correo;
-    if (nivel) updates.x_studio_comentarios = nivel;
     if (zona) updates.x_studio_notas_1 = zona;
+
+    let nivelNoReconocido = null;
+    if (nivel) {
+      const nivelOdoo = normalizarNivelOdoo(nivel);
+      if (nivelOdoo) {
+        updates.capo_level_of_interest = nivelOdoo; // corregido: antes iba a x_studio_comentarios (campo "Comentarios", incorrecto)
+      } else {
+        nivelNoReconocido = nivel; // se avisa en la respuesta, no se escribe para no mandar un valor inválido
+      }
+    }
 
     await odooCallLocal('crm.lead', 'write', [[lead_id], updates]);
     await odooCallLocal('crm.lead', 'message_post', [[lead_id]], {
       body: `📋 Datos actualizados desde el panel KAI: ${Object.entries(updates).map(([k,v])=>`${k}: ${v}`).join(', ')}`
     }).catch(()=>{});
 
-    res.json({ ok: true, mensaje: 'Lead actualizado en Odoo correctamente' });
+    res.json({
+      ok: true,
+      mensaje: 'Lead actualizado en Odoo correctamente',
+      aviso_nivel: nivelNoReconocido ? `El valor de Nivel "${nivelNoReconocido}" no se reconoció (se esperaba algo como Preprimaria/Primaria/Secundaria) — no se escribió para evitar un dato inválido.` : null
+    });
   } catch(e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
