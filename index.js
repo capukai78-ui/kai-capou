@@ -3041,6 +3041,86 @@ function extraerNumeroDeMsgid(msgid) {
   return m ? m[1] : null;
 }
 
+// ===== MÉTRICAS DE ATENCIÓN (vista gerencial) — solo lectura =====
+// Calcula, a partir de los mensajes reales de AcruxLab:
+// - Tiempo de primera respuesta por conversación (desde el primer mensaje del padre
+//   hasta la primera respuesta humana), agregado por agente.
+// - Volumen de conversaciones atendidas por cada agente.
+// - Conversaciones que llevan mensaje del padre sin ninguna respuesta todavía.
+app.get('/api/acrux/metricas', authMiddleware, async (req, res) => {
+  try {
+    const dias = Math.min(parseInt(req.query.dias) || 30, 90);
+    const desde = new Date(Date.now() - dias * 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').substring(0, 19);
+
+    const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
+      [[['date_message', '>=', desde]]],
+      { fields: ['contact_id', 'from_me', 'date_message', 'user_id', 'ttype'], limit: 20000, order: 'date_message asc' }
+    ) || [];
+
+    const porContacto = {};
+    mensajes.forEach(m => {
+      if (!m.contact_id) return;
+      const id = m.contact_id[0];
+      if (!porContacto[id]) porContacto[id] = { nombre: m.contact_id[1], mensajes: [] };
+      porContacto[id].mensajes.push(m);
+    });
+
+    const porAgente = {}; // { nombre: { conversaciones: Set, tiemposRespuestaMin: [], mensajesEnviados: 0 } }
+    let sinResponderAun = 0;
+    let totalConversaciones = 0;
+    const tiemposGenerales = [];
+
+    Object.values(porContacto).forEach(conv => {
+      totalConversaciones++;
+      const msgs = conv.mensajes; // ya vienen ordenados asc por fecha
+      const primerPadre = msgs.find(m => !m.from_me);
+      if (!primerPadre) return; // conversación sin ningún mensaje del padre en el rango
+
+      const primeraRespuesta = msgs.find(m => m.from_me && m.date_message > primerPadre.date_message && m.user_id);
+      if (!primeraRespuesta) { sinResponderAun++; return; }
+
+      const minutos = (new Date(primeraRespuesta.date_message.replace(' ', 'T') + 'Z') - new Date(primerPadre.date_message.replace(' ', 'T') + 'Z')) / 60000;
+      tiemposGenerales.push(minutos);
+
+      const agente = primeraRespuesta.user_id[1];
+      if (!porAgente[agente]) porAgente[agente] = { conversaciones: new Set(), tiemposRespuestaMin: [], mensajesEnviados: 0 };
+      porAgente[agente].conversaciones.add(conv.nombre);
+      porAgente[agente].tiemposRespuestaMin.push(minutos);
+    });
+
+    // Volumen total de mensajes enviados por cada agente (no solo la primera respuesta)
+    mensajes.forEach(m => {
+      if (m.from_me && m.user_id) {
+        const agente = m.user_id[1];
+        if (!porAgente[agente]) porAgente[agente] = { conversaciones: new Set(), tiemposRespuestaMin: [], mensajesEnviados: 0 };
+        porAgente[agente].mensajesEnviados++;
+      }
+    });
+
+    const promedio = arr => arr.length ? Math.round((arr.reduce((a, b) => a + b, 0) / arr.length) * 10) / 10 : null;
+
+    const resultado = Object.entries(porAgente).map(([agente, d]) => ({
+      agente,
+      conversaciones_atendidas: d.conversaciones.size,
+      tiempo_promedio_primera_respuesta_min: promedio(d.tiemposRespuestaMin),
+      mensajes_enviados: d.mensajesEnviados
+    })).sort((a, b) => b.conversaciones_atendidas - a.conversaciones_atendidas);
+
+    res.json({
+      ok: true,
+      periodo_dias: dias,
+      resumen_general: {
+        total_conversaciones: totalConversaciones,
+        tiempo_promedio_primera_respuesta_min: promedio(tiemposGenerales),
+        sin_responder_aun: sinResponderAun
+      },
+      por_agente: resultado
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get('/api/acrux/conversaciones', authMiddleware, async (req, res) => {
   try {
     const limite = Math.min(parseInt(req.query.limit) || 300, 1000);
@@ -3304,6 +3384,12 @@ app.get('/api/acrux/lead-por-telefono/:numero', authMiddleware, async (req, res)
       etiquetas = (tags || []).map(t => t.name);
     }
 
+    // Respaldo: cuando la Nota real (x_studio_notas_1) todavía está vacía porque Sylvia
+    // no ha trabajado este lead a mano, KAI a veces ya dejó el nombre del alumno en el
+    // propio nombre del lead, con el patrón "(hijo: NOMBRE)" o "(hija: NOMBRE)".
+    const matchHijo = (lead.name || '').match(/\(hij[oa]:\s*([^)]+)\)/i);
+    const alumnoDesdeNombreLead = matchHijo ? matchHijo[1].trim() : null;
+
     res.json({
       ok: true,
       encontrado: true,
@@ -3317,8 +3403,9 @@ app.get('/api/acrux/lead-por-telefono/:numero', authMiddleware, async (req, res)
       contacto_ubicacion: lead.city || null,
       prioridad: lead.priority || '0', // Odoo: '0'..'3' = número de estrellas
       etiquetas,
-      // Nota = donde Sylvia escribe el/los nombre(s) del alumno + anotaciones breves
-      nota: lead.x_studio_notas_1 || null,
+      // Nota = donde Sylvia escribe el/los nombre(s) del alumno + anotaciones breves.
+      // Si aún está vacía, usamos el nombre del alumno que KAI haya detectado como respaldo.
+      nota: lead.x_studio_notas_1 || (alumnoDesdeNombreLead ? `${alumnoDesdeNombreLead} (detectado por KAI, aún sin confirmar por Sylvia)` : null),
       nivel: lead.x_studio_comentarios || null // ⚠️ pendiente #1: este mapeo de "Nivel" está sin confirmar
     });
   } catch (e) {
