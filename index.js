@@ -3697,7 +3697,13 @@ app.get('/api/debug/campos-crm-lead', authMiddleware, async (req, res) => {
       .filter(k => campos[k])
       .map(k => ({ campo_tecnico: k, etiqueta: campos[k].string, tipo: campos[k].type }));
 
-    res.json({ ok: true, campos_personalizados_studio: personalizados, campos_estandar_relevantes: estandar });
+    // Búsqueda amplia: cualquier campo (sin importar prefijo técnico) cuya etiqueta
+    // contenga "nivel", por si no es un campo x_studio_* como se asumía.
+    const todosLosCampos = Object.entries(campos).map(([tecnico, def]) => ({ campo_tecnico: tecnico, etiqueta: def.string, tipo: def.type }));
+    const q = (req.query.buscar || 'nivel').toLowerCase();
+    const coincidencias = todosLosCampos.filter(c => (c.etiqueta || '').toLowerCase().includes(q));
+
+    res.json({ ok: true, campos_personalizados_studio: personalizados, campos_estandar_relevantes: estandar, busqueda: q, coincidencias_por_etiqueta: coincidencias, total_campos_en_el_modelo: todosLosCampos.length });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
