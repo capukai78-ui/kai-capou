@@ -3047,6 +3047,170 @@ function extraerNumeroDeMsgid(msgid) {
 //   hasta la primera respuesta humana), agregado por agente.
 // - Volumen de conversaciones atendidas por cada agente.
 // - Conversaciones que llevan mensaje del padre sin ninguna respuesta todavía.
+// Helper: métricas de AcruxLab para un rango de fechas específico (reutilizable
+// para el periodo actual, el periodo anterior de comparación, y la tendencia diaria).
+async function calcularMetricasAcruxPeriodo(desdeISO, hastaISO) {
+  const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
+    [[['date_message', '>=', desdeISO], ['date_message', '<', hastaISO]]],
+    { fields: ['contact_id', 'from_me', 'date_message'], limit: 20000, order: 'date_message asc' }
+  ) || [];
+
+  const porContacto = {};
+  mensajes.forEach(m => {
+    if (!m.contact_id) return;
+    const id = m.contact_id[0];
+    if (!porContacto[id]) porContacto[id] = [];
+    porContacto[id].push(m);
+  });
+
+  let total = 0, sinResponder = 0;
+  const tiempos = [];
+  const porDia = {}; // 'YYYY-MM-DD' -> { conversaciones, tiempos: [] }
+
+  Object.values(porContacto).forEach(msgs => {
+    total++;
+    const primerPadre = msgs.find(m => !m.from_me);
+    if (!primerPadre) return;
+    const dia = primerPadre.date_message.substring(0, 10);
+    if (!porDia[dia]) porDia[dia] = { conversaciones: 0, tiempos: [] };
+    porDia[dia].conversaciones++;
+
+    const primeraRespuesta = msgs.find(m => m.from_me && m.date_message > primerPadre.date_message);
+    if (!primeraRespuesta) { sinResponder++; return; }
+    const minutos = (new Date(primeraRespuesta.date_message.replace(' ', 'T') + 'Z') - new Date(primerPadre.date_message.replace(' ', 'T') + 'Z')) / 60000;
+    tiempos.push(minutos);
+    porDia[dia].tiempos.push(minutos);
+  });
+
+  const promedio = arr => arr.length ? Math.round((arr.reduce((a, b) => a + b, 0) / arr.length) * 10) / 10 : null;
+  return {
+    total_conversaciones: total,
+    tiempo_promedio_min: promedio(tiempos),
+    sin_responder: sinResponder,
+    por_dia: Object.entries(porDia).map(([fecha, d]) => ({ fecha, conversaciones: d.conversaciones, tiempo_promedio_min: promedio(d.tiempos) }))
+  };
+}
+
+// Helper: métricas de un canal de Meta (whatsapp/instagram/messenger), guardado en Mongo.
+async function calcularMetricasMongoPeriodo(canal, desdeDate, hastaDate, tenantId) {
+  const conversaciones = await Conversacion.find({
+    tenant_id: tenantId, canal, creado: { $gte: desdeDate, $lt: hastaDate }
+  }).select('mensajes estado creado').lean();
+
+  let total = 0, sinResponder = 0, cerradas = 0;
+  const tiempos = [];
+  const porDia = {};
+
+  conversaciones.forEach(conv => {
+    total++;
+    if (conv.estado === 'cerrado') cerradas++;
+    const msgs = (conv.mensajes || []).slice().sort((a, b) => new Date(a.fecha) - new Date(b.fecha));
+    const primerPadre = msgs.find(m => m.de === 'padre');
+    if (!primerPadre) return;
+    const dia = new Date(primerPadre.fecha).toISOString().substring(0, 10);
+    if (!porDia[dia]) porDia[dia] = { conversaciones: 0, tiempos: [] };
+    porDia[dia].conversaciones++;
+
+    const primeraRespuesta = msgs.find(m => m.de === 'agente' && new Date(m.fecha) > new Date(primerPadre.fecha));
+    if (!primeraRespuesta) { sinResponder++; return; }
+    const minutos = (new Date(primeraRespuesta.fecha) - new Date(primerPadre.fecha)) / 60000;
+    tiempos.push(minutos);
+    porDia[dia].tiempos.push(minutos);
+  });
+
+  const promedio = arr => arr.length ? Math.round((arr.reduce((a, b) => a + b, 0) / arr.length) * 10) / 10 : null;
+  return {
+    total_conversaciones: total,
+    tiempo_promedio_min: promedio(tiempos),
+    sin_responder: sinResponder,
+    cerradas,
+    por_dia: Object.entries(porDia).map(([fecha, d]) => ({ fecha, conversaciones: d.conversaciones, tiempo_promedio_min: promedio(d.tiempos) }))
+  };
+}
+
+// ===== MÉTRICAS GENERALES (todos los canales) — vista gerencial consolidada =====
+// Combina AcruxLab (Odoo) + WhatsApp/Instagram/Messenger (Mongo): por canal,
+// comparación contra el periodo anterior, y tendencia diaria combinada.
+// NOTA sobre "conversión": para WhatsApp/IG/Messenger se usa el estado "cerrado"
+// como aproximación (no confirma inscripción real, solo que se marcó resuelta).
+// Para AcruxLab todavía no tenemos un campo confiable de "ganado" — falta confirmarlo.
+app.get('/api/metricas-generales', authMiddleware, async (req, res) => {
+  try {
+    const dias = Math.min(parseInt(req.query.dias) || 7, 90);
+    const ahora = new Date();
+    const desdeActual = new Date(ahora.getTime() - dias * 86400000);
+    const desdeAnterior = new Date(desdeActual.getTime() - dias * 86400000);
+
+    const desdeActualISO = desdeActual.toISOString().replace('T', ' ').substring(0, 19);
+    const hastaActualISO = ahora.toISOString().replace('T', ' ').substring(0, 19);
+    const desdeAnteriorISO = desdeAnterior.toISOString().replace('T', ' ').substring(0, 19);
+
+    const [acruxActual, acruxAnterior, waActual, waAnterior, igActual, igAnterior, fbActual, fbAnterior] = await Promise.all([
+      calcularMetricasAcruxPeriodo(desdeActualISO, hastaActualISO),
+      calcularMetricasAcruxPeriodo(desdeAnteriorISO, desdeActualISO),
+      calcularMetricasMongoPeriodo('whatsapp', desdeActual, ahora, req.user.tenant_id),
+      calcularMetricasMongoPeriodo('whatsapp', desdeAnterior, desdeActual, req.user.tenant_id),
+      calcularMetricasMongoPeriodo('instagram', desdeActual, ahora, req.user.tenant_id),
+      calcularMetricasMongoPeriodo('instagram', desdeAnterior, desdeActual, req.user.tenant_id),
+      calcularMetricasMongoPeriodo('messenger', desdeActual, ahora, req.user.tenant_id),
+      calcularMetricasMongoPeriodo('messenger', desdeAnterior, desdeActual, req.user.tenant_id)
+    ]);
+
+    const promedio = arr => arr.length ? Math.round((arr.reduce((a, b) => a + b, 0) / arr.length) * 10) / 10 : null;
+    const cambioPct = (actual, anterior) => (anterior && anterior > 0) ? Math.round(((actual - anterior) / anterior) * 1000) / 10 : null;
+
+    const porCanal = [
+      { canal: 'AcruxLab (Número Oficial)', ...acruxActual, tasa_cierre_pct: null },
+      { canal: 'WhatsApp', ...waActual, tasa_cierre_pct: waActual.total_conversaciones ? Math.round(waActual.cerradas / waActual.total_conversaciones * 1000) / 10 : null },
+      { canal: 'Instagram', ...igActual, tasa_cierre_pct: igActual.total_conversaciones ? Math.round(igActual.cerradas / igActual.total_conversaciones * 1000) / 10 : null },
+      { canal: 'Messenger', ...fbActual, tasa_cierre_pct: fbActual.total_conversaciones ? Math.round(fbActual.cerradas / fbActual.total_conversaciones * 1000) / 10 : null }
+    ];
+
+    const totalActual = acruxActual.total_conversaciones + waActual.total_conversaciones + igActual.total_conversaciones + fbActual.total_conversaciones;
+    const totalAnterior = acruxAnterior.total_conversaciones + waAnterior.total_conversaciones + igAnterior.total_conversaciones + fbAnterior.total_conversaciones;
+    const tiempoPromActual = promedio([acruxActual, waActual, igActual, fbActual].flatMap(c => c.tiempo_promedio_min != null ? [c.tiempo_promedio_min] : []));
+    const tiempoPromAnterior = promedio([acruxAnterior, waAnterior, igAnterior, fbAnterior].flatMap(c => c.tiempo_promedio_min != null ? [c.tiempo_promedio_min] : []));
+
+    // Tendencia diaria combinada (todos los canales juntos, por fecha)
+    const combinarPorDia = {};
+    [acruxActual, waActual, igActual, fbActual].forEach(c => {
+      (c.por_dia || []).forEach(d => {
+        if (!combinarPorDia[d.fecha]) combinarPorDia[d.fecha] = { conversaciones: 0, tiempos: [] };
+        combinarPorDia[d.fecha].conversaciones += d.conversaciones;
+        if (d.tiempo_promedio_min != null) combinarPorDia[d.fecha].tiempos.push(d.tiempo_promedio_min);
+      });
+    });
+    const tendenciaDiaria = Object.entries(combinarPorDia)
+      .map(([fecha, d]) => ({ fecha, conversaciones: d.conversaciones, tiempo_promedio_min: promedio(d.tiempos) }))
+      .sort((a, b) => a.fecha.localeCompare(b.fecha));
+
+    const cerradasTotal = waActual.cerradas + igActual.cerradas + fbActual.cerradas;
+    const totalConCierre = waActual.total_conversaciones + igActual.total_conversaciones + fbActual.total_conversaciones;
+
+    res.json({
+      ok: true,
+      periodo_dias: dias,
+      resumen_general: {
+        total_conversaciones: totalActual,
+        tiempo_promedio_min: tiempoPromActual,
+        sin_responder_aun: acruxActual.sin_responder + waActual.sin_responder + igActual.sin_responder + fbActual.sin_responder
+      },
+      comparacion_periodo_anterior: {
+        conversaciones_cambio_pct: cambioPct(totalActual, totalAnterior),
+        tiempo_respuesta_cambio_pct: cambioPct(tiempoPromActual, tiempoPromAnterior)
+      },
+      por_canal: porCanal,
+      tendencia_diaria: tendenciaDiaria,
+      tasa_cierre_aproximada: {
+        nota: 'Solo disponible para WhatsApp/Instagram/Messenger (estado "cerrado" en el panel). AcruxLab aún no tiene un campo confiable de resultado/ganado confirmado.',
+        porcentaje: totalConCierre ? Math.round(cerradasTotal / totalConCierre * 1000) / 10 : null
+      }
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get('/api/acrux/metricas', authMiddleware, async (req, res) => {
   try {
     const dias = Math.min(parseInt(req.query.dias) || 30, 90);
@@ -3671,18 +3835,22 @@ app.post('/api/conversaciones/:id/responder', authMiddleware, async (req, res) =
     }
 
     let resultado;
+    // Meta espera el PSID puro, sin el prefijo "ig_"/"fb_" que usamos internamente
+    // para distinguir el canal en conv.numero — si se lo mandamos con prefijo, Meta
+    // rechaza el envío silenciosamente (por eso no llegaba nada por IG/Messenger).
+    const idExternoReal = conv.numero.replace(/^(ig_|fb_)/, '');
     if (imagen_id) {
       const img = await ImagenMarketing.findOne({ _id: imagen_id, tenant_id: req.user.tenant_id });
       if (!img) return res.status(404).json({ ok: false, error: 'Imagen no encontrada' });
-      resultado = await enviarImagenDesdeDB(img, conv.numero, mensaje || '');
+      resultado = await enviarImagenDesdeDB(img, conv.canal === 'whatsapp' ? conv.numero : idExternoReal, mensaje || '');
       conv.mensajes.push({ de: 'agente', texto: mensaje ? `📷 ${img.nombre} — ${mensaje}` : `📷 ${img.nombre}` });
     } else {
       // Enviar por el canal real de la conversación — antes esto SIEMPRE mandaba por WhatsApp,
       // aunque la conversación fuera de Instagram o Messenger (el mensaje no llegaba a nadie).
       if (conv.canal === 'instagram') {
-        resultado = await enviarMensajeInstagram(conv.numero, mensaje);
+        resultado = await enviarMensajeInstagram(idExternoReal, mensaje);
       } else if (conv.canal === 'messenger') {
-        resultado = await enviarMensajeMessenger(conv.numero, mensaje);
+        resultado = await enviarMensajeMessenger(idExternoReal, mensaje);
       } else {
         resultado = await enviarWhatsAppMeta(conv.numero, mensaje);
       }
