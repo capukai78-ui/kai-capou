@@ -3504,10 +3504,21 @@ app.get('/api/acrux/conversaciones/:contactoId', authMiddleware, async (req, res
 
     const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
       [[['contact_id', '=', contactoId]]],
-      { fields: ['id', 'text', 'date_message', 'contact_id', 'msgid', 'from_me', 'read_date', 'user_id'], limit: 500, order: 'date_message asc' }
+      { fields: ['id', 'text', 'date_message', 'contact_id', 'msgid', 'from_me', 'read_date', 'user_id', 'ttype', 'res_model', 'res_id'], limit: 500, order: 'date_message asc' }
     );
 
     if (!mensajes) return res.json({ ok: false, error: 'No se pudo leer los mensajes de este contacto' });
+
+    // Las imágenes vienen como ttype='image' apuntando a un ir.attachment (res_id) —
+    // las traemos en un solo lote y las adjuntamos en base64 a cada mensaje.
+    const idsAdjuntos = mensajes.filter(m => m.ttype === 'image' && m.res_model === 'ir.attachment' && m.res_id).map(m => m.res_id);
+    let adjuntosPorId = {};
+    if (idsAdjuntos.length) {
+      try {
+        const adjuntos = await odooCallLocal('ir.attachment', 'read', [idsAdjuntos, ['id', 'datas', 'mimetype']]);
+        (adjuntos || []).forEach(a => { adjuntosPorId[a.id] = { base64: a.datas, mime: a.mimetype || 'image/jpeg' }; });
+      } catch (e) { /* si falla, los mensajes de imagen se muestran solo con su texto */ }
+    }
 
     const numero = mensajes.map(m => extraerNumeroDeMsgid(m.msgid)).find(Boolean) || null;
     const nombre = mensajes.find(m => m.contact_id)?.contact_id?.[1] || null;
@@ -3519,13 +3530,19 @@ app.get('/api/acrux/conversaciones/:contactoId', authMiddleware, async (req, res
       contacto_id: contactoId,
       numero,
       nombre: nombre || numero || 'Sin nombre',
-      mensajes: mensajes.map(m => ({
-        de: m.from_me ? 'agente' : 'padre',
-        texto: m.text || '',
-        fecha: m.date_message,
-        leido: !!m.read_date,
-        agente: m.from_me ? (m.user_id ? m.user_id[1] : null) : null
-      }))
+      mensajes: mensajes.map(m => {
+        const adjunto = m.ttype === 'image' ? adjuntosPorId[m.res_id] : null;
+        return {
+          de: m.from_me ? 'agente' : 'padre',
+          texto: m.text || '',
+          fecha: m.date_message,
+          leido: !!m.read_date,
+          agente: m.from_me ? (m.user_id ? m.user_id[1] : null) : null,
+          es_imagen: m.ttype === 'image',
+          imagen_base64: adjunto?.base64 || null,
+          imagen_mime: adjunto?.mime || null
+        };
+      })
     });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
