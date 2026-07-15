@@ -3682,6 +3682,17 @@ app.get('/api/debug/acrux-campos-mensaje', authMiddleware, async (req, res) => {
   }
 });
 
+// Diagnóstico: opciones válidas de un campo tipo "selection" (ej. capo_level_of_interest)
+app.get('/api/debug/opciones-campo/:campo', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const campos = await odooCallLocal('crm.lead', 'fields_get', [[req.params.campo]], { attributes: ['string', 'type', 'selection'] });
+    res.json({ ok: true, campo: campos?.[req.params.campo] || null });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get('/api/debug/campos-crm-lead', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
