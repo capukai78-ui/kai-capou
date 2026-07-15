@@ -3877,7 +3877,7 @@ app.get('/api/debug/plantillas-chatroom', authMiddleware, async (req, res) => {
       const registros = await odooCallLocal(modelo, 'search_read', [[]], { fields: [], limit: 5 });
       resultado[modelo] = { existe: true, muestra: registros };
     } catch (e) {
-      resultado[modelo] = { existe: false, error: e.message.substring(0, 150) };
+      resultado[modelo] = { existe: false, error: e.message };
     }
   }
   res.json({ ok: true, resultado });
