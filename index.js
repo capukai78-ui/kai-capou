@@ -2220,15 +2220,42 @@ app.get('/api/odoo/leer-mensajes/:id', authMiddleware, async (req, res) => {
 });
 
 // Actualizar lead en Odoo con datos parseados del formulario
-// Traduce lo que llegue como "nivel" (español, variantes, mayúsculas/minúsculas) a las
-// 3 claves exactas que acepta el campo selection real de Odoo: capo_level_of_interest.
-// Si no reconoce el valor, NO lo escribe (mejor omitirlo que mandar un valor inválido
-// que Odoo rechazaría, o peor, que quede mal etiquetado silenciosamente).
+// Traduce lo que llegue como "nivel" (español, variantes) al ID real del registro en
+// el modelo capouilliez.carrer — el campo visible en pantalla es capo_level_of_interests
+// (many2many, plural), NO capo_level_of_interest (singular, que está comentado/oculto
+// en la vista y por eso nunca se veía aunque la escritura "funcionara").
+// IDs confirmados en Odoo: 1=Preprimaria, 2=Primaria, 3=Básico, 4=Bachillerato en
+// Ciencias y Letras, 13=Diversificado. (Se ignoran los duplicados/typos: 5 y 14).
+const CARRERA_IDS = {
+  PREPRIMARIA: 1,
+  PRIMARIA: 2,
+  BASICO: 3,
+  BACHILLERATO: 4,
+  DIVERSIFICADO: 13
+};
+
 function normalizarNivelOdoo(valor) {
   const v = String(valor || '').toLowerCase().trim();
-  if (/pre.?primaria|preprimaria|kinder|inicial|infantil|maternal|p[aá]rvulos/.test(v)) return 'Pre-Primary';
-  if (/primaria/.test(v)) return 'Primary';
-  if (/secundaria|bachillerato|diversificado/.test(v)) return 'Secondary';
+  if (/pre.?primaria|preprimaria|kinder|inicial|infantil|maternal|p[aá]rvulos/.test(v)) {
+    return { ids: [CARRERA_IDS.PREPRIMARIA], aproximado: false };
+  }
+  if (/primaria/.test(v)) {
+    return { ids: [CARRERA_IDS.PRIMARIA], aproximado: false };
+  }
+  if (/b[aá]sico/.test(v)) {
+    return { ids: [CARRERA_IDS.BASICO], aproximado: false };
+  }
+  if (/bachillerato/.test(v)) {
+    return { ids: [CARRERA_IDS.BACHILLERATO], aproximado: false };
+  }
+  if (/diversificado/.test(v)) {
+    return { ids: [CARRERA_IDS.DIVERSIFICADO], aproximado: false };
+  }
+  if (/secundaria/.test(v)) {
+    // "Secundaria" genérico no distingue Básico/Bachillerato/Diversificado en este
+    // colegio — usamos Básico como el más cercano, pero avisamos que es aproximado.
+    return { ids: [CARRERA_IDS.BASICO], aproximado: true };
+  }
   return null;
 }
 
@@ -2244,10 +2271,12 @@ app.post('/api/odoo/actualizar-lead', authMiddleware, async (req, res) => {
     if (zona) updates.x_studio_notas_1 = zona;
 
     let nivelNoReconocido = null;
+    let nivelAproximado = false;
     if (nivel) {
-      const nivelOdoo = normalizarNivelOdoo(nivel);
-      if (nivelOdoo) {
-        updates.capo_level_of_interest = nivelOdoo; // corregido: antes iba a x_studio_comentarios (campo "Comentarios", incorrecto)
+      const resultado = normalizarNivelOdoo(nivel);
+      if (resultado) {
+        updates.capo_level_of_interests = [[6, 0, resultado.ids]]; // comando many2many: reemplaza con estos IDs
+        nivelAproximado = resultado.aproximado;
       } else {
         nivelNoReconocido = nivel; // se avisa en la respuesta, no se escribe para no mandar un valor inválido
       }
@@ -2255,13 +2284,15 @@ app.post('/api/odoo/actualizar-lead', authMiddleware, async (req, res) => {
 
     await odooCallLocal('crm.lead', 'write', [[lead_id], updates]);
     await odooCallLocal('crm.lead', 'message_post', [[lead_id]], {
-      body: `📋 Datos actualizados desde el panel KAI: ${Object.entries(updates).map(([k,v])=>`${k}: ${v}`).join(', ')}`
+      body: `📋 Datos actualizados desde el panel KAI: ${Object.entries(updates).filter(([k])=>k!=='capo_level_of_interests').map(([k,v])=>`${k}: ${v}`).join(', ')}${updates.capo_level_of_interests ? `, Nivel: ${nivel}` : ''}`
     }).catch(()=>{});
 
     res.json({
       ok: true,
       mensaje: 'Lead actualizado en Odoo correctamente',
-      aviso_nivel: nivelNoReconocido ? `El valor de Nivel "${nivelNoReconocido}" no se reconoció (se esperaba algo como Preprimaria/Primaria/Secundaria) — no se escribió para evitar un dato inválido.` : null
+      aviso_nivel: nivelNoReconocido
+        ? `El valor de Nivel "${nivelNoReconocido}" no se reconoció (se esperaba algo como Preprimaria/Primaria/Básico/Bachillerato/Diversificado) — no se escribió para evitar un dato inválido.`
+        : (nivelAproximado ? `El valor "${nivel}" se guardó como "Básico" por aproximación — este colegio distingue Básico/Bachillerato/Diversificado dentro de Secundaria. Revisar si corresponde.` : null)
     });
   } catch(e) { res.status(500).json({ ok: false, error: e.message }); }
 });
