@@ -3264,6 +3264,28 @@ app.get('/api/acrux/conversaciones/:contactoId', authMiddleware, async (req, res
 // Diagnóstico: comparar leads duplicados directamente por ID, para confirmar si
 // realmente ninguno tiene la Nota llena (y por eso cae al más reciente) o si hay
 // algún otro problema en la selección.
+// Diagnóstico: ver los campos reales de acrux.chat.conversation (el modelo de la
+// conversación, no del mensaje ni del lead). Sospecha: las etiquetas tipo "Cindy"/
+// "Infantil" que se ven en el ChatRoom real viven aquí, no en crm.lead.
+app.get('/api/debug/acrux-campos-conversacion/:contactoId', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const contactoId = parseInt(req.params.contactoId);
+    const campos = await odooCallLocal('acrux.chat.conversation', 'fields_get', [], { attributes: ['string', 'type', 'relation'] });
+    const listaCampos = campos ? Object.entries(campos).map(([tecnico, def]) => ({ campo_tecnico: tecnico, etiqueta: def.string, tipo: def.type, relacion: def.relation || null })) : [];
+
+    let registroCompleto = null;
+    if (contactoId) {
+      const detalle = await odooCallLocal('acrux.chat.conversation', 'read', [[contactoId], []]);
+      registroCompleto = detalle?.[0] || null;
+    }
+
+    res.json({ ok: true, total_campos: listaCampos.length, campos: listaCampos, registro: registroCompleto });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get('/api/debug/comparar-leads/:ids', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
