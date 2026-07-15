@@ -430,7 +430,7 @@ tr:hover td{background:var(--g4)}
               <div style="text-align:center;color:var(--text3);margin-top:40px;font-size:13px">Selecciona una conversación de la lista</div>
             </div>
             <div id="acrux-input-area" style="padding:14px 18px;border-top:1px solid var(--border);display:none">
-              <div style="font-size:9px;color:var(--amber);margin-bottom:6px">⚠️ Envío en prueba — confirma que el mensaje llega de verdad antes de usarlo con familias reales.</div>
+              <div style="font-size:9px;color:var(--amber);margin-bottom:6px">⚠️ Envío en prueba (nuevo método send_message) — confirma con el destinatario real que le llegó antes de usarlo con familias.</div>
               <div style="display:flex;gap:8px">
                 <input type="text" id="acrux-input-msg" placeholder="Escribe tu respuesta (prueba)..." style="flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px 14px;color:var(--text);font-size:13px;outline:none" onkeypress="if(event.key==='Enter')enviarMensajeAcrux()">
                 <button class="btn-p" onclick="enviarMensajeAcrux()">Enviar</button>
@@ -1418,6 +1418,7 @@ async function abrirAcruxChat(contactoId){
 
 async function enviarMensajeAcrux(){
   const input = document.getElementById('acrux-input-msg');
+  if(!input) return; // envío deshabilitado temporalmente
   const mensaje = input.value.trim();
   if(!mensaje || !_acruxContactoActivo) return;
   input.value = '';
