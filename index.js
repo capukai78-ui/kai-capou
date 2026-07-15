@@ -3708,6 +3708,42 @@ app.get('/api/debug/acrux-campos-mensaje', authMiddleware, async (req, res) => {
 });
 
 // Diagnóstico: opciones válidas de un campo tipo "selection" (ej. capo_level_of_interest)
+// Diagnóstico: leer la vista de formulario real de "Admisiones" (crm.lead) y buscar
+// qué campo técnico corresponde a la etiqueta visible "Nivel" — esto puede ser distinto
+// de field.string en fields_get, porque la vista puede sobreescribir la etiqueta mostrada.
+app.get('/api/debug/vista-formulario-lead', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const resultado = await odooCallLocal('crm.lead', 'get_views',
+      [[{ view_id: false, view_type: 'form' }]],
+      { options: { toolbar: false } }
+    ).catch(async () => {
+      // Fallback para versiones de Odoo que todavía usan fields_view_get
+      return await odooCallLocal('crm.lead', 'fields_view_get', [], { view_type: 'form' });
+    });
+
+    const arch = resultado?.views?.form?.arch || resultado?.arch || null;
+    if (!arch) return res.json({ ok: false, error: 'No se pudo obtener el arch de la vista', crudo: resultado });
+
+    // Buscar todas las etiquetas de campo cercanas a la palabra "Nivel" en el XML
+    const coincidencias = [];
+    const regexCampo = /<field[^>]*name="([^"]+)"[^>]*string="([^"]*)"[^>]*\/?>/g;
+    let m;
+    while ((m = regexCampo.exec(arch)) !== null) {
+      if (/nivel/i.test(m[2])) coincidencias.push({ campo_tecnico: m[1], etiqueta_en_vista: m[2] });
+    }
+    // También revisar <label string="Nivel" for="campo_tecnico"/>
+    const regexLabel = /<label[^>]*string="([^"]*)"[^>]*for="([^"]+)"/g;
+    while ((m = regexLabel.exec(arch)) !== null) {
+      if (/nivel/i.test(m[1])) coincidencias.push({ campo_tecnico: m[2], etiqueta_en_vista: m[1] });
+    }
+
+    res.json({ ok: true, coincidencias, arch_incluido: arch.length < 5000 ? arch : null, arch_length: arch.length });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get('/api/debug/opciones-campo/:campo', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
