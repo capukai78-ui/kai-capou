@@ -3870,17 +3870,19 @@ app.get('/api/debug/vista-formulario-lead', authMiddleware, async (req, res) => 
 // con el rayo ⚡ que ya vimos en capturas). Probamos los candidatos más probables.
 app.get('/api/debug/plantillas-chatroom', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
-  const candidatos = ['mail.canned.response', 'acrux.chat.quick.reply', 'acrux.chat.template', 'acrux.chat.canned.response', 'acrux.chat.message.template'];
-  const resultado = {};
-  for (const modelo of candidatos) {
+  try {
+    const uid = await getOdooUID();
+    const resultado = await odooRPC('/jsonrpc', { service: 'object', method: 'execute_kw', args: [ODOO_DB, uid, ODOO_PASS_ODOO, 'acrux.chat.default.answer', 'get_for_chatroom', [], { context: { is_acrux_chat_room: true } }] });
+    return res.json({ ok: true, via: 'get_for_chatroom', resultado });
+  } catch (eMetodo) {
+    // Si el método propio falla, probamos leer el modelo directo como respaldo
     try {
-      const registros = await odooCallLocal(modelo, 'search_read', [[]], { fields: [], limit: 5 });
-      resultado[modelo] = { existe: true, muestra: registros };
-    } catch (e) {
-      resultado[modelo] = { existe: false, error: e.message };
+      const registros = await odooCallLocal('acrux.chat.default.answer', 'search_read', [[]], { fields: [], limit: 100 });
+      return res.json({ ok: true, via: 'search_read', registros });
+    } catch (eModelo) {
+      return res.json({ ok: false, error_metodo: eMetodo.message, error_modelo: eModelo.message });
     }
   }
-  res.json({ ok: true, resultado });
 });
 
 app.get('/api/debug/opciones-carrera', authMiddleware, async (req, res) => {
