@@ -3724,20 +3724,17 @@ app.get('/api/debug/vista-formulario-lead', authMiddleware, async (req, res) => 
     const arch = resultado?.views?.form?.arch || null;
     if (!arch) return res.json({ ok: false, error: 'No se pudo obtener el arch de la vista', crudo: resultado });
 
-    // Buscar todas las etiquetas de campo cercanas a la palabra "Nivel" en el XML
-    const coincidencias = [];
-    const regexCampo = /<field[^>]*name="([^"]+)"[^>]*string="([^"]*)"[^>]*\/?>/g;
-    let m;
-    while ((m = regexCampo.exec(arch)) !== null) {
-      if (/nivel/i.test(m[2])) coincidencias.push({ campo_tecnico: m[1], etiqueta_en_vista: m[2] });
-    }
-    // También revisar <label string="Nivel" for="campo_tecnico"/>
-    const regexLabel = /<label[^>]*string="([^"]*)"[^>]*for="([^"]+)"/g;
-    while ((m = regexLabel.exec(arch)) !== null) {
-      if (/nivel/i.test(m[1])) coincidencias.push({ campo_tecnico: m[2], etiqueta_en_vista: m[1] });
+    // Buscar el texto literal "Nivel" donde sea que aparezca, y devolver el contexto
+    // alrededor — más confiable que intentar parsear la estructura XML con regex exacto.
+    const fragmentos = [];
+    const textoBusqueda = arch.toLowerCase();
+    let idx = textoBusqueda.indexOf('nivel');
+    while (idx !== -1 && fragmentos.length < 15) {
+      fragmentos.push(arch.substring(Math.max(0, idx - 120), idx + 130));
+      idx = textoBusqueda.indexOf('nivel', idx + 5);
     }
 
-    res.json({ ok: true, coincidencias, arch_incluido: arch.length < 5000 ? arch : null, arch_length: arch.length });
+    res.json({ ok: true, total_apariciones_de_nivel: fragmentos.length, fragmentos, arch_length: arch.length });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
