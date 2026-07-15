@@ -410,16 +410,17 @@ tr:hover td{background:var(--g4)}
         <div style="background:linear-gradient(90deg,#E0F7F5,#D6F2FB);border:1px solid var(--acrux3);border-radius:var(--r) var(--r) 0 0;padding:10px 16px;display:flex;align-items:center;justify-content:space-between">
           <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--acrux);font-weight:700">
             🔷 ChatRoom — Número Oficial (AcruxLab)
-            <span style="background:var(--acrux2);border:1px solid var(--acrux3);color:var(--acrux);font-size:9px;font-weight:700;padding:2px 8px;border-radius:10px">SOLO LECTURA</span>
+            <span style="background:#FFF1D6;border:1px solid #D98C0F;color:#8A5C08;font-size:9px;font-weight:700;padding:2px 8px;border-radius:10px">⚠️ ENVÍO EN PRUEBA</span>
+            <span id="cl-vista-usuario" style="background:var(--bg4);color:var(--text2);font-size:9px;font-weight:700;padding:2px 8px;border-radius:10px"></span>
           </div>
           <button class="rpill" onclick="loadAcruxLista()">↻ Actualizar</button>
         </div>
-        <div style="display:grid;grid-template-columns:280px 1fr 240px;gap:1px;background:var(--acrux3);border:1px solid var(--acrux3);border-radius:0 0 var(--r) var(--r);height:calc(100vh - 260px);overflow:hidden">
+        <div style="display:grid;grid-template-columns:280px 1fr 240px;gap:1px;background:var(--border2);border:1px solid var(--acrux3);border-radius:0 0 var(--r) var(--r);height:calc(100vh - 260px);overflow:hidden">
           <!-- Lista de conversaciones AcruxLab -->
           <div id="acrux-lista-scroll" style="background:var(--bg2);overflow-y:auto">
             <div id="acrux-lista" style="padding:8px"></div>
           </div>
-          <!-- Hilo de mensajes (solo lectura) -->
+          <!-- Hilo de mensajes -->
           <div style="background:var(--bg2);display:flex;flex-direction:column;overflow:hidden">
             <div id="acrux-chat-header" style="padding:14px 18px;border-bottom:1px solid var(--border);display:none">
               <div id="acrux-chat-nombre" style="font-weight:600;font-size:14px"></div>
@@ -427,6 +428,13 @@ tr:hover td{background:var(--g4)}
             </div>
             <div id="acrux-mensajes" style="flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:10px">
               <div style="text-align:center;color:var(--text3);margin-top:40px;font-size:13px">Selecciona una conversación de la lista</div>
+            </div>
+            <div id="acrux-input-area" style="padding:14px 18px;border-top:1px solid var(--border);display:none">
+              <div style="font-size:9px;color:var(--amber);margin-bottom:6px">⚠️ Envío en prueba — confirma que el mensaje llega de verdad antes de usarlo con familias reales.</div>
+              <div style="display:flex;gap:8px">
+                <input type="text" id="acrux-input-msg" placeholder="Escribe tu respuesta (prueba)..." style="flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px 14px;color:var(--text);font-size:13px;outline:none" onkeypress="if(event.key==='Enter')enviarMensajeAcrux()">
+                <button class="btn-p" onclick="enviarMensajeAcrux()">Enviar</button>
+              </div>
             </div>
           </div>
           <!-- Panel de clasificación estilo vista de Sylvia (Prioridad / Etiquetas / Nota) -->
@@ -1298,12 +1306,14 @@ async function loadAcruxLista(){
   }
   try {
     const r = await fetch(API+'/api/acrux/conversaciones',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+    const badgeVista = document.getElementById('cl-vista-usuario');
+    if(badgeVista) badgeVista.textContent = r.es_supervisor ? '👁 Vista supervisor — todos' : '👤 Mis chats';
     if(!r.ok || !r.conversaciones?.length){
       lista.innerHTML = '<div style="text-align:center;padding:30px 14px;color:var(--text3);font-size:12px">'+(r.ok ? 'No hay chats en el ChatRoom todavía' : 'Error: '+(r.error||'desconocido'))+'</div>';
       return;
     }
     lista.innerHTML = r.conversaciones.map(c => `
-      <div onclick="abrirAcruxChat(${c.contacto_id})" style="padding:12px;border-radius:10px;cursor:pointer;margin-bottom:6px;background:${_acruxContactoActivo===c.contacto_id?'var(--acrux2)':'transparent'};border:1px solid ${_acruxContactoActivo===c.contacto_id?'var(--acrux3)':'transparent'}" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='${_acruxContactoActivo===c.contacto_id?'var(--acrux2)':'transparent'}'">
+      <div onclick="abrirAcruxChat(${c.contacto_id})" style="padding:12px;border-radius:10px;cursor:pointer;margin-bottom:0;border-bottom:1px solid var(--border);background:${_acruxContactoActivo===c.contacto_id?'var(--acrux2)':'transparent'}" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='${_acruxContactoActivo===c.contacto_id?'var(--acrux2)':'transparent'}'">
         <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:4px">
           <div style="font-weight:600;font-size:13px">${c.nombre || c.numero || 'Sin nombre'}</div>
           <div style="display:flex;align-items:center;gap:6px">
@@ -1331,6 +1341,7 @@ async function loadAcruxLista(){
 async function abrirAcruxChat(contactoId){
   _acruxContactoActivo = contactoId;
   document.getElementById('acrux-chat-header').style.display='block';
+  document.getElementById('acrux-input-area').style.display='block';
   const mensajesEl = document.getElementById('acrux-mensajes');
   mensajesEl.innerHTML = '<div style="text-align:center;color:var(--text3);font-size:12px">Cargando...</div>';
   document.getElementById('acrux-lead-panel').innerHTML = '<div style="font-size:11px;color:var(--text3)">Buscando lead en Odoo...</div>';
@@ -1403,6 +1414,32 @@ async function abrirAcruxChat(contactoId){
     console.error(e);
     mensajesEl.innerHTML = '<div style="text-align:center;color:var(--text3);font-size:12px">Error al cargar</div>';
   }
+}
+
+async function enviarMensajeAcrux(){
+  const input = document.getElementById('acrux-input-msg');
+  const mensaje = input.value.trim();
+  if(!mensaje || !_acruxContactoActivo) return;
+  input.value = '';
+  input.disabled = true;
+  try {
+    const r = await fetch(API+'/api/acrux/responder',{
+      method:'POST',
+      headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'},
+      body: JSON.stringify({ contacto_id: _acruxContactoActivo, mensaje })
+    }).then(r=>r.json());
+    if(r.ok){
+      showToast(r.aviso || 'Enviado — confirma que llegó de verdad ✓','ok');
+      abrirAcruxChat(_acruxContactoActivo);
+    } else {
+      showToast(r.error || 'No se pudo enviar','error');
+      input.value = mensaje; // devolver el texto para que no se pierda
+    }
+  } catch(e) {
+    showToast('Error de conexión','error');
+    input.value = mensaje;
+  }
+  input.disabled = false;
 }
 
 let _chatImagenId = null;
