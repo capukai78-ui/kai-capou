@@ -3175,6 +3175,22 @@ app.get('/api/acrux/conversaciones/:contactoId', authMiddleware, async (req, res
 // Creamos un registro en acrux.chat.message con from_me=true; si el módulo de AcruxLab
 // está bien instalado, su propio create()/write() debería disparar el envío real por
 // WhatsApp. Esto hay que probarlo con un mensaje de prueba real antes de confiar en él.
+// Diagnóstico: revisar el último mensaje SALIENTE (from_me=true) ya creado para un contacto,
+// sin tener que mandar otro — útil para ver por qué el que ya se probó no llegó de verdad.
+app.get('/api/debug/acrux-ultimo-saliente/:contactoId', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const contactoId = parseInt(req.params.contactoId);
+    const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
+      [[['contact_id', '=', contactoId], ['from_me', '=', true]]],
+      { fields: [], limit: 3, order: 'date_message desc' }
+    );
+    res.json({ ok: true, mensajes });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.post('/api/acrux/responder', authMiddleware, async (req, res) => {
   try {
     const { contacto_id, mensaje } = req.body;
@@ -3204,9 +3220,23 @@ app.post('/api/acrux/responder', authMiddleware, async (req, res) => {
       return res.json({ ok: false, error: 'Odoo no confirmó la creación del mensaje. Puede que no se haya enviado de verdad — hay que revisarlo directamente en el ChatRoom.' });
     }
 
+    // Diagnóstico: releer el mensaje recién creado con los campos que suelen indicar
+    // el estado real del envío en este tipo de conector (error, reintentos, evento, msgid).
+    let diagnostico = null;
+    try {
+      const releido = await odooCallLocal('acrux.chat.message', 'read',
+        [[nuevoId]],
+        { fields: ['id', 'msgid', 'error_msg', 'event', 'try_count', 'date_message'] }
+      );
+      diagnostico = releido?.[0] || null;
+    } catch (e) {
+      diagnostico = { error_al_releer: e.message };
+    }
+
     res.json({
       ok: true,
       mensaje_id: nuevoId,
+      diagnostico,
       aviso: 'Mensaje creado en Odoo. IMPORTANTE: esto es una prueba — confirma en el ChatRoom real (o que el padre lo reciba) que sí llegó de verdad por WhatsApp antes de confiar en este botón para todos los agentes.'
     });
   } catch (e) {
