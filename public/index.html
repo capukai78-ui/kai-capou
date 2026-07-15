@@ -397,8 +397,10 @@ tr:hover td{background:var(--g4)}
               <button onclick="quitarImagenChat()" style="position:absolute;top:-6px;right:-6px;width:18px;height:18px;background:var(--red);border:none;border-radius:50%;color:#fff;font-size:10px;cursor:pointer;font-weight:700">✕</button>
             </div>
             <div style="display:flex;gap:8px">
-              <button onclick="abrirSelectorImagenesChat()" title="Adjuntar imagen" style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px 12px;font-size:16px;cursor:pointer;color:var(--text)">📷</button>
-              <input type="text" id="cl-input-msg" placeholder="Escribe tu respuesta..." style="flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px 14px;color:var(--text);font-size:13px;outline:none" onkeypress="if(event.key==='Enter')enviarMensajeAgente()">
+              <button onclick="abrirSelectorImagenesChat()" title="Imagen del catálogo" style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px 12px;font-size:16px;cursor:pointer;color:var(--text)">🖼️</button>
+              <button onclick="document.getElementById('cl-input-file').click()" title="Subir imagen desde tu computadora" style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px 12px;font-size:16px;cursor:pointer;color:var(--text)">📎</button>
+              <input type="file" id="cl-input-file" accept="image/*" style="display:none" onchange="seleccionarImagenSubidaChat(event)">
+              <input type="text" id="cl-input-msg" placeholder="Escribe tu respuesta..." style="flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px 14px;color:var(--text);font-size:13px;outline:none" onkeypress="if(event.key==='Enter')enviarMensajeAgente()" onpaste="pegarImagenPortapapeles(event, 'cl')">
               <button class="btn-p" onclick="enviarMensajeAgente()">Enviar</button>
             </div>
           </div>
@@ -422,6 +424,12 @@ tr:hover td{background:var(--g4)}
         <div style="display:grid;grid-template-columns:280px 1fr 240px;gap:1px;background:var(--border2);border:1px solid var(--acrux3);border-radius:0 0 var(--r) var(--r);height:calc(100vh - 260px);overflow:hidden">
           <!-- Lista de conversaciones AcruxLab -->
           <div id="acrux-lista-scroll" style="background:var(--bg2);overflow-y:auto">
+            <div style="position:sticky;top:0;background:var(--bg2);padding:10px 8px 6px;border-bottom:1px solid var(--border);z-index:2">
+              <input type="text" id="acrux-buscar" placeholder="🔍 Buscar por nombre o número..." oninput="filtrarListaAcrux()" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:12px;color:var(--text);outline:none;margin-bottom:6px">
+              <select id="acrux-filtro-agente" onchange="filtrarListaAcrux()" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:6px 8px;font-size:11px;color:var(--text2)">
+                <option value="">Todos los agentes</option>
+              </select>
+            </div>
             <div id="acrux-lista" style="padding:8px"></div>
           </div>
           <!-- Hilo de mensajes -->
@@ -1505,6 +1513,40 @@ async function cargarMetricasAcrux(dias){
   }
 }
 
+let _acruxConversacionesCache = [];
+
+function renderListaAcrux(conversaciones){
+  const lista = document.getElementById('acrux-lista');
+  if(!conversaciones.length){
+    lista.innerHTML = '<div style="text-align:center;padding:30px 14px;color:var(--text3);font-size:12px">No hay chats que coincidan</div>';
+    return;
+  }
+  lista.innerHTML = conversaciones.map(c => `
+    <div onclick="abrirAcruxChat(${c.contacto_id})" style="padding:12px;border-radius:10px;cursor:pointer;margin-bottom:0;border-bottom:1px solid var(--border);background:${_acruxContactoActivo===c.contacto_id?'var(--acrux2)':'transparent'}" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='${_acruxContactoActivo===c.contacto_id?'var(--acrux2)':'transparent'}'">
+      <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:4px">
+        <div style="font-weight:600;font-size:13px">${c.nombre || c.numero || 'Sin nombre'}</div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="font-size:9px;color:var(--text3)">${tiempoRelativo(c.ultima_fecha)}</span>
+          ${c.no_leidos ? `<span style="font-size:9px;padding:2px 6px;border-radius:5px;background:var(--acrux2);color:var(--acrux)">${c.no_leidos} nuevo${c.no_leidos>1?'s':''}</span>` : ''}
+        </div>
+      </div>
+      ${c.etiquetas?.length ? `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px">${c.etiquetas.map(t=>{const col=colorEtiqueta(t);return `<span style="font-size:9px;font-weight:600;background:${col.bg};color:${col.fg};padding:2px 8px;border-radius:8px">${t}</span>`;}).join('')}</div>` : ''}
+      <div style="font-size:11px;color:var(--text3);margin-bottom:4px">${c.numero || 'sin número identificado'}</div>
+      <div style="font-size:11px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.ultimo_de==='agente'?(c.agente?c.agente+': ':'Tú: '):''}${c.ultimo_mensaje||''}</div>
+      ${c.agente ? `<div style="font-size:9px;color:var(--acrux);margin-top:2px">Atendido por ${c.agente}${c.agente_fecha?' · '+tiempoRelativo(c.agente_fecha):''}</div>` : ''}
+    </div>
+  `).join('');
+}
+
+function filtrarListaAcrux(){
+  const texto = (document.getElementById('acrux-buscar')?.value || '').toLowerCase().trim();
+  const agenteFiltro = document.getElementById('acrux-filtro-agente')?.value || '';
+  let filtradas = _acruxConversacionesCache;
+  if(texto) filtradas = filtradas.filter(c => (c.nombre||'').toLowerCase().includes(texto) || (c.numero||'').includes(texto));
+  if(agenteFiltro) filtradas = filtradas.filter(c => c.agente === agenteFiltro);
+  renderListaAcrux(filtradas);
+}
+
 async function loadAcruxLista(){
   const lista = document.getElementById('acrux-lista');
   const scrollCont = document.getElementById('acrux-lista-scroll');
@@ -1520,21 +1562,21 @@ async function loadAcruxLista(){
       lista.innerHTML = '<div style="text-align:center;padding:30px 14px;color:var(--text3);font-size:12px">'+(r.ok ? 'No hay chats en el ChatRoom todavía' : 'Error: '+(r.error||'desconocido'))+'</div>';
       return;
     }
-    lista.innerHTML = r.conversaciones.map(c => `
-      <div onclick="abrirAcruxChat(${c.contacto_id})" style="padding:12px;border-radius:10px;cursor:pointer;margin-bottom:0;border-bottom:1px solid var(--border);background:${_acruxContactoActivo===c.contacto_id?'var(--acrux2)':'transparent'}" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='${_acruxContactoActivo===c.contacto_id?'var(--acrux2)':'transparent'}'">
-        <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:4px">
-          <div style="font-weight:600;font-size:13px">${c.nombre || c.numero || 'Sin nombre'}</div>
-          <div style="display:flex;align-items:center;gap:6px">
-            <span style="font-size:9px;color:var(--text3)">${tiempoRelativo(c.ultima_fecha)}</span>
-            ${c.no_leidos ? `<span style="font-size:9px;padding:2px 6px;border-radius:5px;background:var(--acrux2);color:var(--acrux)">${c.no_leidos} nuevo${c.no_leidos>1?'s':''}</span>` : ''}
-          </div>
-        </div>
-        ${c.etiquetas?.length ? `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px">${c.etiquetas.map(t=>{const col=colorEtiqueta(t);return `<span style="font-size:9px;font-weight:600;background:${col.bg};color:${col.fg};padding:2px 8px;border-radius:8px">${t}</span>`;}).join('')}</div>` : ''}
-        <div style="font-size:11px;color:var(--text3);margin-bottom:4px">${c.numero || 'sin número identificado'}</div>
-        <div style="font-size:11px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.ultimo_de==='agente'?(c.agente?c.agente+': ':'Tú: '):''}${c.ultimo_mensaje||''}</div>
-        ${c.agente ? `<div style="font-size:9px;color:var(--acrux);margin-top:2px">Atendido por ${c.agente}${c.agente_fecha?' · '+tiempoRelativo(c.agente_fecha):''}</div>` : ''}
-      </div>
-    `).join('');
+    _acruxConversacionesCache = r.conversaciones;
+
+    // Poblar el filtro de agente (solo tiene sentido para supervisores viendo "todos")
+    const selectAgente = document.getElementById('acrux-filtro-agente');
+    if(selectAgente && r.es_supervisor){
+      const agentesUnicos = [...new Set(r.conversaciones.map(c=>c.agente).filter(Boolean))].sort();
+      const valorPrevio = selectAgente.value;
+      selectAgente.innerHTML = '<option value="">Todos los agentes</option>' + agentesUnicos.map(a=>`<option value="${a}">${a}</option>`).join('');
+      selectAgente.value = valorPrevio;
+      selectAgente.style.display = 'block';
+    } else if(selectAgente){
+      selectAgente.style.display = 'none'; // no aplica si ya solo ves lo tuyo
+    }
+
+    filtrarListaAcrux();
     lista.dataset.cargadoUnaVez = '1';
     if(scrollCont) scrollCont.scrollTop = scrollPrevio;
   } catch(e){
@@ -1646,6 +1688,51 @@ async function enviarMensajeAcrux(){
 }
 
 let _chatImagenId = null;
+let _chatImagenSubidaBase64 = null;
+let _chatImagenSubidaMime = null;
+
+function pegarImagenPortapapeles(event, prefijo){
+  const items = event.clipboardData?.items;
+  if(!items) return;
+  const itemImagen = [...items].find(i => i.type.startsWith('image/'));
+  if(!itemImagen) return; // no hay imagen en el portapapeles, deja que el texto se pegue normal
+  event.preventDefault();
+  const file = itemImagen.getAsFile();
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const base64Completo = reader.result;
+    if(prefijo === 'cl'){
+      _chatImagenId = null;
+      _chatImagenSubidaMime = file.type;
+      _chatImagenSubidaBase64 = base64Completo.split(',')[1];
+      document.getElementById('cl-img-prev-img').src = base64Completo;
+      document.getElementById('cl-img-seleccionada-preview').style.display='inline-block';
+    }
+  };
+  reader.readAsDataURL(file);
+  showToast('Imagen pegada 📎','ok');
+}
+
+function seleccionarImagenSubidaChat(event){
+  const file = event.target.files?.[0];
+  if(!file) return;
+  if(!file.type.startsWith('image/')){ showToast('Solo se permiten imágenes','error'); return; }
+  if(file.size > 5*1024*1024){ showToast('Imagen muy grande (máx. 5MB)','error'); return; }
+  _chatImagenId = null; // una imagen subida reemplaza cualquier selección del catálogo
+  const reader = new FileReader();
+  reader.onload = () => {
+    const base64Completo = reader.result; // "data:image/png;base64,AAAA..."
+    _chatImagenSubidaMime = file.type;
+    _chatImagenSubidaBase64 = base64Completo.split(',')[1];
+    const prev = document.getElementById('cl-img-seleccionada-preview');
+    const img = document.getElementById('cl-img-prev-img');
+    img.src = base64Completo;
+    prev.style.display='inline-block';
+  };
+  reader.readAsDataURL(file);
+  event.target.value = ''; // permite volver a elegir el mismo archivo si se quita y se sube de nuevo
+}
 
 async function abrirSelectorImagenesChat(){
   const selectorEl = document.getElementById('cl-img-selector');
@@ -1685,6 +1772,8 @@ async function seleccionarImagenChat(id){
 
 function quitarImagenChat(){
   _chatImagenId = null;
+  _chatImagenSubidaBase64 = null;
+  _chatImagenSubidaMime = null;
   document.getElementById('cl-img-seleccionada-preview').style.display='none';
   document.getElementById('cl-img-prev-img').src='';
 }
@@ -1692,14 +1781,19 @@ function quitarImagenChat(){
 async function enviarMensajeAgente(){
   const input = document.getElementById('cl-input-msg');
   const mensaje = input.value.trim();
-  if(!mensaje && !_chatImagenId) return;
+  if(!mensaje && !_chatImagenId && !_chatImagenSubidaBase64) return;
   if(!_chatActivoId) return;
   input.value = '';
   try {
     const r = await fetch(API+'/api/conversaciones/'+_chatActivoId+'/responder',{
       method:'POST',
       headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'},
-      body: JSON.stringify({ mensaje, imagen_id: _chatImagenId || undefined })
+      body: JSON.stringify({
+        mensaje,
+        imagen_id: _chatImagenId || undefined,
+        imagen_base64: _chatImagenSubidaBase64 || undefined,
+        imagen_mime: _chatImagenSubidaMime || undefined
+      })
     }).then(r=>r.json());
     if(r.ok){ quitarImagenChat(); abrirChat(_chatActivoId); showToast('Enviado ✓','ok'); }
     else { showToast(r.error||'Error al enviar','error'); }
