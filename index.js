@@ -3845,6 +3845,23 @@ app.get('/api/debug/vista-formulario-lead', authMiddleware, async (req, res) => 
   }
 });
 
+// Diagnóstico: encontrar dónde viven las "respuestas rápidas" del ChatRoom (el panel
+// con el rayo ⚡ que ya vimos en capturas). Probamos los candidatos más probables.
+app.get('/api/debug/plantillas-chatroom', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  const candidatos = ['mail.canned.response', 'acrux.chat.quick.reply', 'acrux.chat.template', 'acrux.chat.canned.response', 'acrux.chat.message.template'];
+  const resultado = {};
+  for (const modelo of candidatos) {
+    try {
+      const registros = await odooCallLocal(modelo, 'search_read', [[]], { fields: [], limit: 5 });
+      resultado[modelo] = { existe: true, muestra: registros };
+    } catch (e) {
+      resultado[modelo] = { existe: false, error: e.message.substring(0, 150) };
+    }
+  }
+  res.json({ ok: true, resultado });
+});
+
 app.get('/api/debug/opciones-carrera', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
