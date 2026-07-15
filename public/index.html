@@ -1098,7 +1098,8 @@ function nav(page,el){
   if(page==='usuarios'){loadUsuarios();loadSedes();}
   if(page==='faqs')loadFaqs();
   if(page==='docs')loadDocs();
-  if(page==='marketing'){loadMarketing();}
+  if(page==='marketing'){loadMarketing(); iniciarAutoEscaneoLeads();}
+  else { detenerAutoEscaneoLeads(); }
   if(page==='chatslive'){ cambiarClTab(typeof _clTabActual!=='undefined'?_clTabActual:'omni'); }
 }
 
@@ -1991,6 +1992,18 @@ async function asignarVendedorLead(leadId){
     if(r.ok){ showToast(`✅ Lead asignado a ${vendedores[idx].nombre||vendedores[idx].email}`,'ok'); escanearLeadsNuevos(); }
     else showToast(r.error||'Error','error');
   }catch(e){ showToast('Error de conexión','error'); }
+}
+
+let _autoEscaneoLeadsInterval = null;
+function iniciarAutoEscaneoLeads(){
+  detenerAutoEscaneoLeads(); // por si ya había uno corriendo
+  escanearLeadsNuevos(); // primer escaneo inmediato, sin esperar el primer clic
+  _autoEscaneoLeadsInterval = setInterval(()=>{
+    if(document.getElementById('p-marketing')?.classList.contains('active')) escanearLeadsNuevos();
+  }, 60000); // cada 1 minuto, solo lectura — seguro para Odoo
+}
+function detenerAutoEscaneoLeads(){
+  if(_autoEscaneoLeadsInterval){ clearInterval(_autoEscaneoLeadsInterval); _autoEscaneoLeadsInterval = null; }
 }
 
 async function escanearLeadsNuevos(){
