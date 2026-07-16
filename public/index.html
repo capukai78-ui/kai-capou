@@ -416,7 +416,7 @@ tr:hover td{background:var(--g4)}
             <span id="cl-vista-usuario" style="background:var(--bg4);color:var(--text2);font-size:9px;font-weight:700;padding:2px 8px;border-radius:10px"></span>
           </div>
           <div style="display:flex;gap:8px">
-            <button class="rpill" onclick="abrirMetricasAcrux()">📊 Métricas</button>
+            <button class="rpill" id="btn-metricas-acrux" onclick="abrirMetricasAcrux()">📊 Métricas</button>
             <button class="rpill" onclick="loadAcruxLista()">↻ Actualizar</button>
           </div>
         </div>
@@ -1119,7 +1119,11 @@ function nav(page,el){
   if(page==='docs')loadDocs();
   if(page==='marketing'){loadMarketing(); iniciarAutoEscaneoLeads();}
   else { detenerAutoEscaneoLeads(); }
-  if(page==='chatslive'){ cambiarClTab(typeof _clTabActual!=='undefined'?_clTabActual:'omni'); }
+  if(page==='chatslive'){
+    cambiarClTab(typeof _clTabActual!=='undefined'?_clTabActual:'omni');
+    const btnMetricas = document.getElementById('btn-metricas-acrux');
+    if(btnMetricas) btnMetricas.style.display = (ROLE==='vendedor') ? 'none' : 'inline-flex';
+  }
 }
 
 // ===== CHATS EN VIVO =====
