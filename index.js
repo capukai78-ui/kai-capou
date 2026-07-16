@@ -213,6 +213,20 @@ const conversacionSchema = new mongoose.Schema({
 });
 const Conversacion = mongoose.model('Conversacion', conversacionSchema);
 
+// ===== ASIGNACIÓN DE ACRUXLAB (número oficial) — control propio, no vive en Odoo =====
+// Odoo/AcruxLab no tiene un concepto de "asignado a X vendedor" — solo sabemos quién
+// respondió el último mensaje. Para poder repartir 1 a 1 desde que llega el mensaje
+// (antes de que alguien responda), llevamos esta asignación en nuestro propio sistema.
+const asignacionAcruxSchema = new mongoose.Schema({
+  tenant_id:     { type: mongoose.Schema.Types.ObjectId, ref: 'Tenant' },
+  contacto_id:   { type: Number, required: true }, // ID de acrux.chat.conversation
+  agente_id:     { type: mongoose.Schema.Types.ObjectId, ref: 'UsuarioPanel' },
+  agente_nombre: String,
+  fecha_asignado:{ type: Date, default: Date.now }
+});
+asignacionAcruxSchema.index({ tenant_id: 1, contacto_id: 1 }, { unique: true });
+const AsignacionAcrux = mongoose.model('AsignacionAcrux', asignacionAcruxSchema);
+
 // ===== MODELO CONTACTO — memoria persistente del padre/madre =====
 const contactoSchema = new mongoose.Schema({
   tenant_id:      { type: mongoose.Schema.Types.ObjectId, ref: 'Tenant' },
@@ -448,19 +462,56 @@ async function asignarAgenteLibre(tenantId) {
   if (!agentes.length) return null;
 
   // Reparto 1 a 1 real: contamos el TOTAL histórico de conversaciones ya asignadas a
-  // cada agente (no solo las activas ahorita), para que quede compensado entre ellos
-  // a lo largo del tiempo — no solo "quién tiene menos carga en este momento".
-  const counts = await Conversacion.aggregate([
-    { $match: { tenant_id: tenantId, agente_id: { $ne: null } } },
-    { $group: { _id: '$agente_id', total: { $sum: 1 } } }
+  // cada agente en AMBOS canales (WhatsApp/IG/Messenger + AcruxLab combinados), para
+  // que la carga quede pareja entre ellos sin importar por dónde entró el lead.
+  const [countsMeta, countsAcrux] = await Promise.all([
+    Conversacion.aggregate([
+      { $match: { tenant_id: tenantId, agente_id: { $ne: null } } },
+      { $group: { _id: '$agente_id', total: { $sum: 1 } } }
+    ]),
+    AsignacionAcrux.aggregate([
+      { $match: { tenant_id: tenantId } },
+      { $group: { _id: '$agente_id', total: { $sum: 1 } } }
+    ])
   ]);
   const countMap = {};
-  counts.forEach(c => countMap[c._id.toString()] = c.total);
+  countsMeta.forEach(c => countMap[c._id.toString()] = (countMap[c._id.toString()] || 0) + c.total);
+  countsAcrux.forEach(c => countMap[c._id.toString()] = (countMap[c._id.toString()] || 0) + c.total);
 
-  // El agente con menos conversaciones asignadas en total recibe la siguiente.
-  // Si hay empate, gana el que aparece primero en la lista (orden estable por _id).
+  // El agente con menos conversaciones asignadas en total (entre ambos canales) recibe
+  // la siguiente. Si hay empate, gana el que aparece primero en la lista (orden estable).
   agentes.sort((a, b) => (countMap[a._id.toString()] || 0) - (countMap[b._id.toString()] || 0));
   return agentes[0];
+}
+
+// Asegura que cada conversación NUEVA de AcruxLab (sin nadie que le haya respondido
+// todavía, y sin asignación previa nuestra) reciba un vendedor por reparto 1 a 1 —
+// así el chat ya tiene dueño desde que llega el mensaje, antes de que alguien conteste.
+// No escribe nada en Odoo — la asignación vive solo en nuestra base (AsignacionAcrux).
+async function asegurarAsignacionesAcrux(tenantId, conversaciones) {
+  const sinAsignar = conversaciones.filter(c => !c.agente); // ninguna respuesta humana todavía en Odoo
+  if (!sinAsignar.length) return;
+
+  const idsAConsultar = sinAsignar.map(c => c.contacto_id);
+  const yaAsignadas = await AsignacionAcrux.find({ tenant_id: tenantId, contacto_id: { $in: idsAConsultar } });
+  const yaAsignadasMap = {};
+  yaAsignadas.forEach(a => { yaAsignadasMap[a.contacto_id] = a; });
+
+  for (const conv of sinAsignar) {
+    const existente = yaAsignadasMap[conv.contacto_id];
+    if (existente) {
+      conv.agente = existente.agente_nombre;
+      conv.agente_fecha = existente.fecha_asignado;
+      continue;
+    }
+    const agente = await asignarAgenteLibre(tenantId);
+    if (!agente) continue; // nadie disponible — se queda sin asignar hasta que alguien lo esté
+    try {
+      await AsignacionAcrux.create({ tenant_id: tenantId, contacto_id: conv.contacto_id, agente_id: agente._id, agente_nombre: agente.nombre });
+      conv.agente = agente.nombre;
+      conv.agente_fecha = new Date();
+    } catch (e) { /* si ya existe (condición de carrera), no pasa nada — se toma en el próximo refresh */ }
+  }
 }
 
 // Pasa una conversación a estado "esperando_agente" y le asigna uno si hay disponible
@@ -3581,6 +3632,15 @@ app.get('/api/acrux/conversaciones', authMiddleware, async (req, res) => {
 
     let conversaciones = Object.values(porContacto).sort((a, b) => (b.ultima_fecha || '').localeCompare(a.ultima_fecha || ''));
 
+    // Asegurar que toda conversación sin respuesta humana todavía ya tenga un vendedor
+    // asignado por reparto 1 a 1 (Cindy/Vanessa), desde que llega el mensaje — no hace
+    // falta que alguien conteste primero para que quede "en la bandeja" de alguien.
+    try {
+      await asegurarAsignacionesAcrux(req.user.tenant_id, conversaciones);
+    } catch (e) {
+      // Si falla la asignación automática, seguimos mostrando los chats sin asignar (no bloqueante)
+    }
+
     // Filtro por usuario: admin y viewer supervisan todo; vendedor solo ve lo suyo + lo sin atender
     // Verificamos el rol directo en la base de datos (no solo el del token) — así, si el
     // rol de alguien cambió después de que inició sesión, se respeta de inmediato sin
@@ -3589,8 +3649,20 @@ app.get('/api/acrux/conversaciones', authMiddleware, async (req, res) => {
     const rolReal = usuarioActual?.role || req.user.role;
     const esSupervisor = rolReal === 'admin' || rolReal === 'viewer';
     if (!esSupervisor) {
-      const miNombre = (req.user.nombre || '').trim().toLowerCase();
-      conversaciones = conversaciones.filter(c => !c.agente || (c.agente || '').trim().toLowerCase() === miNombre);
+      // Comparación flexible por palabras, no exacta — en Odoo el nombre completo puede
+      // traer un segundo apellido/nombre distinto al que está guardado en KAI (ej.
+      // "Vanessa Lopez Carreto" en Odoo vs "Vanessa Carreto" en KAI). Si comparamos
+      // exacto, nunca hace match y sus propios chats quedan invisibles para ella.
+      const normalizar = s => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').split(/\s+/).filter(Boolean);
+      const misPalabras = normalizar(req.user.nombre);
+      const nombreCoincide = (agente) => {
+        const palabrasAgente = normalizar(agente);
+        if (!palabrasAgente.length || !misPalabras.length) return false;
+        // Coincide si comparten al menos 2 palabras (o todas, si el nombre es de 1 sola palabra)
+        const coincidencias = misPalabras.filter(p => palabrasAgente.includes(p)).length;
+        return coincidencias >= Math.min(2, misPalabras.length);
+      };
+      conversaciones = conversaciones.filter(c => !c.agente || nombreCoincide(c.agente));
     }
 
     res.json({ ok: true, canal: 'acrux_whatsapp', solo_lectura: false, es_supervisor: esSupervisor, total: conversaciones.length, conversaciones });
