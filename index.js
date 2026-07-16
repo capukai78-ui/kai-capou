@@ -196,7 +196,7 @@ const conversacionSchema = new mongoose.Schema({
   tenant_id:     { type: mongoose.Schema.Types.ObjectId, ref: 'Tenant' },
   numero:        { type: String, required: true },
   nombre:        String,
-  canal:         { type: String, enum: ['whatsapp','instagram','messenger','otro'], default: 'whatsapp' },
+  canal:         { type: String, enum: ['whatsapp','instagram','messenger','acrux','otro'], default: 'whatsapp' },
   estado:        { type: String, enum: ['bot', 'esperando_agente', 'humano', 'cerrado'], default: 'bot' },
   agente_id:     { type: mongoose.Schema.Types.ObjectId, ref: 'UsuarioPanel', default: null },
   agente_nombre: { type: String, default: null },
@@ -222,7 +222,8 @@ const asignacionAcruxSchema = new mongoose.Schema({
   contacto_id:   { type: Number, required: true }, // ID de acrux.chat.conversation
   agente_id:     { type: mongoose.Schema.Types.ObjectId, ref: 'UsuarioPanel' },
   agente_nombre: String,
-  fecha_asignado:{ type: Date, default: Date.now }
+  fecha_asignado:{ type: Date, default: Date.now },
+  modo:          { type: String, enum: ['bot', 'humano'], default: 'bot' } // ¿KAI responde o ya es de un humano?
 });
 asignacionAcruxSchema.index({ tenant_id: 1, contacto_id: 1 }, { unique: true });
 const AsignacionAcrux = mongoose.model('AsignacionAcrux', asignacionAcruxSchema);
@@ -489,21 +490,26 @@ async function asignarAgenteLibre(tenantId) {
 // así el chat ya tiene dueño desde que llega el mensaje, antes de que alguien conteste.
 // No escribe nada en Odoo — la asignación vive solo en nuestra base (AsignacionAcrux).
 async function asegurarAsignacionesAcrux(tenantId, conversaciones) {
-  const sinAsignar = conversaciones.filter(c => !c.agente); // ninguna respuesta humana todavía en Odoo
-  if (!sinAsignar.length) return;
+  if (!conversaciones.length) return;
 
-  const idsAConsultar = sinAsignar.map(c => c.contacto_id);
+  // Revisamos TODAS las conversaciones (no solo las sin agente en Odoo) — nuestra
+  // propia asignación (AsignacionAcrux) es la fuente de verdad real. El "agente" que
+  // se derive de Odoo puede ser engañoso ahora que KAI también manda mensajes por la
+  // misma cuenta de servicio compartida, así que ya no confiamos en eso para decidir dueño.
+  const idsAConsultar = conversaciones.map(c => c.contacto_id);
   const yaAsignadas = await AsignacionAcrux.find({ tenant_id: tenantId, contacto_id: { $in: idsAConsultar } });
   const yaAsignadasMap = {};
   yaAsignadas.forEach(a => { yaAsignadasMap[a.contacto_id] = a; });
 
-  for (const conv of sinAsignar) {
+  for (const conv of conversaciones) {
     const existente = yaAsignadasMap[conv.contacto_id];
     if (existente) {
       conv.agente = existente.agente_nombre;
       conv.agente_fecha = existente.fecha_asignado;
+      conv.modo = existente.modo || 'bot';
       continue;
     }
+    conv.modo = 'bot'; // por defecto, hasta que se asigne
     const agente = await asignarAgenteLibre(tenantId);
     if (!agente) continue; // nadie disponible — se queda sin asignar hasta que alguien lo esté
     try {
@@ -513,6 +519,148 @@ async function asegurarAsignacionesAcrux(tenantId, conversaciones) {
     } catch (e) { /* si ya existe (condición de carrera), no pasa nada — se toma en el próximo refresh */ }
   }
 }
+
+// ===== KAI ATENDIENDO AUTOMÁTICO POR ACRUXLAB (número oficial) =====
+// Versión independiente de responderConIA (la de WhatsApp/Meta) a propósito — para no
+// arriesgar el flujo de WhatsApp que ya está confirmado funcionando. Comparte el mismo
+// "cerebro" (buildSystemPrompt, FAQs, detección de handoff) pero lleva su memoria aparte.
+async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
+  const claveMemoria = 'acrux_' + numero;
+  if (!conversaciones.has(claveMemoria)) conversaciones.set(claveMemoria, { historial: [], ultimaActividad: Date.now() });
+  const conv = conversaciones.get(claveMemoria);
+  conv.ultimaActividad = Date.now();
+  const historial = conv.historial;
+  historial.push({ role: 'user', content: mensajeUsuario });
+  if (historial.length > 16) historial.splice(0, 2);
+
+  // ===== DETECCIÓN DE HANDOFF — misma lógica que WhatsApp =====
+  const yaHayContexto = historial.length >= 4;
+  const insisteExplicito = detectaInsistenciaAgente(mensajeUsuario);
+  const ultimoMsgBot = [...historial].reverse().find(m => m.role === 'assistant')?.content || '';
+  const mostroInteresReal = esAltaIntencion(mensajeUsuario, ultimoMsgBot);
+
+  if ((detectaSolicitudAgente(mensajeUsuario) && (yaHayContexto || insisteExplicito)) || mostroInteresReal) {
+    // El vendedor YA está asignado desde que llegó el primer mensaje (reparto 1 a 1) —
+    // aquí solo cambiamos el modo a "humano" para que KAI deje de auto-responder.
+    const asign = await AsignacionAcrux.findOneAndUpdate(
+      { tenant_id: tenant._id, contacto_id: contactoId },
+      { modo: 'humano' },
+      { new: true }
+    );
+    const nombreAgente = asign?.agente_nombre;
+    historial.push({ role: 'assistant', content: '(Se transfirió la conversación a un asesor humano.)' });
+
+    const msg = nombreAgente
+      ? (mostroInteresReal
+          ? `¡Perfecto! Le comento con ${nombreAgente.split(' ')[0]}, quien le ayudará a coordinar todo 🙋`
+          : `¡Claro! Le paso con ${nombreAgente.split(' ')[0]}, quien le atenderá enseguida 🙋`)
+      : 'En este momento todos nuestros asesores están ocupados. En breve uno le atenderá personalmente. 🙏';
+
+    if (mostroInteresReal) {
+      crearCandidatoOdooSiNoExiste(tenant, numero, mensajeUsuario, historial).catch(e => console.error('❌ Error creando candidato (AcruxLab):', e.message));
+    }
+    return { texto: msg, handoff: true };
+  }
+
+  // ===== RESPUESTA NORMAL DE KAI =====
+  const systemPrompt = buildSystemPrompt(tenant);
+  let contextoExtra = '';
+  try {
+    const [faqs, docs] = await Promise.all([
+      FAQ.find({ tenant_id: tenant._id, activo: true }).limit(20),
+      Documento.find({ tenant_id: tenant._id, activo: true }).sort({ tipo: 1, creado: -1 }).limit(15)
+    ]);
+    if (faqs.length) contextoExtra += '\n\nPREGUNTAS FRECUENTES:\n' + faqs.map(f => `P: ${f.pregunta}\nR: ${f.respuesta}`).join('\n\n');
+    contextoExtra += buildDocsContext(docs);
+  } catch (e) { /* si falla, seguimos sin ese contexto extra */ }
+
+  const reply = await llamarClaude(systemPrompt + contextoExtra, historial, 600);
+  const respuestaLimpia = reply ? reply.replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1') : null;
+  const respuesta = respuestaLimpia || 'Disculpe, tuve un problema técnico. Por favor llámenos directamente. 📞';
+  historial.push({ role: 'assistant', content: respuesta });
+  return { texto: respuesta, handoff: false };
+}
+
+// Envía un mensaje de texto por AcruxLab — misma llamada real confirmada y usada en
+// /api/acrux/responder, extraída aquí para reutilizarla también desde el motor automático.
+async function enviarTextoAcruxLab(contactoId, texto) {
+  return odooCallLocal(
+    'acrux.chat.conversation',
+    'send_message',
+    [[contactoId], {
+      text: texto,
+      from_me: true,
+      ttype: 'text',
+      res_model: '',
+      res_id: 0,
+      id: -2,
+      date_message: new Date().toISOString().replace('T', ' ').substring(0, 19),
+      button_ids: []
+    }],
+    { context: { lang: 'es_GT', tz: 'America/Guatemala', is_acrux_chat_room: true } }
+  );
+}
+
+// Motor que revisa cada cierto tiempo si hay mensajes nuevos sin responder en AcruxLab,
+// y hace que KAI conteste automáticamente (a menos que ya esté en modo "humano").
+let _procesandoAcruxLab = false; // evita que se encimen dos corridas si una tarda mucho
+async function procesarNuevosMensajesAcruxLab() {
+  if (_procesandoAcruxLab) return;
+  _procesandoAcruxLab = true;
+  try {
+    const tenant = await Tenant.findOne({ activo: true });
+    if (!tenant) return;
+
+    const desde = new Date(Date.now() - 20 * 60000).toISOString().replace('T', ' ').substring(0, 19); // últimos 20 min
+    const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
+      [[['date_message', '>=', desde]]],
+      { fields: ['id', 'text', 'date_message', 'contact_id', 'msgid', 'from_me'], limit: 500, order: 'date_message asc' }
+    );
+    if (!mensajes) return;
+
+    const porContacto = {};
+    mensajes.forEach(m => {
+      if (!m.contact_id) return;
+      const cid = m.contact_id[0];
+      if (!porContacto[cid]) porContacto[cid] = [];
+      porContacto[cid].push(m);
+    });
+
+    for (const contactoId of Object.keys(porContacto).map(Number)) {
+      const msgs = porContacto[contactoId];
+      const ultimoInbound = [...msgs].reverse().find(m => !m.from_me);
+      if (!ultimoInbound) continue; // no hay mensaje nuevo del padre en esta ventana de tiempo
+
+      // ¿Ya se respondió DESPUÉS de ese mensaje? (por KAI o por un humano)
+      const yaRespondido = msgs.some(m => m.from_me && m.date_message > ultimoInbound.date_message);
+      if (yaRespondido) continue;
+
+      // ¿Ya está en modo "humano"? Entonces KAI no debe meterse — el vendedor asignado responde manual.
+      const asign = await AsignacionAcrux.findOne({ tenant_id: tenant._id, contacto_id: contactoId });
+      if (asign?.modo === 'humano') continue;
+
+      const numero = extraerNumeroDeMsgid(ultimoInbound.msgid);
+      if (!numero) continue; // sin número no podemos llevar memoria confiable — se deja para atención manual
+
+      try {
+        const resultado = await atenderAcruxConIA(tenant, ultimoInbound.text || '', numero, contactoId);
+        await enviarTextoAcruxLab(contactoId, resultado.texto);
+        console.log(`🤖 KAI respondió por AcruxLab a contacto ${contactoId}${resultado.handoff ? ' (con traspaso a humano)' : ''}`);
+      } catch (e) {
+        console.error(`❌ Error al procesar/responder AcruxLab contacto ${contactoId}:`, e.message);
+      }
+    }
+  } catch (e) {
+    console.error('❌ Error en procesarNuevosMensajesAcruxLab:', e.message);
+  } finally {
+    _procesandoAcruxLab = false;
+  }
+}
+
+// Corre cada 45 segundos — suficientemente rápido para no hacer esperar a la familia,
+// sin saturar la API de Odoo con consultas constantes.
+setInterval(procesarNuevosMensajesAcruxLab, 45000);
+setTimeout(procesarNuevosMensajesAcruxLab, 8000); // primera corrida poco después de iniciar el servidor
 
 // Pasa una conversación a estado "esperando_agente" y le asigna uno si hay disponible
 // Genera un resumen breve usando IA del historial de conversación con KAI
@@ -750,7 +898,7 @@ async function crearCandidatoEnOdoo(tenant, contacto, numero, resultadoNivel) {
       email_from: contacto.correo || null,
       description: descripcion,
       team_id: teamId,
-      type: 'opportunity',
+      type: 'lead', // entra como Lead (bandeja de calificación), no directo como Oportunidad
       tag_ids: tagId ? [[6, 0, [tagId]]] : undefined
     }]);
 
@@ -890,7 +1038,7 @@ async function procesarMensajeOmnichannel(numero, nombre, mensaje, canal, tenant
         partner_name: nombre || null,
         description: `Canal de origen: ${canal}\nCapturado automáticamente por KAI.`,
         team_id: teamId,
-        type: 'opportunity',
+        type: 'lead', // entra como Lead, no directo como Oportunidad
         tag_ids: tagId ? [[6, 0, [tagId]]] : undefined
       }]);
       if (leadId) {
@@ -2813,7 +2961,7 @@ app.post('/api/lead-ads', async (req, res) => {
         partner_name: nombre,
         description: `Formulario de Lead Ad completado.\nNivel de interés: ${nivel || 'No especificado'}\nCapturado automáticamente por KAI.`,
         team_id: tenant?.odoo_team_id || 1,
-        type: 'opportunity',
+        type: 'lead', // entra como Lead, no directo como Oportunidad
         tag_ids: tagId ? [[6, 0, [tagId]]] : undefined
       }]);
       if (leadId) { contacto.odoo_lead_id = leadId; await contacto.save(); }
@@ -2852,7 +3000,7 @@ app.post('/api/lead-web', async (req, res) => {
         partner_name: nombre || null,
         description: `Formulario web completado.\n${mensaje ? 'Mensaje: ' + mensaje : ''}\nNivel de interés: ${nivel_interes || 'No especificado'}\nCapturado automáticamente por KAI.`,
         team_id: tenant?.odoo_team_id || 1,
-        type: 'opportunity',
+        type: 'lead', // entra como Lead, no directo como Oportunidad
         tag_ids: tagId ? [[6, 0, [tagId]]] : undefined
       }]);
       if (leadId) { contacto.odoo_lead_id = leadId; await contacto.save(); }
@@ -3696,6 +3844,7 @@ app.get('/api/acrux/conversaciones/:contactoId', authMiddleware, async (req, res
 
     const numero = mensajes.map(m => extraerNumeroDeMsgid(m.msgid)).find(Boolean) || null;
     const nombre = mensajes.find(m => m.contact_id)?.contact_id?.[1] || null;
+    const asignacion = await AsignacionAcrux.findOne({ tenant_id: req.user.tenant_id, contacto_id: contactoId });
 
     res.json({
       ok: true,
@@ -3704,6 +3853,8 @@ app.get('/api/acrux/conversaciones/:contactoId', authMiddleware, async (req, res
       contacto_id: contactoId,
       numero,
       nombre: nombre || numero || 'Sin nombre',
+      modo: asignacion?.modo || 'bot',
+      agente_asignado: asignacion?.agente_nombre || null,
       mensajes: mensajes.map(m => {
         const adjunto = m.ttype === 'image' ? adjuntosPorId[m.res_id] : null;
         return {
@@ -3817,11 +3968,37 @@ app.get('/api/acrux/plantillas', authMiddleware, async (req, res) => {
   }
 });
 
+// Devuelve una conversación de AcruxLab a modo "bot" — para que KAI retome cuando
+// el agente humano ya terminó de ayudar.
+app.post('/api/acrux/devolver-a-kai', authMiddleware, async (req, res) => {
+  try {
+    const { contacto_id } = req.body;
+    if (!contacto_id) return res.status(400).json({ ok: false, error: 'contacto_id es requerido' });
+    await AsignacionAcrux.findOneAndUpdate(
+      { tenant_id: req.user.tenant_id, contacto_id },
+      { modo: 'bot' }
+    );
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.post('/api/acrux/responder', authMiddleware, async (req, res) => {
   try {
     const { contacto_id, mensaje, plantilla_id, imagen_base64, imagen_mime, imagen_nombre } = req.body;
     if (!contacto_id) return res.status(400).json({ ok: false, error: 'contacto_id es requerido' });
     if (!mensaje && !plantilla_id && !imagen_base64) return res.status(400).json({ ok: false, error: 'mensaje, plantilla_id o imagen_base64 son requeridos' });
+
+    // Un agente humano respondiendo manualmente desde el panel = KAI debe dejar de
+    // auto-responder este contacto de aquí en adelante (pasa a modo "humano").
+    try {
+      await AsignacionAcrux.findOneAndUpdate(
+        { tenant_id: req.user.tenant_id, contacto_id },
+        { modo: 'humano', $setOnInsert: { agente_id: req.user.id, agente_nombre: req.user.nombre } },
+        { upsert: true }
+      );
+    } catch (e) { /* no bloquea el envío si esto falla */ }
 
     let valoresMensaje;
     if (imagen_base64) {
