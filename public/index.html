@@ -447,9 +447,15 @@ tr:hover td{background:var(--g4)}
             </div>
             <div id="acrux-input-area" style="padding:14px 18px;border-top:1px solid var(--border);display:none">
               <div style="font-size:9px;color:var(--amber);margin-bottom:6px">⚠️ Envío en prueba (nuevo método send_message) — confirma con el destinatario real que le llegó antes de usarlo con familias.</div>
+              <div id="acrux-img-preview" style="display:none;margin-bottom:8px;position:relative;display:inline-block">
+                <img id="acrux-img-preview-img" style="height:60px;border-radius:8px;object-fit:cover"/>
+                <button onclick="quitarImagenAcrux()" style="position:absolute;top:-6px;right:-6px;width:18px;height:18px;background:var(--red);border:none;border-radius:50%;color:#fff;font-size:10px;cursor:pointer;font-weight:700">✕</button>
+              </div>
               <div style="display:flex;gap:8px">
                 <button onclick="togglePlantillasAcrux()" title="Respuestas rápidas" style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px 12px;font-size:16px;cursor:pointer;color:var(--text)">⚡</button>
-                <input type="text" id="acrux-input-msg" placeholder="Escribe tu respuesta (prueba)..." style="flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px 14px;color:var(--text);font-size:13px;outline:none" onkeypress="if(event.key==='Enter')enviarMensajeAcrux()">
+                <button onclick="document.getElementById('acrux-input-file').click()" title="Subir imagen desde tu computadora" style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px 12px;font-size:16px;cursor:pointer;color:var(--text)">📎</button>
+                <input type="file" id="acrux-input-file" accept="image/*" style="display:none" onchange="seleccionarImagenAcrux(event)">
+                <input type="text" id="acrux-input-msg" placeholder="Escribe tu respuesta (prueba)..." style="flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px 14px;color:var(--text);font-size:13px;outline:none" onkeypress="if(event.key==='Enter')enviarMensajeAcrux()" onpaste="pegarImagenPortapapeles(event, 'acrux')">
                 <button class="btn-p" onclick="enviarMensajeAcrux()">Enviar</button>
               </div>
             </div>
@@ -1724,17 +1730,24 @@ async function enviarMensajeAcrux(){
   const input = document.getElementById('acrux-input-msg');
   if(!input) return; // envío deshabilitado temporalmente
   const mensaje = input.value.trim();
-  if(!mensaje || !_acruxContactoActivo) return;
+  if((!mensaje && !_acruxImagenBase64) || !_acruxContactoActivo) return;
   input.value = '';
   input.disabled = true;
   try {
     const r = await fetch(API+'/api/acrux/responder',{
       method:'POST',
       headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'},
-      body: JSON.stringify({ contacto_id: _acruxContactoActivo, mensaje })
+      body: JSON.stringify({
+        contacto_id: _acruxContactoActivo,
+        mensaje,
+        imagen_base64: _acruxImagenBase64 || undefined,
+        imagen_mime: _acruxImagenMime || undefined,
+        imagen_nombre: _acruxImagenNombre || undefined
+      })
     }).then(r=>r.json());
     if(r.ok){
       showToast(r.aviso || 'Enviado — confirma que llegó de verdad ✓','ok');
+      quitarImagenAcrux();
       abrirAcruxChat(_acruxContactoActivo);
     } else {
       showToast(r.error || 'No se pudo enviar','error');
@@ -1750,6 +1763,36 @@ async function enviarMensajeAcrux(){
 let _chatImagenId = null;
 let _chatImagenSubidaBase64 = null;
 let _chatImagenSubidaMime = null;
+
+let _acruxImagenBase64 = null;
+let _acruxImagenMime = null;
+let _acruxImagenNombre = null;
+
+function seleccionarImagenAcrux(event){
+  const file = event.target.files?.[0];
+  if(!file) return;
+  if(!file.type.startsWith('image/')){ showToast('Solo se permiten imágenes','error'); return; }
+  if(file.size > 5*1024*1024){ showToast('Imagen muy grande (máx. 5MB)','error'); return; }
+  const reader = new FileReader();
+  reader.onload = () => {
+    const base64Completo = reader.result;
+    _acruxImagenMime = file.type;
+    _acruxImagenNombre = file.name;
+    _acruxImagenBase64 = base64Completo.split(',')[1];
+    document.getElementById('acrux-img-preview-img').src = base64Completo;
+    document.getElementById('acrux-img-preview').style.display = 'inline-block';
+  };
+  reader.readAsDataURL(file);
+  event.target.value = '';
+}
+
+function quitarImagenAcrux(){
+  _acruxImagenBase64 = null;
+  _acruxImagenMime = null;
+  _acruxImagenNombre = null;
+  document.getElementById('acrux-img-preview').style.display = 'none';
+  document.getElementById('acrux-img-preview-img').src = '';
+}
 
 function pegarImagenPortapapeles(event, prefijo){
   const items = event.clipboardData?.items;
@@ -1768,6 +1811,12 @@ function pegarImagenPortapapeles(event, prefijo){
       _chatImagenSubidaBase64 = base64Completo.split(',')[1];
       document.getElementById('cl-img-prev-img').src = base64Completo;
       document.getElementById('cl-img-seleccionada-preview').style.display='inline-block';
+    } else if(prefijo === 'acrux'){
+      _acruxImagenMime = file.type;
+      _acruxImagenNombre = 'pegada.jpg';
+      _acruxImagenBase64 = base64Completo.split(',')[1];
+      document.getElementById('acrux-img-preview-img').src = base64Completo;
+      document.getElementById('acrux-img-preview').style.display = 'inline-block';
     }
   };
   reader.readAsDataURL(file);
