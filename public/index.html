@@ -1575,16 +1575,14 @@ async function loadAcruxLista(){
     const r = await fetch(API+'/api/acrux/conversaciones',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
     const badgeVista = document.getElementById('cl-vista-usuario');
     if(badgeVista) badgeVista.textContent = r.es_supervisor ? '👁 Vista supervisor — todos' : '👤 Mis chats';
-    if(!r.ok || !r.conversaciones?.length){
-      lista.innerHTML = '<div style="text-align:center;padding:30px 14px;color:var(--text3);font-size:12px">'+(r.ok ? 'No hay chats en el ChatRoom todavía' : 'Error: '+(r.error||'desconocido'))+'</div>';
-      return;
-    }
-    _acruxConversacionesCache = r.conversaciones;
 
-    // Poblar el filtro de agente (solo tiene sentido para supervisores viendo "todos")
+    // Mostrar/ocultar el selector de agente ANTES del return temprano — si esto se
+    // dejaba después, un vendedor con cero chats (ni propios ni sin asignar) se
+    // quedaba viendo el selector "Todos los agentes" sin ocultar nunca, aunque su
+    // rol y los datos del backend fueran correctos.
     const selectAgente = document.getElementById('acrux-filtro-agente');
     if(selectAgente && r.es_supervisor){
-      const agentesUnicos = [...new Set(r.conversaciones.map(c=>c.agente).filter(Boolean))].sort();
+      const agentesUnicos = [...new Set((r.conversaciones||[]).map(c=>c.agente).filter(Boolean))].sort();
       const valorPrevio = selectAgente.value;
       selectAgente.innerHTML = '<option value="">Todos los agentes</option>' + agentesUnicos.map(a=>`<option value="${a}">${a}</option>`).join('');
       selectAgente.value = valorPrevio;
@@ -1592,6 +1590,12 @@ async function loadAcruxLista(){
     } else if(selectAgente){
       selectAgente.style.display = 'none'; // no aplica si ya solo ves lo tuyo
     }
+
+    if(!r.ok || !r.conversaciones?.length){
+      lista.innerHTML = '<div style="text-align:center;padding:30px 14px;color:var(--text3);font-size:12px">'+(r.ok ? 'No hay chats en el ChatRoom todavía' : 'Error: '+(r.error||'desconocido'))+'</div>';
+      return;
+    }
+    _acruxConversacionesCache = r.conversaciones;
 
     filtrarListaAcrux();
     lista.dataset.cargadoUnaVez = '1';
