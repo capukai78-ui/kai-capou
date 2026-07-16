@@ -444,18 +444,21 @@ async function asignarAgenteLibre(tenantId) {
     role: 'vendedor', // el admin nunca debe recibir tickets asignados automáticamente
     activo: true,
     disponible: true
-  });
+  }).sort({ _id: 1 }); // orden estable, para que el round-robin sea predecible
   if (!agentes.length) return null;
 
-  // Contar chats activos por agente
+  // Reparto 1 a 1 real: contamos el TOTAL histórico de conversaciones ya asignadas a
+  // cada agente (no solo las activas ahorita), para que quede compensado entre ellos
+  // a lo largo del tiempo — no solo "quién tiene menos carga en este momento".
   const counts = await Conversacion.aggregate([
-    { $match: { tenant_id: tenantId, estado: 'humano', agente_id: { $ne: null } } },
+    { $match: { tenant_id: tenantId, agente_id: { $ne: null } } },
     { $group: { _id: '$agente_id', total: { $sum: 1 } } }
   ]);
   const countMap = {};
   counts.forEach(c => countMap[c._id.toString()] = c.total);
 
-  // Elegir el agente con menos chats activos
+  // El agente con menos conversaciones asignadas en total recibe la siguiente.
+  // Si hay empate, gana el que aparece primero en la lista (orden estable por _id).
   agentes.sort((a, b) => (countMap[a._id.toString()] || 0) - (countMap[b._id.toString()] || 0));
   return agentes[0];
 }
@@ -550,11 +553,9 @@ function calcularNivelInteres(texto, ultimoMensajeBot, contacto) {
   if (tieneDatosClave && preguntoProcesoOcuotas) {
     return { nivel: 2, etiqueta: 'KAI — Interesado' };
   }
-  // También cuenta como Nivel 2 si ya tiene nombre del alumno + nivel, aunque la pregunta actual sea otra cosa —
-  // refleja que ya pasó el filtro inicial de solo curiosear.
-  if (tieneDatosClave) {
-    return { nivel: 2, etiqueta: 'KAI — Interesado' };
-  }
+  // (Quitado a propósito: antes también marcaba "Interesado" con solo tener nombre+nivel
+  // capturados, sin importar la pregunta — eso etiquetaba casi cualquier lead nuevo de
+  // WhatsApp como interesado apenas daba esos 2 datos básicos, demasiado pronto/prematuro.)
 
   // ---- NIVEL 3 — EXPLORATORIO ----
   // Si ya dio AL MENOS el nivel educativo de interés, cuenta como lead exploratorio (no solo curiosidad anónima).
@@ -3581,7 +3582,12 @@ app.get('/api/acrux/conversaciones', authMiddleware, async (req, res) => {
     let conversaciones = Object.values(porContacto).sort((a, b) => (b.ultima_fecha || '').localeCompare(a.ultima_fecha || ''));
 
     // Filtro por usuario: admin y viewer supervisan todo; vendedor solo ve lo suyo + lo sin atender
-    const esSupervisor = req.user.role === 'admin' || req.user.role === 'viewer';
+    // Verificamos el rol directo en la base de datos (no solo el del token) — así, si el
+    // rol de alguien cambió después de que inició sesión, se respeta de inmediato sin
+    // necesitar que cierre sesión y vuelva a entrar.
+    const usuarioActual = await UsuarioPanel.findById(req.user.id).select('role');
+    const rolReal = usuarioActual?.role || req.user.role;
+    const esSupervisor = rolReal === 'admin' || rolReal === 'viewer';
     if (!esSupervisor) {
       const miNombre = (req.user.nombre || '').trim().toLowerCase();
       conversaciones = conversaciones.filter(c => !c.agente || (c.agente || '').trim().toLowerCase() === miNombre);
@@ -4219,11 +4225,16 @@ app.get('/api/logs/no-procesados', authMiddleware, async (req, res) => {
 // Listar conversaciones (todas si admin, o asignadas a mí si vendedor)
 app.get('/api/conversaciones', authMiddleware, async (req, res) => {
   try {
+    // Verificamos el rol directo en la base de datos (no solo el del token) — evita que
+    // un cambio de rol reciente quede "atorado" hasta que la persona cierre sesión.
+    const usuarioActual = await UsuarioPanel.findById(req.user.id).select('role');
+    const rolReal = usuarioActual?.role || req.user.role;
+
     const filtro = { tenant_id: req.user.tenant_id, estado: { $ne: 'cerrado' } };
     // El vendedor ve lo suyo + lo que nadie ha tomado todavía (para poder reclamarlo).
     // Antes solo filtraba por agente_id = su ID, lo que ocultaba por completo los chats
     // sin asignar — un vendedor nuevo o sin chats asignados veía la bandeja vacía.
-    if (req.user.role === 'vendedor') {
+    if (rolReal === 'vendedor') {
       filtro.$or = [{ agente_id: null }, { agente_id: req.user.id }];
     }
     const convs = await Conversacion.find(filtro).sort({ ultimaActividad: -1 }).limit(100);
