@@ -441,7 +441,7 @@ function detectaInsistenciaAgente(texto) {
 async function asignarAgenteLibre(tenantId) {
   const agentes = await UsuarioPanel.find({
     tenant_id: tenantId,
-    role: { $in: ['vendedor', 'admin'] },
+    role: 'vendedor', // el admin nunca debe recibir tickets asignados automáticamente
     activo: true,
     disponible: true
   });
