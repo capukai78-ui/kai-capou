@@ -4128,15 +4128,21 @@ app.get('/api/debug/rol-usuario', authMiddleware, async (req, res) => {
   try {
     const email = (req.query.email || '').toLowerCase().trim();
     if (!email) return res.json({ ok: false, error: 'Falta ?email=' });
-    const user = await UsuarioPanel.findOne({ email }).select('nombre email role activo disponible');
-    if (!user) return res.json({ ok: false, error: 'No se encontró ese usuario' });
+    // Buscamos TODAS las cuentas con ese correo (no solo la primera) — si hay más de
+    // una, esa sería la explicación real: la persona sigue logueada en una cuenta vieja
+    // con otro rol, mientras la cuenta "correcta" es otra distinta.
+    const usuarios = await UsuarioPanel.find({ email }).select('nombre email role activo disponible _id creado');
     res.json({
       ok: true,
-      nombre: user.nombre,
-      email: user.email,
-      role_crudo: JSON.stringify(user.role), // con comillas, para ver espacios/mayúsculas ocultas
-      activo: user.activo,
-      disponible: user.disponible
+      total_cuentas_con_este_correo: usuarios.length,
+      cuentas: usuarios.map(u => ({
+        id: u._id.toString(),
+        nombre: u.nombre,
+        role_crudo: JSON.stringify(u.role),
+        activo: u.activo,
+        disponible: u.disponible,
+        creado: u.creado
+      }))
     });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
