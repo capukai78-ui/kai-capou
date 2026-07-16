@@ -2970,6 +2970,24 @@ app.get('/api/motor/escanear', authMiddleware, async (req, res) => {
       { fields: ['id','name','phone','partner_name'], limit: 50 }
     ) || [];
 
+    // Detectar duplicados dentro de la propia lista (mismo teléfono o correo) — esto
+    // pasa cuando el formulario de Admisiones llega dos veces por correo y Odoo crea
+    // dos leads distintos para la misma persona. No los ocultamos ni los tocamos,
+    // solo los marcamos para que el equipo sepa que hay que revisar antes de atender.
+    const vistorTelefono = {};
+    const vistoPorCorreo = {};
+    const pendientesConDuplicado = pendientes.map(l => {
+      const tel = (l.mobile && String(l.mobile) !== 'false') ? l.mobile : ((l.phone && String(l.phone) !== 'false') ? l.phone : null);
+      const telLimpio = tel ? String(tel).replace(/\D/g, '').slice(-8) : null;
+      const correo = (l.email_from || '').toLowerCase().trim() || null;
+      let duplicadoDe = null;
+      if (telLimpio && vistorTelefono[telLimpio]) duplicadoDe = vistorTelefono[telLimpio];
+      else if (correo && vistoPorCorreo[correo]) duplicadoDe = vistoPorCorreo[correo];
+      if (telLimpio && !vistorTelefono[telLimpio]) vistorTelefono[telLimpio] = l.id;
+      if (correo && !vistoPorCorreo[correo]) vistoPorCorreo[correo] = l.id;
+      return { l, duplicadoDe };
+    });
+
     res.json({
       ok: true,
       resumen: {
@@ -2977,7 +2995,7 @@ app.get('/api/motor/escanear', authMiddleware, async (req, res) => {
   
         sin_whatsapp_valido: sinWA.length
       },
-      pendientes: pendientes.map(l => ({
+      pendientes: pendientesConDuplicado.map(({ l, duplicadoDe }) => ({
         id: l.id,
         nombre: l.name,
         contacto: l.partner_name || l.contact_name || null,
@@ -2988,7 +3006,9 @@ app.get('/api/motor/escanear', authMiddleware, async (req, res) => {
         formulario: l.fb_form_id?.[1] || null,
         equipo: l.team_id?.[1] || null,
         tipo: l.type || null,
-        fecha_creacion: l.create_date?.substring(0,16)
+        fecha_creacion: l.create_date?.substring(0,16),
+        posible_duplicado: !!duplicadoDe,
+        duplicado_de_id: duplicadoDe
       })),
       contactados: contactados.map(l => ({ id: l.id, nombre: l.partner_name || l.name, telefono: l.phone })),
       sin_whatsapp: sinWA.map(l => ({ id: l.id, nombre: l.partner_name || l.name, telefono: l.phone }))
