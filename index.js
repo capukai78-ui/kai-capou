@@ -4120,6 +4120,29 @@ app.get('/api/debug/sesion-web-odoo', authMiddleware, async (req, res) => {
   }
 });
 
+// Diagnóstico: ver el valor CRUDO del rol de un usuario, tal cual está en la base de
+// datos — para descartar que la pantalla de Usuarios muestre una etiqueta distinta al
+// valor real guardado (ej. mayúsculas, espacios, u otro valor inesperado).
+app.get('/api/debug/rol-usuario', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const email = (req.query.email || '').toLowerCase().trim();
+    if (!email) return res.json({ ok: false, error: 'Falta ?email=' });
+    const user = await UsuarioPanel.findOne({ email }).select('nombre email role activo disponible');
+    if (!user) return res.json({ ok: false, error: 'No se encontró ese usuario' });
+    res.json({
+      ok: true,
+      nombre: user.nombre,
+      email: user.email,
+      role_crudo: JSON.stringify(user.role), // con comillas, para ver espacios/mayúsculas ocultas
+      activo: user.activo,
+      disponible: user.disponible
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get('/api/debug/opciones-carrera', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
