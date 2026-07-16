@@ -1990,7 +1990,7 @@ async function obtenerSesionWebOdoo() {
   // 2. Cargar una página autenticada para extraer el token CSRF embebido
   const respPagina = await odooWebRequest('/web', 'GET', { Cookie: cookie }, null);
   const html = respPagina.body.toString('utf8');
-  const match = html.match(/csrf_token["']?\s*[:=]\s*["']([a-f0-9]{32,})["']/i);
+  const match = html.match(/csrf_token:\s*["']([^"']+)["']/i);
   const csrfToken = match ? match[1] : null;
   if (!csrfToken) throw new Error('No se pudo extraer el token CSRF de la sesión web de Odoo');
 
