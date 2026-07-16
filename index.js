@@ -1957,6 +1957,80 @@ async function odooCallLocal(model, method, args, kwargs = {}) {
   return odooRPC('/jsonrpc', { service: 'object', method: 'execute_kw', args: [ODOO_DB, uid, ODOO_PASS_ODOO, model, method, args, kwargs] });
 }
 
+// ===== Sesión WEB de Odoo (distinta de la API/XML-RPC de arriba) =====
+// Subir una imagen NUEVA al ChatRoom no se puede hacer por /jsonrpc — es un controlador
+// web protegido con cookie de sesión + token CSRF (confirmado viendo la petición real
+// del navegador: POST /web/binary/upload_attachment_chat).
+let odooWebSession = null; // { cookie, csrfToken, expiraEn }
+
+function odooWebRequest(path, method, headers, bodyBuffer) {
+  return new Promise((resolve, reject) => {
+    const options = { hostname: ODOO_URL, path, method, headers };
+    const req = https.request(options, (resp) => {
+      const chunks = [];
+      resp.on('data', c => chunks.push(c));
+      resp.on('end', () => resolve({ statusCode: resp.statusCode, headers: resp.headers, body: Buffer.concat(chunks) }));
+    });
+    req.on('error', reject);
+    if (bodyBuffer) req.write(bodyBuffer);
+    req.end();
+  });
+}
+
+async function obtenerSesionWebOdoo() {
+  if (odooWebSession && odooWebSession.expiraEn > Date.now()) return odooWebSession;
+
+  // 1. Autenticar por la ruta web (no /jsonrpc) para conseguir la cookie de sesión
+  const bodyAuth = JSON.stringify({ jsonrpc: '2.0', method: 'call', params: { db: ODOO_DB, login: ODOO_USER_ODOO, password: ODOO_PASS_ODOO } });
+  const respAuth = await odooWebRequest('/web/session/authenticate', 'POST', { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(bodyAuth) }, bodyAuth);
+  const setCookie = respAuth.headers['set-cookie'];
+  if (!setCookie) throw new Error('No se pudo iniciar sesión web en Odoo (sin cookie de sesión) — revisar usuario/contraseña');
+  const cookie = setCookie.map(c => c.split(';')[0]).join('; ');
+
+  // 2. Cargar una página autenticada para extraer el token CSRF embebido
+  const respPagina = await odooWebRequest('/web', 'GET', { Cookie: cookie }, null);
+  const html = respPagina.body.toString('utf8');
+  const match = html.match(/csrf_token["']?\s*[:=]\s*["']([a-f0-9]{32,})["']/i);
+  const csrfToken = match ? match[1] : null;
+  if (!csrfToken) throw new Error('No se pudo extraer el token CSRF de la sesión web de Odoo');
+
+  odooWebSession = { cookie, csrfToken, expiraEn: Date.now() + 20 * 60 * 1000 }; // margen de 20 min
+  return odooWebSession;
+}
+
+// Sube una imagen nueva (base64) al ChatRoom de AcruxLab y devuelve el ir.attachment creado.
+// Mismos campos que la petición real capturada del navegador (conversation_id, connector_type, etc).
+async function subirImagenNuevaAcrux(imagenBase64, filename, mimetype, conversationId) {
+  const sesion = await obtenerSesionWebOdoo();
+  const buffer = Buffer.from(imagenBase64, 'base64');
+  const boundary = '----KaiAcruxBoundary' + Date.now();
+  const campo = (nombre, valor) => Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${nombre}"\r\n\r\n${valor}\r\n`);
+  const partes = [
+    campo('csrf_token', sesion.csrfToken),
+    campo('conversation_id', conversationId),
+    campo('connector_type', 'apichat.io'),
+    campo('is_pending', 'false'),
+    campo('temporary_id', 'kai-' + Date.now()),
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="ufile"; filename="${filename}"\r\nContent-Type: ${mimetype}\r\n\r\n`),
+    buffer,
+    Buffer.from(`\r\n--${boundary}--\r\n`)
+  ];
+  const body = Buffer.concat(partes);
+
+  const resp = await odooWebRequest('/web/binary/upload_attachment_chat', 'POST', {
+    'Content-Type': `multipart/form-data; boundary=${boundary}`,
+    'Content-Length': body.length,
+    'Cookie': sesion.cookie
+  }, body);
+
+  let parsed;
+  try { parsed = JSON.parse(resp.body.toString('utf8')); } catch (e) {
+    throw new Error('Respuesta no válida al subir la imagen (¿sesión/CSRF vencidos?): ' + resp.body.toString('utf8').substring(0, 300));
+  }
+  if (!parsed.id) throw new Error('La subida no devolvió un ID de adjunto: ' + JSON.stringify(parsed).substring(0, 300));
+  return parsed; // { id, filename, mimetype, size, ... }
+}
+
 app.get('/api/cotizaciones', authMiddleware, async (req, res) => {
   try {
     const tenant = await Tenant.findById(req.user.tenant_id);
@@ -3645,12 +3719,27 @@ app.get('/api/acrux/plantillas', authMiddleware, async (req, res) => {
 
 app.post('/api/acrux/responder', authMiddleware, async (req, res) => {
   try {
-    const { contacto_id, mensaje, plantilla_id } = req.body;
+    const { contacto_id, mensaje, plantilla_id, imagen_base64, imagen_mime, imagen_nombre } = req.body;
     if (!contacto_id) return res.status(400).json({ ok: false, error: 'contacto_id es requerido' });
-    if (!mensaje && !plantilla_id) return res.status(400).json({ ok: false, error: 'mensaje o plantilla_id son requeridos' });
+    if (!mensaje && !plantilla_id && !imagen_base64) return res.status(400).json({ ok: false, error: 'mensaje, plantilla_id o imagen_base64 son requeridos' });
 
     let valoresMensaje;
-    if (plantilla_id) {
+    if (imagen_base64) {
+      // Imagen NUEVA subida desde la computadora del agente — primero se sube como
+      // adjunto real (ir.attachment) vía sesión web + CSRF, y luego se referencia
+      // igual que una plantilla ya existente.
+      const adjunto = await subirImagenNuevaAcrux(imagen_base64, imagen_nombre || 'imagen.jpg', imagen_mime || 'image/jpeg', contacto_id);
+      valoresMensaje = {
+        text: mensaje || '',
+        from_me: true,
+        ttype: 'image',
+        res_model: 'ir.attachment',
+        res_id: adjunto.id,
+        id: -2,
+        date_message: new Date().toISOString().replace('T', ' ').substring(0, 19),
+        button_ids: []
+      };
+    } else if (plantilla_id) {
       // Enviar una plantilla del panel de respuestas rápidas — puede ser texto o imagen.
       // Reutilizamos el mismo attachment (res_model/res_id) al que ya apunta la plantilla,
       // en vez de subir un archivo nuevo — es la forma más segura de probarlo primero.
