@@ -525,11 +525,34 @@ async function asegurarAsignacionesAcrux(tenantId, conversaciones) {
 // arriesgar el flujo de WhatsApp que ya está confirmado funcionando. Comparte el mismo
 // "cerebro" (buildSystemPrompt, FAQs, detección de handoff) pero lleva su memoria aparte.
 async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
-  const claveMemoria = 'acrux_' + numero;
-  if (!conversaciones.has(claveMemoria)) conversaciones.set(claveMemoria, { historial: [], ultimaActividad: Date.now() });
-  const conv = conversaciones.get(claveMemoria);
+  // Usamos el número limpio (sin prefijo) como clave — así, si el mismo padre ya había
+  // escrito antes por el WhatsApp normal, comparte la MISMA memoria y el MISMO lead de
+  // Odoo, en vez de crear un contacto/lead duplicado solo por venir de otro canal.
+  if (!conversaciones.has(numero)) conversaciones.set(numero, { historial: [], ultimaActividad: Date.now() });
+  const conv = conversaciones.get(numero);
   conv.ultimaActividad = Date.now();
   const historial = conv.historial;
+
+  // Recuperar memoria persistente si existe (igual que en WhatsApp) — para saludar por
+  // nombre y no repetir preguntas si ya se conocía a este padre/madre.
+  let contactoExistente = await Contacto.findOne({ tenant_id: tenant._id, numero });
+  const esPrimerMensajeDeLaSesion = historial.length === 0;
+  if (contactoExistente && esPrimerMensajeDeLaSesion && contactoExistente.nombre) {
+    const partes = [];
+    if (contactoExistente.nombre) partes.push(`nombre del padre: ${contactoExistente.nombre}`);
+    if (contactoExistente.nombre_alumno) partes.push(`nombre del alumno: ${contactoExistente.nombre_alumno}`);
+    if (contactoExistente.nivel_interes) partes.push(`nivel de interés: ${contactoExistente.nivel_interes}`);
+    if (contactoExistente.zona) partes.push(`zona: ${contactoExistente.zona}`);
+    if (contactoExistente.correo) partes.push(`correo: ${contactoExistente.correo}`);
+    if (contactoExistente.resumen_ultimo_contacto) partes.push(`última conversación: ${contactoExistente.resumen_ultimo_contacto}`);
+    if (partes.length) {
+      historial.push({
+        role: 'assistant',
+        content: `(Contexto interno — ya conoces a este padre/madre. ${partes.join(', ')}. Salúdalo por su nombre directamente, sin volver a pedir datos que ya tienes. Continúa desde donde quedaron.)`
+      });
+    }
+  }
+
   historial.push({ role: 'user', content: mensajeUsuario });
   if (historial.length > 16) historial.splice(0, 2);
 
@@ -578,6 +601,14 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
   const respuestaLimpia = reply ? reply.replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1') : null;
   const respuesta = respuestaLimpia || 'Disculpe, tuve un problema técnico. Por favor llámenos directamente. 📞';
   historial.push({ role: 'assistant', content: respuesta });
+
+  // Extraer datos (nombre, alumno, nivel, zona, etc.), guardarlos en el Contacto persistente,
+  // y crear/actualizar el lead en Odoo progresivamente según el nivel de interés — exactamente
+  // igual que hace el flujo de WhatsApp. Esto es lo que faltaba: sin esto, KAI conversaba pero
+  // nunca "recordaba" ni avanzaba el lead en Odoo con lo que el padre iba dando.
+  actualizarContactoYDetectarInteres(tenant, numero, mensajeUsuario, respuesta, historial, contactoExistente)
+    .catch(e => console.error('❌ Error actualizando contacto (AcruxLab):', e.message));
+
   return { texto: respuesta, handoff: false };
 }
 
