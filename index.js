@@ -4058,6 +4058,40 @@ app.get('/api/debug/plantillas-chatroom', authMiddleware, async (req, res) => {
   }
 });
 
+// Diagnóstico: ver si la autenticación de sesión web funciona, y el HTML crudo
+// alrededor de "csrf" para ajustar el patrón de extracción si hace falta.
+app.get('/api/debug/sesion-web-odoo', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const bodyAuth = JSON.stringify({ jsonrpc: '2.0', method: 'call', params: { db: ODOO_DB, login: ODOO_USER_ODOO, password: ODOO_PASS_ODOO } });
+    const respAuth = await odooWebRequest('/web/session/authenticate', 'POST', { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(bodyAuth) }, bodyAuth);
+    const setCookie = respAuth.headers['set-cookie'];
+    const cuerpoAuth = JSON.parse(respAuth.body.toString('utf8'));
+
+    if (!setCookie) {
+      return res.json({ ok: false, error: 'Sin cookie de sesión', respuesta_auth: cuerpoAuth });
+    }
+    const cookie = setCookie.map(c => c.split(';')[0]).join('; ');
+
+    const respPagina = await odooWebRequest('/web', 'GET', { Cookie: cookie }, null);
+    const html = respPagina.body.toString('utf8');
+    const idx = html.toLowerCase().indexOf('csrf');
+    const fragmento = idx !== -1 ? html.substring(Math.max(0, idx - 100), idx + 300) : null;
+
+    res.json({
+      ok: true,
+      sesion_autenticada: !!cuerpoAuth?.result?.uid,
+      uid_sesion: cuerpoAuth?.result?.uid || null,
+      status_pagina_web: respPagina.statusCode,
+      largo_html: html.length,
+      contiene_csrf: idx !== -1,
+      fragmento_alrededor_de_csrf: fragmento
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get('/api/debug/opciones-carrera', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
