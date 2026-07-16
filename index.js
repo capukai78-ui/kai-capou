@@ -1138,18 +1138,23 @@ async function detectarYEnviarImagen(tenant, mensajeUsuario, contacto, canal, nu
     const t = mensajeUsuario.toLowerCase();
     const nivelContacto = (contacto?.nivel_interes || '').toLowerCase();
 
-    for (const regla of REGLAS_IMAGEN) {
-      // Verificar si el mensaje contiene alguna keyword de la regla
-      const tieneKeyword = regla.keywords.some(k => t.includes(k));
-      if (!tieneKeyword) continue;
+    // Primero intentamos encontrar una coincidencia SOLO con lo que el padre/madre
+    // escribió en ESTE mensaje — si el mensaje actual ya menciona un nivel (ej. "primaria"),
+    // eso manda sobre cualquier nivel_interes guardado de conversaciones anteriores.
+    // Solo si el mensaje actual no menciona ningún nivel, usamos el nivel_interes como respaldo.
+    for (const usarSoloMensajeActual of [true, false]) {
+      for (const regla of REGLAS_IMAGEN) {
+        // Verificar si el mensaje contiene alguna keyword de la regla
+        const tieneKeyword = regla.keywords.some(k => t.includes(k));
+        if (!tieneKeyword) continue;
 
-      // Verificar nivel — si la regla tiene niveles específicos, al menos uno debe coincidir
-      // con el mensaje actual O con el nivel de interés ya registrado del contacto
-      if (regla.nivel && regla.nivel.length > 0) {
-        const textoCompleto = t + ' ' + nivelContacto;
-        const coincideNivel = regla.nivel.some(n => textoCompleto.includes(n));
-        if (!coincideNivel) continue;
-      }
+        // Verificar nivel — primera pasada: solo el mensaje actual. Segunda pasada
+        // (respaldo): mensaje actual + nivel_interes guardado del contacto.
+        if (regla.nivel && regla.nivel.length > 0) {
+          const textoCompleto = usarSoloMensajeActual ? t : (t + ' ' + nivelContacto);
+          const coincideNivel = regla.nivel.some(n => textoCompleto.includes(n));
+          if (!coincideNivel) continue;
+        }
 
       // Buscar imagen en MongoDB según la regla
       const filtro = { tenant_id: tenant._id, activo: true, categoria: regla.categoria };
@@ -1170,6 +1175,7 @@ async function detectarYEnviarImagen(tenant, mensajeUsuario, contacto, canal, nu
 
       console.log(`🖼️ Imagen automática enviada: "${imagen.nombre}" → ${numeroOrigen}`);
       return; // Solo una imagen por mensaje
+      }
     }
   } catch (e) {
     console.error('❌ Error enviando imagen automática:', e.message);
