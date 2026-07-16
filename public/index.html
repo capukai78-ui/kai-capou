@@ -2255,10 +2255,11 @@ async function escanearLeadsNuevos(){
             <th style="text-align:left;padding:8px 12px;color:var(--text3);font-weight:500">Acción</th>
           </tr></thead>
           <tbody>${conTel.map(l=>`
-            <tr style="border-bottom:0.5px solid var(--border)">
+            <tr style="border-bottom:0.5px solid var(--border);${l.posible_duplicado?'background:rgba(240,85,92,.06)':''}">
               <td style="padding:10px 12px;color:var(--text)">
                 <div style="font-weight:500">${l.contacto||l.nombre||'Sin nombre'}</div>
                 <div style="font-size:10px;color:var(--text3);margin-top:2px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${l.nombre||''}">${l.nombre||''}</div>
+                ${l.posible_duplicado?`<div style="font-size:9px;color:var(--red);font-weight:700;margin-top:3px">⚠️ REPETIDO — ya existe el lead #${l.duplicado_de_id}</div>`:''}
               </td>
               <td style="padding:10px 12px;font-size:11px">
                 <div style="font-weight:500;color:var(--text2)">${l.telefono}</div>
@@ -2271,6 +2272,9 @@ async function escanearLeadsNuevos(){
               <td style="padding:10px 12px;font-size:11px;color:var(--text3)">${l.formulario||'—'}</td>
               <td style="padding:10px 12px;font-size:11px;color:var(--text3)">${l.fecha_creacion||'—'}</td>
               <td style="padding:10px 12px">
+                ${l.posible_duplicado ? `
+                <div style="font-size:10px;color:var(--text3);text-align:center;padding:6px">Revisar en Odoo antes de atender</div>
+                ` : `
                 <button onclick="atenderConKAI(${l.id},'${(l.telefono||'').replace(/'/g,'')}')"
                   style="display:block;width:100%;margin-bottom:4px;background:var(--g);border:none;color:#fff;border-radius:6px;padding:6px 8px;font-size:10px;cursor:pointer;font-weight:500">
                   🤖 Atender con KAI
@@ -2279,6 +2283,7 @@ async function escanearLeadsNuevos(){
                   style="display:block;width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text2);border-radius:6px;padding:6px 8px;font-size:10px;cursor:pointer">
                   👤 Asignar vendedor
                 </button>
+                `}
               </td>
             </tr>`).join('')}
           </tbody>
