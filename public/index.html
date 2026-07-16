@@ -226,7 +226,7 @@ tr:hover td{background:var(--g4)}
     <a class="nl" onclick="nav('citas',this)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>Citas Open House
     </a>
-    <a class="nl" onclick="nav('comisiones',this)">
+    <a class="nl" id="nav-comisiones" onclick="nav('comisiones',this)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>Mis Comisiones
     </a>
     <a class="nl" id="nav-marketing" onclick="nav('marketing',this)">
@@ -1073,7 +1073,7 @@ function applyRole(role){
   rb.className='role-badge '+(cls[role]||'ra');
 
   // Reset all nav items visible first
-  ['nav-campanas','nav-roles','ns-admin','nav-usuarios'].forEach(id=>{
+  ['nav-campanas','nav-roles','ns-admin','nav-usuarios','nav-comisiones','nav-monitoreo','nav-faqs','nav-docs'].forEach(id=>{
     const el=document.getElementById(id);if(el)el.style.display='';
   });
 
@@ -1085,6 +1085,8 @@ function applyRole(role){
     const ds=document.getElementById('dash-sub');if(ds)ds.textContent='Vista Vendedor · Mis métricas';
     // Ocultar FAQs y Documentos en sidebar si existen
     ['nav-faqs','nav-docs'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display='none';});
+    // Comisiones y Monitoreo son vistas gerenciales — no aplican a un vendedor individual
+    ['nav-comisiones','nav-monitoreo'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display='none';});
   } else if(role==='viewer'){
     // Viewer/Gerente: oculta Campañas, Roles y Config — solo lectura
     ['nav-campanas','nav-roles','ns-admin','nav-faqs','nav-docs'].forEach(id=>{
