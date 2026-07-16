@@ -370,7 +370,7 @@ function enviarWhatsAppDirecto(numero, mensaje) {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Authorization': 'Basic ' + Buffer.from(`${accountSid}:${authToken}`).toString('base64') }
     };
-    const req = https.request(options, (res) => { let d = ''; res.on('data', c => d += c); res.on('end', () => resolve(d)); });
+    const req = https.request(options, (res) => { const chunks=[]; res.on('data', c => chunks.push(c)); res.on('end', () => resolve(Buffer.concat(chunks).toString('utf8'))); });
     req.on('error', reject); req.write(postData); req.end();
   });
 }
@@ -399,9 +399,9 @@ function llamarClaude(systemPrompt, messages, maxTokens = 400) {
       headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'Content-Length': Buffer.byteLength(postData) }
     };
     const apiReq = https.request(options, (apiRes) => {
-      let data = '';
-      apiRes.on('data', chunk => data += chunk);
-      apiRes.on('end', () => { try { resolve(JSON.parse(data).content?.[0]?.text || null); } catch(e) { resolve(null); } });
+      const chunks = [];
+      apiRes.on('data', chunk => chunks.push(chunk));
+      apiRes.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')).content?.[0]?.text || null); } catch(e) { resolve(null); } });
     });
     apiReq.on('error', () => resolve(null)); apiReq.write(postData); apiReq.end();
   });
@@ -1013,7 +1013,7 @@ function enviarMensajeInstagram(recipientId, texto) {
       path: `/v22.0/me/messages?access_token=${TOKEN_PAGE}`,
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
-    }, (r) => { let d=''; r.on('data',c=>d+=c); r.on('end',()=>{ try{resolve(JSON.parse(d))}catch(e){resolve(null)} }); });
+    }, (r) => { const chunks=[]; r.on('data',c=>chunks.push(c)); r.on('end',()=>{ try{resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')))}catch(e){resolve(null)} }); });
     req2.on('error', () => resolve(null));
     req2.write(body); req2.end();
   });
@@ -1033,7 +1033,7 @@ function enviarMensajeMessenger(recipientId, texto) {
       path: `/v22.0/me/messages?access_token=${TOKEN_PAGE}`,
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
-    }, (r) => { let d=''; r.on('data',c=>d+=c); r.on('end',()=>{ try{resolve(JSON.parse(d))}catch(e){resolve(null)} }); });
+    }, (r) => { const chunks=[]; r.on('data',c=>chunks.push(c)); r.on('end',()=>{ try{resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')))}catch(e){resolve(null)} }); });
     req2.on('error', () => resolve(null));
     req2.write(body); req2.end();
   });
@@ -1375,9 +1375,9 @@ function enviarWhatsAppMeta(numeroDestino, texto) {
         'Content-Length': Buffer.byteLength(body)
       }
     }, (r) => {
-      let d = '';
-      r.on('data', c => d += c);
-      r.on('end', () => { try { resolve(JSON.parse(d)); } catch(e) { resolve({ raw: d }); } });
+      const chunks = [];
+      r.on('data', c => chunks.push(c));
+      r.on('end', () => { const texto = Buffer.concat(chunks).toString('utf8'); try { resolve(JSON.parse(texto)); } catch(e) { resolve({ raw: texto }); } });
     });
     req2.on('error', (e) => { console.error('❌ Error enviando WhatsApp:', e.message); resolve(null); });
     req2.write(body);
@@ -1411,11 +1411,11 @@ function subirImagenAMeta(imagenBase64, mimeType) {
         'Content-Length': body.length
       }
     }, (r) => {
-      let d = '';
-      r.on('data', c => d += c);
+      const chunks = [];
+      r.on('data', c => chunks.push(c));
       r.on('end', () => {
         try {
-          const parsed = JSON.parse(d);
+          const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
           resolve(parsed.id || null);
         } catch (e) { resolve(null); }
       });
@@ -1450,9 +1450,9 @@ function enviarImagenWhatsAppMeta(numeroDestino, mediaId, caption) {
         'Content-Length': Buffer.byteLength(body)
       }
     }, (r) => {
-      let d = '';
-      r.on('data', c => d += c);
-      r.on('end', () => { try { resolve(JSON.parse(d)); } catch(e) { resolve({ raw: d }); } });
+      const chunks = [];
+      r.on('data', c => chunks.push(c));
+      r.on('end', () => { const texto = Buffer.concat(chunks).toString('utf8'); try { resolve(JSON.parse(texto)); } catch(e) { resolve({ raw: texto }); } });
     });
     req2.on('error', (e) => { console.error('❌ Error enviando imagen WhatsApp:', e.message); resolve(null); });
     req2.write(body);
@@ -1480,7 +1480,7 @@ function subirImagenAdjuntoMeta(imagenBase64, mimeType, tokenPagina) {
       path: `/v22.0/me/message_attachments?access_token=${tokenPagina}`,
       method: 'POST',
       headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}`, 'Content-Length': body.length }
-    }, (r) => { let d=''; r.on('data',c=>d+=c); r.on('end',()=>{ try{ resolve(JSON.parse(d).attachment_id || null); }catch(e){ resolve(null); } }); });
+    }, (r) => { const chunks=[]; r.on('data',c=>chunks.push(c)); r.on('end',()=>{ try{ resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')).attachment_id || null); }catch(e){ resolve(null); } }); });
     req2.on('error', () => resolve(null));
     req2.write(body); req2.end();
   });
@@ -1499,9 +1499,9 @@ function enviarImagenAdjuntoMeta(recipientId, attachmentId, tokenPagina, caption
       path: `/v22.0/me/messages?access_token=${tokenPagina}`,
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
-    }, (r) => { let d=''; r.on('data',c=>d+=c); r.on('end',()=>{
+    }, (r) => { const chunks=[]; r.on('data',c=>chunks.push(c)); r.on('end',()=>{
       try {
-        const parsed = JSON.parse(d);
+        const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
         // Si hay caption, mandarlo como mensaje de texto aparte (los adjuntos de imagen no llevan texto junto)
         if (caption) enviarMensajeMessenger(recipientId, caption).catch(()=>{});
         resolve(parsed);
@@ -1872,10 +1872,11 @@ app.post('/webhook', async (req, res) => {
     await enviarRespuesta(numeroOrigen, respuesta);
     console.log(`✅ [${canal.toUpperCase()}] Respuesta enviada a ${numeroOrigen}`);
 
-    // Envío automático de imágenes DESHABILITADO — el vendedor las envía manualmente desde el panel
-    // Para activar en producción: descomentar las líneas de abajo
-    // const contactoActual = await Contacto.findOne({ tenant_id: tenant._id, numero: numeroOrigen }).catch(()=>null);
-    // detectarYEnviarImagen(tenant, mensajeUsuario, contactoActual, canal, numeroOrigen, idExterno).catch(()=>{});
+    // Envío automático de imágenes — KAI revisa qué pidió el padre/madre (cuotas,
+    // admisión, papelería, edades, horarios, programas, ubicación, Academia AHA) y
+    // manda la imagen correspondiente del catálogo, cruzando con el nivel si aplica.
+    const contactoActual = await Contacto.findOne({ tenant_id: tenant._id, numero: numeroOrigen }).catch(()=>null);
+    detectarYEnviarImagen(tenant, mensajeUsuario, contactoActual, canal, numeroOrigen, idExterno).catch(()=>{});
 
   } catch (err) {
     console.error('❌ WEBHOOK error:', err);
@@ -2183,7 +2184,11 @@ function odooRPC(path, params) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({ jsonrpc: '2.0', method: 'call', id: Math.floor(Math.random() * 99999), params });
     const options = { hostname: ODOO_URL, path, method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } };
-    const req = https.request(options, (res) => { let d = ''; res.on('data', c => d += c); res.on('end', () => { try { const p = JSON.parse(d); if (p.error) reject(new Error(JSON.stringify(p.error))); else resolve(p.result); } catch(e) { reject(e); } }); });
+    const req = https.request(options, (res) => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => { try { const p = JSON.parse(Buffer.concat(chunks).toString('utf8')); if (p.error) reject(new Error(JSON.stringify(p.error))); else resolve(p.result); } catch(e) { reject(e); } });
+    });
     req.on('error', reject); req.write(body); req.end();
   });
 }
@@ -2393,9 +2398,9 @@ app.post('/api/campana/prueba', authMiddleware, async (req, res) => {
           'Content-Length': Buffer.byteLength(body)
         }
       }, (r) => {
-        let d = '';
-        r.on('data', c => d += c);
-        r.on('end', () => { try { resolve(JSON.parse(d)); } catch(e) { resolve({ raw: d }); } });
+        const chunks = [];
+        r.on('data', c => chunks.push(c));
+        r.on('end', () => { const texto = Buffer.concat(chunks).toString('utf8'); try { resolve(JSON.parse(texto)); } catch(e) { resolve({ raw: texto }); } });
       });
       req2.on('error', reject);
       req2.write(body);
@@ -2967,7 +2972,7 @@ app.post('/api/lead-ads', async (req, res) => {
         hostname: 'graph.facebook.com',
         path: `/v22.0/${leadgen_id}?access_token=${TOKEN_PAGE}`,
         method: 'GET'
-      }, (r) => { let d=''; r.on('data',c=>d+=c); r.on('end',()=>{ try{resolve(JSON.parse(d))}catch(e){resolve(null)} }); });
+      }, (r) => { const chunks=[]; r.on('data',c=>chunks.push(c)); r.on('end',()=>{ try{resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')))}catch(e){resolve(null)} }); });
       req2.on('error', ()=>resolve(null)); req2.end();
     });
 
