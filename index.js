@@ -3349,6 +3349,7 @@ async function calcularMetricasMongoPeriodo(canal, desdeDate, hastaDate, tenantI
 // como aproximación (no confirma inscripción real, solo que se marcó resuelta).
 // Para AcruxLab todavía no tenemos un campo confiable de "ganado" — falta confirmarlo.
 app.get('/api/metricas-generales', authMiddleware, async (req, res) => {
+  if (req.user.role === 'vendedor') return res.status(403).json({ ok: false, error: 'Las métricas son solo para administración' });
   try {
     const dias = Math.min(parseInt(req.query.dias) || 7, 90);
     const ahora = new Date();
@@ -3426,6 +3427,7 @@ app.get('/api/metricas-generales', authMiddleware, async (req, res) => {
 });
 
 app.get('/api/acrux/metricas', authMiddleware, async (req, res) => {
+  if (req.user.role === 'vendedor') return res.status(403).json({ ok: false, error: 'Las métricas son solo para administración' });
   try {
     const dias = Math.min(parseInt(req.query.dias) || 30, 90);
     const desde = new Date(Date.now() - dias * 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').substring(0, 19);
@@ -4218,7 +4220,12 @@ app.get('/api/logs/no-procesados', authMiddleware, async (req, res) => {
 app.get('/api/conversaciones', authMiddleware, async (req, res) => {
   try {
     const filtro = { tenant_id: req.user.tenant_id, estado: { $ne: 'cerrado' } };
-    if (req.user.role === 'vendedor') filtro.agente_id = req.user.id;
+    // El vendedor ve lo suyo + lo que nadie ha tomado todavía (para poder reclamarlo).
+    // Antes solo filtraba por agente_id = su ID, lo que ocultaba por completo los chats
+    // sin asignar — un vendedor nuevo o sin chats asignados veía la bandeja vacía.
+    if (req.user.role === 'vendedor') {
+      filtro.$or = [{ agente_id: null }, { agente_id: req.user.id }];
+    }
     const convs = await Conversacion.find(filtro).sort({ ultimaActividad: -1 }).limit(100);
 
     // Enriquecer con nombre del Contacto en MongoDB para mostrar en el panel
