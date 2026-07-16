@@ -186,6 +186,7 @@ const usuarioPanelSchema = new mongoose.Schema({
   activo:    { type: Boolean, default: true },
   disponible: { type: Boolean, default: true }, // si puede recibir chats en vivo asignados
   disponible_manual: { type: Boolean, default: false }, // true si el agente lo apagó a propósito (no reactivar automático)
+  odoo_user_id: { type: Number, default: null }, // ID del usuario correspondiente en Odoo (res.users), para asignar el vendedor ahí también
   ultima_actividad: { type: Date, default: Date.now }, // última vez que usó el panel — para auto-disponibilidad
   lastLogin: Date,
   creado:    { type: Date, default: Date.now }
@@ -632,10 +633,16 @@ async function enviarTextoAcruxLab(contactoId, texto) {
   );
 }
 
+// ⚠️ INTERRUPTOR — KAI atendiendo automático por AcruxLab. Apagado a propósito por
+// petición explícita después de la primera prueba en vivo, mientras se decide cuándo
+// reactivarlo. Cambiar a `true` para reactivar el motor.
+const ACRUX_AUTO_RESPUESTA_ACTIVO = false;
+
 // Motor que revisa cada cierto tiempo si hay mensajes nuevos sin responder en AcruxLab,
 // y hace que KAI conteste automáticamente (a menos que ya esté en modo "humano").
 let _procesandoAcruxLab = false; // evita que se encimen dos corridas si una tarda mucho
 async function procesarNuevosMensajesAcruxLab() {
+  if (!ACRUX_AUTO_RESPUESTA_ACTIVO) return;
   if (_procesandoAcruxLab) return;
   _procesandoAcruxLab = true;
   try {
@@ -922,6 +929,10 @@ async function crearCandidatoEnOdoo(tenant, contacto, numero, resultadoNivel) {
 
     const tagId = await getOdooTagId(etiqueta);
 
+    // Asignar un vendedor por reparto 1 a 1 (mismo mecanismo que WhatsApp/AcruxLab) —
+    // si tiene vinculado su usuario de Odoo, se asigna también ahí como vendedor real.
+    const agenteAsignado = await asignarAgenteLibre(tenant._id);
+
     const leadId = await odooCallLocal('crm.lead', 'create', [{
       name: nombreLead,
       phone: numero,
@@ -930,7 +941,8 @@ async function crearCandidatoEnOdoo(tenant, contacto, numero, resultadoNivel) {
       description: descripcion,
       team_id: teamId,
       type: 'lead', // entra como Lead (bandeja de calificación), no directo como Oportunidad
-      tag_ids: tagId ? [[6, 0, [tagId]]] : undefined
+      tag_ids: tagId ? [[6, 0, [tagId]]] : undefined,
+      user_id: agenteAsignado?.odoo_user_id || undefined
     }]);
 
     if (leadId) {
@@ -938,7 +950,7 @@ async function crearCandidatoEnOdoo(tenant, contacto, numero, resultadoNivel) {
       contacto.nivel_calor = nivel;
       contacto.nivel_calor_etiqueta = etiqueta;
       await contacto.save();
-      console.log(`✅ ${etiqueta} creado en Odoo — lead #${leadId} para ${numero}`);
+      console.log(`✅ ${etiqueta} creado en Odoo — lead #${leadId} para ${numero}${agenteAsignado ? ` — asignado a ${agenteAsignado.nombre}` : ''}`);
     }
     return leadId;
   } catch (e) {
@@ -2010,9 +2022,10 @@ app.post('/api/usuarios', authMiddleware, async (req, res) => {
 app.put('/api/usuarios/:id', authMiddleware, async (req, res) => {
   try {
     if (req.user.role !== 'admin') return res.status(403).json({ ok: false, error: 'Solo administradores' });
-    const { nombre, role, sedes, activo, password } = req.body;
+    const { nombre, role, sedes, activo, password, odoo_user_id } = req.body;
     const update = { nombre, role, sedes: sedes || [], activo };
     if (password) update.password = await bcrypt.hash(password, 10);
+    if (odoo_user_id !== undefined) update.odoo_user_id = odoo_user_id ? parseInt(odoo_user_id) : null;
     await UsuarioPanel.findOneAndUpdate({ _id: req.params.id, tenant_id: req.user.tenant_id }, update);
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
@@ -4424,6 +4437,20 @@ app.get('/api/debug/rol-usuario', authMiddleware, async (req, res) => {
         creado: u.creado
       }))
     });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Diagnóstico: buscar usuarios de Odoo (res.users) por nombre, para encontrar el ID
+// real que corresponde a cada vendedor y así poder vincularlo en KAI.
+app.get('/api/debug/usuarios-odoo', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const busqueda = (req.query.buscar || '').trim();
+    const domain = busqueda ? [['name', 'ilike', busqueda]] : [];
+    const usuarios = await odooCallLocal('res.users', 'search_read', [domain], { fields: ['id', 'name', 'login'], limit: 30 });
+    res.json({ ok: true, usuarios });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
