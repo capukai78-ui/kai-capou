@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.16-imagen-directa'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.16-fix-memoria'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1239,9 +1239,30 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
     if (imagenDirecta) {
       await enviarImagenDesdeDB(imagenDirecta, numeroOrigen, '');
       console.log(`🖼️ Imagen directa enviada (sin texto): "${imagenDirecta.nombre}" → ${numeroOrigen}`);
-      // Guardar en el historial para que KAI recuerde que ya se mandó esta info, sin repetirla
-      if (!conversaciones.has(numeroOrigen)) conversaciones.set(numeroOrigen, { historial: [], ultimaActividad: Date.now() });
+      // Guardar en el historial para que KAI recuerde que ya se mandó esta info, sin repetirla.
+      // IMPORTANTE: si esta es la primera vez que se crea la sesión en memoria, hay que cargar
+      // primero la memoria real del contacto (nombre, nivel, etc.) — si no, el siguiente mensaje
+      // de esta misma sesión "olvida" quién es porque ya existe una entrada en el Map, pero
+      // sin la memoria real inyectada (ese fue justo el bug que causó "no me reconoció").
+      const yaExistiaSesion = conversaciones.has(numeroOrigen);
+      if (!yaExistiaSesion) conversaciones.set(numeroOrigen, { historial: [], ultimaActividad: Date.now() });
       const ctxImg = conversaciones.get(numeroOrigen);
+      if (!yaExistiaSesion) {
+        const contactoExistente = await Contacto.findOne({ tenant_id: tenant._id, numero: numeroOrigen });
+        if (contactoExistente && contactoExistente.nombre) {
+          const partes = [];
+          if (contactoExistente.nombre) partes.push(`nombre del padre: ${contactoExistente.nombre}`);
+          if (contactoExistente.nombre_alumno) partes.push(`nombre del alumno: ${contactoExistente.nombre_alumno}`);
+          if (contactoExistente.nivel_interes) partes.push(`nivel de interés: ${contactoExistente.nivel_interes}`);
+          if (contactoExistente.zona) partes.push(`zona: ${contactoExistente.zona}`);
+          if (contactoExistente.correo) partes.push(`correo: ${contactoExistente.correo}`);
+          if (contactoExistente.resumen_ultimo_contacto) partes.push(`última conversación: ${contactoExistente.resumen_ultimo_contacto}`);
+          if (partes.length) {
+            ctxImg.historial.push({ role: 'assistant', content: `(Contexto interno — ya conoces a este padre/madre. ${partes.join(', ')}. Salúdalo por su nombre directamente si escribe de nuevo, sin volver a pedir datos que ya tienes.)` });
+            console.log(`🧠 Memoria recuperada para ${numeroOrigen} — ${contactoExistente.nombre}`);
+          }
+        }
+      }
       ctxImg.historial.push({ role: 'user', content: mensajeUsuario });
       ctxImg.historial.push({ role: 'assistant', content: `(Se envió la imagen "${imagenDirecta.nombre}" con el detalle completo — no repitas estos datos en próximas respuestas, ya los tiene.)` });
       ctxImg.ultimaActividad = Date.now();
