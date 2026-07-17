@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.16-fix-alucinacion-imagenes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.16-fix-reconocimiento-v2'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1135,29 +1135,41 @@ const REGLAS_IMAGEN = [
   { keywords: ['extraescolar','extracurricular','academia','aha','natación','natacion','danza','teatro','guitarra','piano','ajedrez','arte','actividad fuera','actividades después','actividades despues'], nivel: [], categoria: 'academia_aha', nombre_contiene: 'Academia AHA' },
 ];
 
-// Busca si el mensaje ACTUAL (solo eso, nunca datos guardados de antes) dispara alguna
-// regla de imagen. Devuelve:
-// - { regla, ambigua:false } si el tema Y el grado (cuando aplica) están claros en este mensaje.
-// - { regla:null, ambigua:true, keywordsTema } si el tema es claro pero falta el grado —
-//   en este caso hay que PREGUNTAR el grado, nunca adivinar con el nivel_interes guardado
-//   (eso fue justo el bug: mandó Preprimaria por un dato viejo, cuando el mensaje actual
-//   no decía ningún grado).
+// Busca si el mensaje ACTUAL (más el nivel ya establecido EN ESTA MISMA conversación,
+// nunca datos viejos de otra sesión/día) dispara alguna regla de imagen. Devuelve:
+// - { regla, ambigua:false } si el tema Y el grado (en este mensaje o ya sabido en esta
+//   sesión) están claros.
+// - { regla:null, ambigua:true } si el tema es claro pero no hay ningún grado — ni en
+//   este mensaje ni establecido antes en esta misma conversación — hay que PREGUNTAR.
 // - null si el mensaje no tiene nada que ver con ningún tema de imagen.
-function buscarReglaImagenCoincidente(mensajeUsuario) {
+function buscarReglaImagenCoincidente(mensajeUsuario, nivelSesion) {
   const t = (mensajeUsuario || '').toLowerCase();
+  const nivelSesionLower = (nivelSesion || '').toLowerCase();
 
   for (const regla of REGLAS_IMAGEN) {
     const tieneKeyword = regla.keywords.some(k => t.includes(k));
     if (!tieneKeyword) continue;
     if (regla.nivel && regla.nivel.length > 0) {
-      const coincideNivel = regla.nivel.some(n => t.includes(n));
-      if (!coincideNivel) {
-        return { regla: null, ambigua: true }; // tema claro, pero no dijo el grado — hay que preguntar
-      }
+      const coincideEnMensaje = regla.nivel.some(n => t.includes(n));
+      if (coincideEnMensaje) return { regla, ambigua: false };
+      // No lo dijo en ESTE mensaje — ¿ya lo estableció antes en esta misma conversación?
+      const coincideEnSesion = nivelSesionLower && regla.nivel.some(n => nivelSesionLower.includes(n));
+      if (coincideEnSesion) return { regla, ambigua: false };
+      return { regla: null, ambigua: true }; // tema claro, pero no hay grado ni en el mensaje ni en la sesión
     }
     return { regla, ambigua: false }; // coincidencia clara — se puede mandar la imagen directo
   }
   return null; // no tiene nada que ver con ningún tema de imagen
+}
+
+// Detecta si un texto menciona un nivel educativo reconocible — se usa para "recordar"
+// el nivel dentro de la sesión actual una vez que el padre/madre lo menciona.
+function detectarNivelEnTexto(texto) {
+  const t = (texto || '').toLowerCase();
+  if (/preprimaria|jard[ií]n|infantil|k[ií]nder|p[aá]rvulos|preparatoria/.test(t)) return 'preprimaria';
+  if (/secundaria|b[aá]sico|bachillerato|s[eé]ptimo|octavo|noveno|d[eé]cimo|7°|8°|9°|10°/.test(t)) return 'secundaria';
+  if (/primaria|primero|segundo|tercero|cuarto|quinto|sexto|1°|2°|3°|4°|5°|6°/.test(t)) return 'primaria';
+  return null;
 }
 
 async function detectarYEnviarImagen(tenant, mensajeUsuario, contacto, canal, numeroOrigen, idExterno) {
@@ -1226,9 +1238,28 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
 
   // ===== IMAGEN DIRECTA — sin pasar por la IA en absoluto =====
   // Si el tema es claro (cuotas, horarios, requisitos, etc.) Y el grado ya viene
-  // especificado en ESTE mensaje, mandamos la imagen de una vez, sin generar ningún
-  // texto — así nunca hay riesgo de que KAI repita las cifras o adivine con datos viejos.
-  const matchImagen = buscarReglaImagenCoincidente(mensajeUsuario);
+  // especificado en ESTE mensaje O ya se estableció ANTES en esta misma conversación,
+  // mandamos la imagen de una vez, sin generar ningún texto — así KAI queda "listo"
+  // para dar cuotas/requisitos/horarios sin que le repitan el grado cada vez, pero sin
+  // el riesgo de adivinar con datos viejos de OTRA conversación/día distinto.
+  const esNuevaSesionEnMemoria = !conversaciones.has(numeroOrigen);
+  if (esNuevaSesionEnMemoria) conversaciones.set(numeroOrigen, { historial: [], ultimaActividad: Date.now() });
+  const ctxSesion = conversaciones.get(numeroOrigen);
+
+  // Recuperar SOLO el nivel guardado (para las imágenes) — el resto de la memoria
+  // (nombre, saludo de "qué gusto verte de vuelta", etc.) ya lo maneja más abajo la
+  // sección "MEMORIA PERSISTENTE", no lo dupliques aquí o descuadra ese conteo.
+  if (esNuevaSesionEnMemoria) {
+    const contactoExistente = await Contacto.findOne({ tenant_id: tenant._id, numero: numeroOrigen });
+    if (contactoExistente?.nivel_interes) {
+      ctxSesion.nivelSesion = detectarNivelEnTexto(contactoExistente.nivel_interes) || ctxSesion.nivelSesion;
+    }
+  }
+
+  const nivelMencionadoAhora = detectarNivelEnTexto(mensajeUsuario);
+  if (nivelMencionadoAhora) ctxSesion.nivelSesion = nivelMencionadoAhora; // lo dicho en ESTE mensaje manda sobre lo anterior
+
+  const matchImagen = buscarReglaImagenCoincidente(mensajeUsuario, ctxSesion.nivelSesion);
   if (matchImagen && !matchImagen.ambigua && matchImagen.regla) {
     const regla = matchImagen.regla;
     const filtroImg = { tenant_id: tenant._id, activo: true, categoria: regla.categoria };
@@ -1239,63 +1270,17 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
     if (imagenDirecta) {
       await enviarImagenDesdeDB(imagenDirecta, numeroOrigen, '');
       console.log(`🖼️ Imagen directa enviada (sin texto): "${imagenDirecta.nombre}" → ${numeroOrigen}`);
-      // Guardar en el historial para que KAI recuerde que ya se mandó esta info, sin repetirla.
-      // IMPORTANTE: si esta es la primera vez que se crea la sesión en memoria, hay que cargar
-      // primero la memoria real del contacto (nombre, nivel, etc.) — si no, el siguiente mensaje
-      // de esta misma sesión "olvida" quién es porque ya existe una entrada en el Map, pero
-      // sin la memoria real inyectada (ese fue justo el bug que causó "no me reconoció").
-      const yaExistiaSesion = conversaciones.has(numeroOrigen);
-      if (!yaExistiaSesion) conversaciones.set(numeroOrigen, { historial: [], ultimaActividad: Date.now() });
-      const ctxImg = conversaciones.get(numeroOrigen);
-      if (!yaExistiaSesion) {
-        const contactoExistente = await Contacto.findOne({ tenant_id: tenant._id, numero: numeroOrigen });
-        if (contactoExistente && contactoExistente.nombre) {
-          const partes = [];
-          if (contactoExistente.nombre) partes.push(`nombre del padre: ${contactoExistente.nombre}`);
-          if (contactoExistente.nombre_alumno) partes.push(`nombre del alumno: ${contactoExistente.nombre_alumno}`);
-          if (contactoExistente.nivel_interes) partes.push(`nivel de interés: ${contactoExistente.nivel_interes}`);
-          if (contactoExistente.zona) partes.push(`zona: ${contactoExistente.zona}`);
-          if (contactoExistente.correo) partes.push(`correo: ${contactoExistente.correo}`);
-          if (contactoExistente.resumen_ultimo_contacto) partes.push(`última conversación: ${contactoExistente.resumen_ultimo_contacto}`);
-          if (partes.length) {
-            ctxImg.historial.push({ role: 'assistant', content: `(Contexto interno — ya conoces a este padre/madre. ${partes.join(', ')}. Salúdalo por su nombre directamente si escribe de nuevo, sin volver a pedir datos que ya tienes.)` });
-            console.log(`🧠 Memoria recuperada para ${numeroOrigen} — ${contactoExistente.nombre}`);
-          }
-        }
-      }
-      ctxImg.historial.push({ role: 'user', content: mensajeUsuario });
-      ctxImg.historial.push({ role: 'assistant', content: `[NOTA DE SISTEMA — esto NO es algo que tú dijiste ni debes imitar este formato de frase: el sistema envió automáticamente la imagen "${imagenDirecta.nombre}" con el detalle completo de ESTE tema específico. No repitas estos datos en texto. Recuerda: tú NUNCA controlas ni sabes con certeza si se manda una imagen en otros mensajes — eso lo decide el sistema por separado según palabras clave. Jamás afirmes "te mandé la imagen" o "aquí tienes las imágenes" a menos que este mensaje de sistema aparezca de verdad para ESE turno.]` });
-      ctxImg.ultimaActividad = Date.now();
+      ctxSesion.historial.push({ role: 'user', content: mensajeUsuario });
+      ctxSesion.historial.push({ role: 'assistant', content: `[NOTA DE SISTEMA — esto NO es algo que tú dijiste ni debes imitar este formato de frase: el sistema envió automáticamente la imagen "${imagenDirecta.nombre}" con el detalle completo de ESTE tema específico. No repitas estos datos en texto. Recuerda: tú NUNCA controlas ni sabes con certeza si se manda una imagen en otros mensajes — eso lo decide el sistema por separado según palabras clave. Jamás afirmes "te mandé la imagen" o "aquí tienes las imágenes" a menos que este mensaje de sistema aparezca de verdad para ESE turno.]` });
+      ctxSesion.ultimaActividad = Date.now();
       return ''; // texto vacío = no se manda ningún mensaje de texto, solo la imagen
     }
   }
 
   // ===== DETECTAR SOLICITUD DE AGENTE — solo transferir si ya hay contexto o el padre insiste =====
-  
-  // ── RECUPERAR MEMORIA DESDE MONGODB si el servidor reinició ────────────
-  // Si no hay historial en RAM pero el contacto existe en MongoDB, inyectar el contexto
-  if (!conversaciones.has(numeroOrigen)) {
-    const contactoExistente = await Contacto.findOne({ tenant_id: tenant._id, numero: numeroOrigen });
-    if (contactoExistente && contactoExistente.nombre) {
-      // El padre ya había conversado antes — inyectar contexto para que KAI lo reconozca
-      conversaciones.set(numeroOrigen, { historial: [], ultimaActividad: Date.now() });
-      const ctx = conversaciones.get(numeroOrigen);
-      const partes = [];
-      if (contactoExistente.nombre) partes.push(`nombre del padre: ${contactoExistente.nombre}`);
-      if (contactoExistente.nombre_alumno) partes.push(`nombre del alumno: ${contactoExistente.nombre_alumno}`);
-      if (contactoExistente.nivel_interes) partes.push(`nivel de interés: ${contactoExistente.nivel_interes}`);
-      if (contactoExistente.zona) partes.push(`zona: ${contactoExistente.zona}`);
-      if (contactoExistente.correo) partes.push(`correo: ${contactoExistente.correo}`);
-      if (contactoExistente.resumen_ultimo_contacto) partes.push(`última conversación: ${contactoExistente.resumen_ultimo_contacto}`);
-      if (partes.length) {
-        ctx.historial.push({
-          role: 'assistant',
-          content: `(Contexto interno — ya conoces a este padre/madre. ${partes.join(', ')}. Salúdalo por su nombre directamente, sin volver a pedir datos que ya tienes. Continúa desde donde quedaron.)`
-        });
-        console.log(`🧠 Memoria recuperada para ${numeroOrigen} — ${contactoExistente.nombre}`);
-      }
-    }
-  }
+  // (La recuperación de memoria desde MongoDB ya se maneja arriba, en el bloque de
+  // "IMAGEN DIRECTA" — ahí se crea la sesión en memoria y se inyecta el contexto del
+  // contacto la primera vez, sin importar si ese mensaje disparó una imagen o no.)
 
   const historialPrevio = conversaciones.get(numeroOrigen)?.historial || [];
   const yaHayContexto = historialPrevio.length >= 4; // al menos 2 intercambios (pregunta+respuesta x2)
@@ -1357,7 +1342,8 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
 
   // ===== MEMORIA PERSISTENTE — cargar contacto de la BD =====
   let contacto = await Contacto.findOne({ tenant_id: tenant._id, numero: numeroOrigen });
-  const esPrimeraVezEnEstaSesion = historial.length === 1; // primer mensaje del usuario en esta sesión de memoria
+  const esPrimeraVezEnEstaSesion = !conv.memoriaSaludoHecho; // bandera dedicada — no falla aunque antes hubiera un envío de imagen sin texto en esta sesión
+  conv.memoriaSaludoHecho = true;
   if (contacto && esPrimeraVezEnEstaSesion) {
     const diasDesdeUltimo = (Date.now() - new Date(contacto.ultimo_contacto).getTime()) / (1000*60*60*24);
     if (diasDesdeUltimo > 0.1) { // si pasó tiempo real desde el último contacto (no la misma sesión activa)
