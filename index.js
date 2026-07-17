@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.16-acrux-activo-fin-semana'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.16-horario-laboral'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -473,6 +473,35 @@ function detectaInsistenciaAgente(texto) {
   return /solo (quiero|necesito) (hablar|que me atienda)|no (quiero|m[aá]s) (bot|robot)|ya (te|le) dije que quiero (un asesor|hablar con alguien)|comun[ií]queme con|p[aá]seme con/.test(t);
 }
 
+// Horario real de atención humana: Lunes a Jueves 7:00-16:00, Viernes 7:00-15:00
+// (hora de Guatemala). Fuera de esto, ningún vendedor va a contestar aunque KAI
+// "transfiera" — hay que avisar eso en vez de prometer conexión inmediata.
+function estaDentroDeHorarioLaboral() {
+  const ahoraGT = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Guatemala' }));
+  const dia = ahoraGT.getDay(); // 0=domingo, 1=lunes ... 6=sábado
+  const horaDecimal = ahoraGT.getHours() + ahoraGT.getMinutes() / 60;
+  if (dia === 0 || dia === 6) return false; // fin de semana
+  if (dia >= 1 && dia <= 4) return horaDecimal >= 7 && horaDecimal < 16; // Lunes-Jueves 7-16h
+  if (dia === 5) return horaDecimal >= 7 && horaDecimal < 15; // Viernes 7-15h
+  return false;
+}
+
+// Construye el mensaje de traspaso correcto según si hay agente asignado y si estamos
+// dentro del horario laboral — para no prometer "te conecto ahora" cuando en realidad
+// ningún vendedor va a contestar hasta que reinicien labores.
+function construirMensajeTraspaso(nombreAgente, mostroInteresReal) {
+  if (!estaDentroDeHorarioLaboral()) {
+    return 'En este momento estamos fuera de nuestro horario de atención (Lunes a Jueves 7:00 a 16:00, Viernes 7:00 a 15:00). Un asesor te contactará personalmente tan pronto reiniciemos labores. 🙏';
+  }
+  if (nombreAgente) {
+    const primerNombre = nombreAgente.split(' ')[0];
+    return mostroInteresReal
+      ? `¡Perfecto! Te conecto con ${primerNombre}, quien te ayudará a coordinar todo 🙋`
+      : `¡Claro! Te paso con ${primerNombre}, quien te atenderá enseguida 🙋`;
+  }
+  return 'En este momento todos nuestros asesores están ocupados. En breve uno te atenderá personalmente. 🙏';
+}
+
 // Busca un agente disponible (round-robin simple: el que tenga menos chats activos)
 async function asignarAgenteLibre(tenantId) {
   const agentes = await UsuarioPanel.find({
@@ -663,11 +692,7 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
     const nombreAgente = asign?.agente_nombre;
     historial.push({ role: 'assistant', content: '(Se transfirió la conversación a un asesor humano.)' });
 
-    const msg = nombreAgente
-      ? (mostroInteresReal
-          ? `¡Perfecto! Le comento con ${nombreAgente.split(' ')[0]}, quien le ayudará a coordinar todo 🙋`
-          : `¡Claro! Le paso con ${nombreAgente.split(' ')[0]}, quien le atenderá enseguida 🙋`)
-      : 'En este momento todos nuestros asesores están ocupados. En breve uno le atenderá personalmente. 🙏';
+    const msg = construirMensajeTraspaso(nombreAgente, mostroInteresReal);
 
     if (mostroInteresReal) {
       crearCandidatoOdooSiNoExiste(tenant, numero, mensajeUsuario, historial).catch(e => console.error('❌ Error creando candidato (AcruxLab):', e.message));
@@ -702,9 +727,7 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
       { new: true }
     );
     const nombreAgente = asign?.agente_nombre;
-    const msg = nombreAgente
-      ? `¡Con gusto! Le comento con ${nombreAgente.split(' ')[0]}, quien le va a ayudar personalmente 🙋`
-      : 'En este momento todos nuestros asesores están ocupados. En breve uno le atenderá personalmente. 🙏';
+    const msg = construirMensajeTraspaso(nombreAgente, false);
     return { texto: msg, handoff: true };
   }
 
@@ -1424,14 +1447,7 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
     const motivoHandoff = mostroInteresReal ? `Interesado en avanzar: ${mensajeUsuario}` : mensajeUsuario;
     const { conv, agente } = await iniciarHandoff(tenant, numeroOrigen, null, motivoHandoff);
     conv.mensajes.push({ de: 'padre', texto: mensajeUsuario });
-    let msg;
-    if (agente) {
-      msg = mostroInteresReal
-        ? `¡Perfecto! Te conecto con ${agente.nombre.split(' ')[0]}, quien te ayudará a coordinar la visita y confirmar la fecha disponible 🙋`
-        : `¡Claro! Le paso con ${agente.nombre.split(' ')[0]}, quien le atenderá enseguida 🙋`;
-    } else {
-      msg = 'En este momento todos nuestros asesores están ocupados. En breve uno le atenderá personalmente para coordinar todo. 🙏';
-    }
+    const msg = construirMensajeTraspaso(agente?.nombre, mostroInteresReal);
     conv.mensajes.push({ de: 'bot', texto: msg });
     await conv.save();
 
@@ -1518,10 +1534,7 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
     // un vendedor disponible, para que nunca vea que algo se rompió del lado de KAI.
     console.error(`⚠️ Claude no respondió — transfiriendo a humano automáticamente para ${numeroOrigen}`);
     const { agente } = await iniciarHandoff(tenant, numeroOrigen, contacto?.nombre || null, `[Traslado automático: KAI no pudo responder — posible falla técnica]`);
-    const nombreAgente = agente?.nombre?.split(' ')[0];
-    const respuesta = nombreAgente
-      ? `¡Con gusto! Te conecto con ${nombreAgente}, quien te va a ayudar personalmente 🙋`
-      : 'En este momento todos nuestros asesores están ocupados. En breve uno te atenderá personalmente. 🙏';
+    const respuesta = construirMensajeTraspaso(agente?.nombre, false);
     return respuesta;
   }
 
