@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.16-fallback-humano'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.16-debug-asignaciones'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -4504,6 +4504,24 @@ app.get('/api/debug/sesion-web-odoo', authMiddleware, async (req, res) => {
 // Diagnóstico: ver el valor CRUDO del rol de un usuario, tal cual está en la base de
 // datos — para descartar que la pantalla de Usuarios muestre una etiqueta distinta al
 // valor real guardado (ej. mayúsculas, espacios, u otro valor inesperado).
+// Diagnóstico: ver cuántas conversaciones tiene asignadas cada vendedor, en cada canal,
+// para confirmar si el reparto 1 a 1 realmente está siendo parejo o hay un problema.
+app.get('/api/debug/asignaciones-por-agente', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const vendedores = await UsuarioPanel.find({ tenant_id: req.user.tenant_id, role: 'vendedor' }).select('nombre _id disponible');
+    const resultado = [];
+    for (const v of vendedores) {
+      const enAcrux = await AsignacionAcrux.countDocuments({ tenant_id: req.user.tenant_id, agente_id: v._id });
+      const enMeta = await Conversacion.countDocuments({ tenant_id: req.user.tenant_id, agente_id: v._id });
+      resultado.push({ nombre: v.nombre, disponible: v.disponible, asignaciones_acrux: enAcrux, asignaciones_whatsapp_ig_messenger: enMeta, total: enAcrux + enMeta });
+    }
+    res.json({ ok: true, resultado });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get('/api/debug/rol-usuario', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
