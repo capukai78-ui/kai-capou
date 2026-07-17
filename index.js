@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.16-politica-imagenes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.16-debug-contacto'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -4547,6 +4547,19 @@ app.get('/api/debug/sesion-web-odoo', authMiddleware, async (req, res) => {
 // valor real guardado (ej. mayúsculas, espacios, u otro valor inesperado).
 // Diagnóstico: ver cuántas conversaciones tiene asignadas cada vendedor, en cada canal,
 // para confirmar si el reparto 1 a 1 realmente está siendo parejo o hay un problema.
+// Diagnóstico: ver el estado REAL guardado en MongoDB para un número específico —
+// para confirmar si el nombre/memoria se perdió de verdad, o es otra cosa.
+app.get('/api/debug/contacto/:numero', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const numero = req.params.numero;
+    const contacto = await Contacto.findOne({ tenant_id: req.user.tenant_id, numero });
+    res.json({ ok: true, encontrado: !!contacto, contacto });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get('/api/debug/asignaciones-por-agente', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
