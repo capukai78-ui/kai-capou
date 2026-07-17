@@ -435,8 +435,16 @@ tr:hover td{background:var(--g4)}
           <!-- Hilo de mensajes -->
           <div style="background:var(--bg2);display:flex;flex-direction:column;overflow:hidden">
             <div id="acrux-chat-header" style="padding:14px 18px;border-bottom:1px solid var(--border);display:none">
-              <div id="acrux-chat-nombre" style="font-weight:600;font-size:14px"></div>
-              <div id="acrux-chat-numero" style="font-size:11px;color:var(--text3)"></div>
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <div>
+                  <div id="acrux-chat-nombre" style="font-weight:600;font-size:14px"></div>
+                  <div id="acrux-chat-numero" style="font-size:11px;color:var(--text3)"></div>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px">
+                  <span id="acrux-chat-modo" style="font-size:10px;font-weight:700;padding:3px 10px;border-radius:10px"></span>
+                  <button id="acrux-btn-devolver" onclick="devolverAKaiAcrux()" style="display:none;background:var(--bg3);border:1px solid var(--border);color:var(--text2);border-radius:8px;padding:6px 12px;font-size:11px;cursor:pointer">✓ Devolver a KAI</button>
+                </div>
+              </div>
             </div>
             <div id="acrux-mensajes" style="flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:10px">
               <div style="text-align:center;color:var(--text3);margin-top:40px;font-size:13px">Selecciona una conversación de la lista</div>
@@ -860,6 +868,11 @@ tr:hover td{background:var(--g4)}
         <div class="fg" style="margin-top:12px">
           <label class="fl">Sedes asignadas</label>
           <div id="u-sedes-check" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px"></div>
+        </div>
+        <div class="fg" style="margin-top:12px">
+          <label class="fl">ID de usuario en Odoo (opcional)</label>
+          <input class="fi" id="u-odoo-id" type="number" placeholder="ej. 21950 — para asignarle leads en Odoo también"/>
+          <div style="font-size:10px;color:var(--text3);margin-top:4px">Solo si quieres que los leads que le asigne KAI también queden marcados como vendedor en Odoo (crm.lead → Vendedor).</div>
         </div>
         <div style="display:flex;gap:10px;margin-top:20px">
           <button class="btn-p" onclick="saveUser()" style="flex:1" id="save-user-btn">Crear usuario</button>
@@ -1623,6 +1636,19 @@ async function abrirAcruxChat(contactoId){
     if(hilo.ok){
       document.getElementById('acrux-chat-nombre').textContent = hilo.nombre || 'Sin nombre';
       document.getElementById('acrux-chat-numero').textContent = hilo.numero || 'sin número identificado';
+
+      const modoEl = document.getElementById('acrux-chat-modo');
+      const btnDevolver = document.getElementById('acrux-btn-devolver');
+      if(hilo.modo === 'humano'){
+        modoEl.textContent = '👤 ' + (hilo.agente_asignado || 'Humano');
+        modoEl.style.background = 'var(--g3)'; modoEl.style.color = 'var(--g)';
+        btnDevolver.style.display = 'inline-block';
+      } else {
+        modoEl.textContent = '🤖 KAI atendiendo';
+        modoEl.style.background = 'var(--acrux2)'; modoEl.style.color = 'var(--acrux)';
+        btnDevolver.style.display = 'none';
+      }
+
       mensajesEl.innerHTML = (hilo.mensajes||[]).map(m=>{
         const esPadre = m.de==='padre';
         const bg = esPadre ? 'var(--bg3)' : 'var(--acrux)';
@@ -1697,6 +1723,19 @@ async function abrirAcruxChat(contactoId){
 }
 
 let _acruxPlantillasCache = null;
+
+async function devolverAKaiAcrux(){
+  if(!_acruxContactoActivo) return;
+  try {
+    const r = await fetch(API+'/api/acrux/devolver-a-kai',{
+      method:'POST',
+      headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'},
+      body: JSON.stringify({ contacto_id: _acruxContactoActivo })
+    }).then(r=>r.json());
+    if(r.ok){ showToast('Devuelto a KAI ✓','ok'); abrirAcruxChat(_acruxContactoActivo); }
+    else { showToast(r.error||'No se pudo devolver','error'); }
+  } catch(e){ showToast('Error de conexión','error'); }
+}
 
 async function togglePlantillasAcrux(){
   const panel = document.getElementById('acrux-plantillas-panel');
@@ -2938,6 +2977,7 @@ function openModalUser(){
   document.getElementById('u-email-new').value='';
   document.getElementById('u-pass').value='';
   document.getElementById('u-role').value='vendedor';
+  document.getElementById('u-odoo-id').value='';
   document.getElementById('save-user-btn').textContent='Crear usuario';
   document.getElementById('user-modal-err').style.display='none';
   document.querySelectorAll('.sede-chk').forEach(c=>c.checked=false);
@@ -2951,6 +2991,7 @@ function openEditUser(u){
   document.getElementById('u-email-new').value=u.email;
   document.getElementById('u-pass').value='';
   document.getElementById('u-role').value=u.role;
+  document.getElementById('u-odoo-id').value=u.odoo_user_id||'';
   document.getElementById('save-user-btn').textContent='Guardar cambios';
   document.getElementById('user-modal-err').style.display='none';
   document.querySelectorAll('.sede-chk').forEach(c=>{c.checked=(u.sedes||[]).includes(c.value);});
@@ -2965,12 +3006,13 @@ async function saveUser(){
   const email=document.getElementById('u-email-new').value.trim();
   const pass=document.getElementById('u-pass').value;
   const role=document.getElementById('u-role').value;
+  const odoo_user_id=document.getElementById('u-odoo-id').value.trim();
   const sedes=[...document.querySelectorAll('.sede-chk:checked')].map(c=>c.value);
   const errEl=document.getElementById('user-modal-err');
   errEl.style.display='none';
   if(!nombre||!email){errEl.textContent='Nombre y correo son requeridos';errEl.style.display='block';return;}
   if(!id&&!pass){errEl.textContent='La contraseña es requerida para nuevos usuarios';errEl.style.display='block';return;}
-  const body={nombre,role,sedes};
+  const body={nombre,role,sedes,odoo_user_id:odoo_user_id||null};
   if(!id)body.email=email;
   if(pass)body.password=pass;
   try{
@@ -3166,7 +3208,11 @@ async function cargarGaleriPanel(filtroCategoria='') {
           <span style="font-size:9px;padding:2px 6px;border-radius:8px;background:var(--bg2);color:var(--text3)">${img.categoria}</span>
           <span style="font-size:9px;padding:2px 6px;border-radius:8px;background:var(--bg2);color:var(--text3)">${img.nivel_educativo}</span>
         </div>
-        <div style="font-size:10px;color:var(--text3);margin-bottom:8px">Enviada ${img.veces_enviada||0} veces</div>
+        <div style="font-size:10px;color:var(--text3);margin-bottom:6px">Enviada ${img.veces_enviada||0} veces</div>
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
+          <label style="font-size:9px;color:var(--text3)" title="Más alto = se manda primero si hay varias que coinciden">Prioridad:</label>
+          <input type="number" value="${img.prioridad||0}" onchange="actualizarPrioridadImagen('${img._id}', this.value)" style="width:50px;font-size:11px;padding:2px 4px;border:1px solid var(--border);border-radius:4px;background:var(--bg2);color:var(--text)">
+        </div>
         <button onclick="eliminarImagenPanel('${img._id}','${img.nombre.replace(/'/g,"\\'")}')" style="width:100%;background:none;border:1px solid var(--red);color:var(--red);border-radius:6px;padding:5px;font-size:11px;cursor:pointer">🗑️ Eliminar</button>
       </div>
     </div>
@@ -3196,6 +3242,18 @@ async function verImagenPanel(id) {
         <div style="color:#888;font-size:11px;margin-top:8px">${r.imagen.categoria} | ${r.imagen.nivel_educativo} | Enviada ${r.imagen.veces_enviada||0} veces</div>
       </div></body></html>`);
   }
+}
+
+async function actualizarPrioridadImagen(id, valor) {
+  try {
+    const r = await fetch(API+'/api/imagenes/'+id, {
+      method: 'PUT',
+      headers: { 'Authorization': 'Bearer '+TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prioridad: valor })
+    }).then(r=>r.json());
+    if(r.ok) showToast('Prioridad actualizada ✓','ok');
+    else showToast(r.error||'No se pudo actualizar','error');
+  } catch(e) { showToast('Error de conexión','error'); }
 }
 
 async function eliminarImagenPanel(id, nombre) {
