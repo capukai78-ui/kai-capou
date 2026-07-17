@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.16-fix-reconocimiento-v3'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.16-debug-claude'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -403,9 +403,26 @@ function llamarClaude(systemPrompt, messages, maxTokens = 400) {
     const apiReq = https.request(options, (apiRes) => {
       const chunks = [];
       apiRes.on('data', chunk => chunks.push(chunk));
-      apiRes.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')).content?.[0]?.text || null); } catch(e) { resolve(null); } });
+      apiRes.on('end', () => {
+        const texto = Buffer.concat(chunks).toString('utf8');
+        try {
+          const parsed = JSON.parse(texto);
+          const respuesta = parsed.content?.[0]?.text;
+          if (!respuesta) {
+            // La API respondió pero sin el texto esperado — casi siempre es un error de la
+            // API (llave inválida, límite de uso, modelo no encontrado, etc.) — lo mostramos
+            // completo en los logs para poder diagnosticar la causa real.
+            console.error(`❌ Claude API — respuesta sin texto (status ${apiRes.statusCode}):`, JSON.stringify(parsed).substring(0, 500));
+          }
+          resolve(respuesta || null);
+        } catch(e) {
+          console.error(`❌ Claude API — respuesta no es JSON válido (status ${apiRes.statusCode}):`, texto.substring(0, 500));
+          resolve(null);
+        }
+      });
     });
-    apiReq.on('error', () => resolve(null)); apiReq.write(postData); apiReq.end();
+    apiReq.on('error', (e) => { console.error('❌ Claude API — error de red:', e.message); resolve(null); });
+    apiReq.write(postData); apiReq.end();
   });
 }
 
@@ -4918,6 +4935,17 @@ async function seedImagenes() {
 // Endpoint público (sin login) para verificar qué versión del código está corriendo
 // en Railway ahora mismo — solo entra a esta URL desde el navegador:
 // https://kai-capouilliez.up.railway.app/api/version
+// Diagnóstico: probar la llamada a Claude directamente, para ver el error real si falla
+app.get('/api/debug/probar-claude', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const respuesta = await llamarClaude('Eres un asistente de prueba. Responde brevemente.', [{ role: 'user', content: 'Di solo "funciona correctamente"' }], 100);
+    res.json({ ok: true, respuesta, api_key_configurada: !!process.env.ANTHROPIC_API_KEY });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get('/api/version', (req, res) => {
   res.json({ version: VERSION_KAI, servidor_iniciado: new Date(SERVIDOR_INICIADO).toISOString() });
 });
