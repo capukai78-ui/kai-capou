@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.16-nunca-precios-texto'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.16-acrux-activo-fin-semana'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -549,16 +549,85 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
   // Usamos el número limpio (sin prefijo) como clave — así, si el mismo padre ya había
   // escrito antes por el WhatsApp normal, comparte la MISMA memoria y el MISMO lead de
   // Odoo, en vez de crear un contacto/lead duplicado solo por venir de otro canal.
-  if (!conversaciones.has(numero)) conversaciones.set(numero, { historial: [], ultimaActividad: Date.now() });
+  const esNuevaSesionEnMemoria = !conversaciones.has(numero);
+  if (esNuevaSesionEnMemoria) conversaciones.set(numero, { historial: [], ultimaActividad: Date.now() });
   const conv = conversaciones.get(numero);
   conv.ultimaActividad = Date.now();
   const historial = conv.historial;
 
+  // Recuperar SOLO el nivel guardado (para las imágenes) — el resto de la memoria se
+  // maneja más abajo, en el bloque de saludo, para no duplicar la inyección.
+  if (esNuevaSesionEnMemoria) {
+    const contactoParaNivel = await Contacto.findOne({ tenant_id: tenant._id, numero });
+    if (contactoParaNivel?.nivel_interes) {
+      conv.nivelSesion = detectarNivelEnTexto(contactoParaNivel.nivel_interes) || conv.nivelSesion;
+    }
+  }
+
+  const nivelMencionadoAhora = detectarNivelEnTexto(mensajeUsuario);
+  if (nivelMencionadoAhora) conv.nivelSesion = nivelMencionadoAhora;
+
+  let matchImagen = buscarReglaImagenCoincidente(mensajeUsuario, conv.nivelSesion);
+  if (!matchImagen && nivelMencionadoAhora && conv.temaPendiente) {
+    matchImagen = { regla: conv.temaPendiente, ambigua: false };
+  }
+  const PALABRAS_MODO_VISUAL = ['muéstrame', 'muestrame', 'quiero ver', 'envía imágenes', 'envia imagenes', 'fotografías', 'fotografias', 'necesito las imágenes', 'necesito las imagenes', 'mándame las imágenes', 'mandame las imagenes'];
+  const esModoVisual = PALABRAS_MODO_VISUAL.some(p => mensajeUsuario.toLowerCase().includes(p));
+  if (!matchImagen && esModoVisual && conv.temaPendiente && conv.nivelSesion) {
+    matchImagen = { regla: conv.temaPendiente, ambigua: false };
+  }
+  if (matchImagen && matchImagen.ambigua) conv.temaPendiente = matchImagen.regla;
+
+  // ===== IMAGEN DIRECTA — sin pasar por la IA, igual que en WhatsApp =====
+  if (matchImagen && !matchImagen.ambigua && matchImagen.regla) {
+    conv.temaPendiente = null;
+    const regla = matchImagen.regla;
+    const filtroImg = { tenant_id: tenant._id, activo: true, categoria: regla.categoria };
+    if (regla.nivel_educativo) filtroImg.nivel_educativo = { $in: [regla.nivel_educativo, 'Todos'] };
+    if (regla.nombre_contiene) filtroImg.nombre = new RegExp(regla.nombre_contiene, 'i');
+    const imagenDirecta = await ImagenMarketing.findOne(filtroImg).sort({ prioridad: -1, creado: -1 });
+
+    if (imagenDirecta) {
+      let imagenEnviada = false;
+      try {
+        const adjunto = await subirImagenNuevaAcrux(imagenDirecta.imagen_base64, `${imagenDirecta.nombre}.jpg`, imagenDirecta.mime_type || 'image/jpeg', contactoId);
+        await odooCallLocal(
+          'acrux.chat.conversation',
+          'send_message',
+          [[contactoId], {
+            text: '', from_me: true, ttype: 'image', res_model: 'ir.attachment', res_id: adjunto.id,
+            id: -2, date_message: new Date().toISOString().replace('T', ' ').substring(0, 19), button_ids: []
+          }],
+          { context: { lang: 'es_GT', tz: 'America/Guatemala', is_acrux_chat_room: true } }
+        );
+        console.log(`🖼️ [AcruxLab] Imagen directa enviada: "${imagenDirecta.nombre}" → contacto ${contactoId}`);
+        imagenEnviada = true;
+      } catch (e) {
+        console.error(`❌ [AcruxLab] Error enviando imagen directa a contacto ${contactoId}:`, e.message);
+      }
+      historial.push({ role: 'user', content: mensajeUsuario });
+
+      if (!imagenEnviada) {
+        // Si la imagen falló (ej. sesión/CSRF vencida), no dejamos a la familia sin
+        // respuesta — mandamos un texto breve avisando que en un momento le llega,
+        // y transferimos a un vendedor para que lo resuelva manual si hace falta.
+        historial.push({ role: 'assistant', content: '(La imagen automática falló al enviarse — se avisó al padre y se dejó pendiente para el vendedor.)' });
+        conv.ultimaActividad = Date.now();
+        return { texto: 'Con gusto te comparto esa información — dame un momento para enviártela correctamente. 🙏', handoff: false };
+      }
+
+      historial.push({ role: 'assistant', content: `[NOTA DE SISTEMA — esto NO es algo que tú dijiste ni debes imitar este formato de frase: el sistema envió automáticamente la imagen "${imagenDirecta.nombre}" con el detalle completo de ESTE tema específico. No repitas estos datos en texto. Jamás afirmes "te mandé la imagen" a menos que este mensaje de sistema aparezca de verdad para ESE turno.]` });
+      conv.ultimaActividad = Date.now();
+      return { texto: '', handoff: false };
+    }
+  }
+
   // Recuperar memoria persistente si existe (igual que en WhatsApp) — para saludar por
   // nombre y no repetir preguntas si ya se conocía a este padre/madre.
   let contactoExistente = await Contacto.findOne({ tenant_id: tenant._id, numero });
-  const esPrimerMensajeDeLaSesion = historial.length === 0;
-  if (contactoExistente && esPrimerMensajeDeLaSesion && contactoExistente.nombre) {
+  const esPrimeraVezEnEstaSesion = !conv.memoriaSaludoHecho;
+  conv.memoriaSaludoHecho = true;
+  if (contactoExistente && esPrimeraVezEnEstaSesion && contactoExistente.nombre) {
     const partes = [];
     if (contactoExistente.nombre) partes.push(`nombre del padre: ${contactoExistente.nombre}`);
     if (contactoExistente.nombre_alumno) partes.push(`nombre del alumno: ${contactoExistente.nombre_alumno}`);
@@ -609,6 +678,9 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
   // ===== RESPUESTA NORMAL DE KAI =====
   const systemPrompt = buildSystemPrompt(tenant);
   let contextoExtra = '';
+  if (matchImagen && matchImagen.ambigua) {
+    contextoExtra += '\n\n📌 IMPORTANTE: El padre/madre preguntó sobre un tema (cuotas, proceso, etc.) pero no especificó el grado/nivel exacto. NO des ningún número, precio, o dato específico todavía — primero pregúntale amablemente en qué grado o nivel está interesado.';
+  }
   try {
     const [faqs, docs] = await Promise.all([
       FAQ.find({ tenant_id: tenant._id, activo: true }).limit(20),
@@ -620,7 +692,23 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
 
   const reply = await llamarClaude(systemPrompt + contextoExtra, historial, 600);
   const respuestaLimpia = reply ? reply.replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1') : null;
-  const respuesta = respuestaLimpia || 'Disculpe, tuve un problema técnico. Por favor llámenos directamente. 📞';
+
+  if (!respuestaLimpia) {
+    // La IA no pudo responder — transferimos a un vendedor en vez de mostrar un error técnico.
+    console.error(`⚠️ Claude no respondió (AcruxLab) — transfiriendo a humano automáticamente para ${numero}`);
+    const asign = await AsignacionAcrux.findOneAndUpdate(
+      { tenant_id: tenant._id, contacto_id: contactoId },
+      { modo: 'humano' },
+      { new: true }
+    );
+    const nombreAgente = asign?.agente_nombre;
+    const msg = nombreAgente
+      ? `¡Con gusto! Le comento con ${nombreAgente.split(' ')[0]}, quien le va a ayudar personalmente 🙋`
+      : 'En este momento todos nuestros asesores están ocupados. En breve uno le atenderá personalmente. 🙏';
+    return { texto: msg, handoff: true };
+  }
+
+  const respuesta = respuestaLimpia;
   historial.push({ role: 'assistant', content: respuesta });
 
   // Extraer datos (nombre, alumno, nivel, zona, etc.), guardarlos en el Contacto persistente,
@@ -656,7 +744,7 @@ async function enviarTextoAcruxLab(contactoId, texto) {
 // ⚠️ INTERRUPTOR — KAI atendiendo automático por AcruxLab. Apagado a propósito por
 // petición explícita después de la primera prueba en vivo, mientras se decide cuándo
 // reactivarlo. Cambiar a `true` para reactivar el motor.
-const ACRUX_AUTO_RESPUESTA_ACTIVO = false;
+const ACRUX_AUTO_RESPUESTA_ACTIVO = true; // Activado para prueba de fin de semana — monitorear los logs de cerca
 
 // Motor que revisa cada cierto tiempo si hay mensajes nuevos sin responder en AcruxLab,
 // y hace que KAI conteste automáticamente (a menos que ya esté en modo "humano").
@@ -702,8 +790,10 @@ async function procesarNuevosMensajesAcruxLab() {
 
       try {
         const resultado = await atenderAcruxConIA(tenant, ultimoInbound.text || '', numero, contactoId);
-        await enviarTextoAcruxLab(contactoId, resultado.texto);
-        console.log(`🤖 KAI respondió por AcruxLab a contacto ${contactoId}${resultado.handoff ? ' (con traspaso a humano)' : ''}`);
+        if (resultado.texto) {
+          await enviarTextoAcruxLab(contactoId, resultado.texto);
+        }
+        console.log(`🤖 KAI respondió por AcruxLab a contacto ${contactoId}${resultado.handoff ? ' (con traspaso a humano)' : ''}${!resultado.texto ? ' (solo imagen)' : ''}`);
       } catch (e) {
         console.error(`❌ Error al procesar/responder AcruxLab contacto ${contactoId}:`, e.message);
       }
