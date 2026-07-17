@@ -9,6 +9,8 @@ const cors = require('cors');
 
 dotenv.config();
 
+const VERSION_KAI = 'v2026.07.16-imagen-directa'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -4906,8 +4908,15 @@ async function seedImagenes() {
   }
 }
 
+// Endpoint público (sin login) para verificar qué versión del código está corriendo
+// en Railway ahora mismo — solo entra a esta URL desde el navegador:
+// https://kai-capouilliez.up.railway.app/api/version
+app.get('/api/version', (req, res) => {
+  res.json({ version: VERSION_KAI, servidor_iniciado: new Date(SERVIDOR_INICIADO).toISOString() });
+});
+
 app.listen(PORT, () => {
-  console.log(`✅ KAI — Colegio Capouilliez corriendo en puerto ${PORT} | v2026.07.14-acrux`);
+  console.log(`✅ KAI — Colegio Capouilliez corriendo en puerto ${PORT} | ${VERSION_KAI}`);
   console.log(`📊 Planes: Básico(${PLANES.basico.mensajes_mes}msg/${PLANES.basico.max_usuarios}usr) | Profesional(${PLANES.profesional.mensajes_mes}msg/${PLANES.profesional.max_usuarios}usr) | Empresarial(${PLANES.empresarial.mensajes_mes}msg/${PLANES.empresarial.max_usuarios}usr)`);
   // Cargar imágenes del colegio en MongoDB al iniciar (si no existen)
   setTimeout(seedImagenes, 5000); // esperar 5s a que MongoDB esté listo
