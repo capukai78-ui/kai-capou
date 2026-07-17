@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.16-horario-laboral'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.16-acrux-auto-recuperacion'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -227,7 +227,8 @@ const asignacionAcruxSchema = new mongoose.Schema({
   agente_id:     { type: mongoose.Schema.Types.ObjectId, ref: 'UsuarioPanel' },
   agente_nombre: String,
   fecha_asignado:{ type: Date, default: Date.now },
-  modo:          { type: String, enum: ['bot', 'humano'], default: 'bot' } // ¿KAI responde o ya es de un humano?
+  modo:          { type: String, enum: ['bot', 'humano'], default: 'bot' }, // ¿KAI responde o ya es de un humano?
+  fecha_modo_humano: { type: Date, default: null } // cuándo pasó a modo humano — para la auto-recuperación a los 30 min
 });
 asignacionAcruxSchema.index({ tenant_id: 1, contacto_id: 1 }, { unique: true });
 const AsignacionAcrux = mongoose.model('AsignacionAcrux', asignacionAcruxSchema);
@@ -682,22 +683,29 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
   const mostroInteresReal = esAltaIntencion(mensajeUsuario, ultimoMsgBot);
 
   if ((detectaSolicitudAgente(mensajeUsuario) && (yaHayContexto || insisteExplicito)) || mostroInteresReal) {
-    // El vendedor YA está asignado desde que llegó el primer mensaje (reparto 1 a 1) —
-    // aquí solo cambiamos el modo a "humano" para que KAI deje de auto-responder.
-    const asign = await AsignacionAcrux.findOneAndUpdate(
-      { tenant_id: tenant._id, contacto_id: contactoId },
-      { modo: 'humano' },
-      { new: true }
-    );
-    const nombreAgente = asign?.agente_nombre;
-    historial.push({ role: 'assistant', content: '(Se transfirió la conversación a un asesor humano.)' });
+    const dentroDeHorario = estaDentroDeHorarioLaboral();
+    let nombreAgente = null;
+    if (dentroDeHorario) {
+      // Solo pasamos a modo "humano" (KAI deja de auto-responder) si de verdad hay
+      // alguien trabajando ahorita — fuera de horario nadie va a retomarla hasta que
+      // regresen, así que KAI debe seguir atendiendo en vez de quedarse callado.
+      const asign = await AsignacionAcrux.findOneAndUpdate(
+        { tenant_id: tenant._id, contacto_id: contactoId },
+        { modo: 'humano', fecha_modo_humano: new Date() },
+        { new: true }
+      );
+      nombreAgente = asign?.agente_nombre;
+      historial.push({ role: 'assistant', content: '(Se transfirió la conversación a un asesor humano.)' });
+    } else {
+      historial.push({ role: 'assistant', content: '(Se avisó el horario de atención — KAI sigue atendiendo mientras tanto, no se transfirió a nadie porque no hay agentes trabajando ahorita.)' });
+    }
 
     const msg = construirMensajeTraspaso(nombreAgente, mostroInteresReal);
 
     if (mostroInteresReal) {
       crearCandidatoOdooSiNoExiste(tenant, numero, mensajeUsuario, historial).catch(e => console.error('❌ Error creando candidato (AcruxLab):', e.message));
     }
-    return { texto: msg, handoff: true };
+    return { texto: msg, handoff: dentroDeHorario };
   }
 
   // ===== RESPUESTA NORMAL DE KAI =====
@@ -723,7 +731,7 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
     console.error(`⚠️ Claude no respondió (AcruxLab) — transfiriendo a humano automáticamente para ${numero}`);
     const asign = await AsignacionAcrux.findOneAndUpdate(
       { tenant_id: tenant._id, contacto_id: contactoId },
-      { modo: 'humano' },
+      { modo: 'humano', fecha_modo_humano: new Date() },
       { new: true }
     );
     const nombreAgente = asign?.agente_nombre;
@@ -804,9 +812,18 @@ async function procesarNuevosMensajesAcruxLab() {
       const yaRespondido = msgs.some(m => m.from_me && m.date_message > ultimoInbound.date_message);
       if (yaRespondido) continue;
 
-      // ¿Ya está en modo "humano"? Entonces KAI no debe meterse — el vendedor asignado responde manual.
+      // ¿Ya está en modo "humano"? Entonces KAI no debe meterse — el vendedor asignado
+      // responde manual. PERO si lleva 30+ minutos sin que el humano conteste (nadie
+      // trabajando, fin de semana, etc.), KAI retoma automáticamente para no dejar a
+      // la familia sin atención — mismo mecanismo que ya existe en WhatsApp.
       const asign = await AsignacionAcrux.findOne({ tenant_id: tenant._id, contacto_id: contactoId });
-      if (asign?.modo === 'humano') continue;
+      if (asign?.modo === 'humano') {
+        const desde = asign.fecha_modo_humano || asign.fecha_asignado;
+        const minutosSinRespuestaHumana = (Date.now() - new Date(desde).getTime()) / (1000 * 60);
+        if (minutosSinRespuestaHumana < 30) continue; // todavía dentro del tiempo de espera — no meterse
+        console.log(`🔄 [AcruxLab] Auto-recuperación: KAI retoma contacto ${contactoId} tras ${Math.round(minutosSinRespuestaHumana)} min sin respuesta humana`);
+        await AsignacionAcrux.updateOne({ _id: asign._id }, { modo: 'bot' });
+      }
 
       const numero = extraerNumeroDeMsgid(ultimoInbound.msgid);
       if (!numero) continue; // sin número no podemos llevar memoria confiable — se deja para atención manual
@@ -4276,7 +4293,7 @@ app.post('/api/acrux/responder', authMiddleware, async (req, res) => {
     try {
       await AsignacionAcrux.findOneAndUpdate(
         { tenant_id: req.user.tenant_id, contacto_id },
-        { modo: 'humano', $setOnInsert: { agente_id: req.user.id, agente_nombre: req.user.nombre } },
+        { modo: 'humano', fecha_modo_humano: new Date(), $setOnInsert: { agente_id: req.user.id, agente_nombre: req.user.nombre } },
         { upsert: true }
       );
     } catch (e) { /* no bloquea el envío si esto falla */ }
