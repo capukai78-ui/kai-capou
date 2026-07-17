@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.16-debug-claude'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.16-fallback-humano'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1391,7 +1391,21 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
   } catch (e) {}
   const reply = await llamarClaude(systemPrompt + contextoExtra, historial, 600);
   const respuestaLimpia = reply ? reply.replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1') : null;
-  const respuesta = respuestaLimpia || 'Disculpe, tuve un problema técnico. Por favor llámenos directamente. 📞';
+
+  if (!respuestaLimpia) {
+    // La IA no pudo responder (llave/crédito agotado, error de red, etc.) — en vez de
+    // mostrarle al padre/madre un mensaje de error técnico, lo transferimos directo a
+    // un vendedor disponible, para que nunca vea que algo se rompió del lado de KAI.
+    console.error(`⚠️ Claude no respondió — transfiriendo a humano automáticamente para ${numeroOrigen}`);
+    const { agente } = await iniciarHandoff(tenant, numeroOrigen, contacto?.nombre || null, `[Traslado automático: KAI no pudo responder — posible falla técnica]`);
+    const nombreAgente = agente?.nombre?.split(' ')[0];
+    const respuesta = nombreAgente
+      ? `¡Con gusto! Te conecto con ${nombreAgente}, quien te va a ayudar personalmente 🙋`
+      : 'En este momento todos nuestros asesores están ocupados. En breve uno te atenderá personalmente. 🙏';
+    return respuesta;
+  }
+
+  const respuesta = respuestaLimpia;
   historial.push({ role: 'assistant', content: respuesta });
 
   // ===== ACTUALIZAR/CREAR CONTACTO Y DETECTAR INTERÉS REAL (async, no bloquea respuesta) =====
@@ -4935,12 +4949,29 @@ async function seedImagenes() {
 // Endpoint público (sin login) para verificar qué versión del código está corriendo
 // en Railway ahora mismo — solo entra a esta URL desde el navegador:
 // https://kai-capouilliez.up.railway.app/api/version
-// Diagnóstico: probar la llamada a Claude directamente, para ver el error real si falla
+// Diagnóstico: probar la llamada a Claude directamente, mostrando la respuesta CRUDA
+// completa (no solo null) para ver el error real sin depender de los logs de Railway.
 app.get('/api/debug/probar-claude', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
-    const respuesta = await llamarClaude('Eres un asistente de prueba. Responde brevemente.', [{ role: 'user', content: 'Di solo "funciona correctamente"' }], 100);
-    res.json({ ok: true, respuesta, api_key_configurada: !!process.env.ANTHROPIC_API_KEY });
+    const postData = JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 100, system: 'Eres un asistente de prueba. Responde brevemente.', messages: [{ role: 'user', content: 'Di solo "funciona correctamente"' }] });
+    const resultado = await new Promise((resolve) => {
+      const options = {
+        hostname: 'api.anthropic.com', path: '/v1/messages', method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'Content-Length': Buffer.byteLength(postData) }
+      };
+      const apiReq = https.request(options, (apiRes) => {
+        const chunks = [];
+        apiRes.on('data', c => chunks.push(c));
+        apiRes.on('end', () => {
+          const texto = Buffer.concat(chunks).toString('utf8');
+          resolve({ status_code: apiRes.statusCode, respuesta_cruda: texto });
+        });
+      });
+      apiReq.on('error', (e) => resolve({ error_red: e.message }));
+      apiReq.write(postData); apiReq.end();
+    });
+    res.json({ ok: true, api_key_configurada: !!process.env.ANTHROPIC_API_KEY, api_key_primeros_caracteres: (process.env.ANTHROPIC_API_KEY || '').substring(0, 10), resultado });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
