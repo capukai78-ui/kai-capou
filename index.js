@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.16-debug-asignaciones'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.16-politica-imagenes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -143,6 +143,7 @@ const imagenMarketingSchema = new mongoose.Schema({
   subida_por_nombre: { type: String },
   activo:      { type: Boolean, default: true },
   caption:      { type: String, default: '' }, // texto predefinido para enviar con la imagen
+  prioridad:    { type: Number, default: 0 }, // más alto = se manda primero si hay varias coincidencias posibles
   veces_enviada: { type: Number, default: 0 },
   creado:      { type: Date, default: Date.now }
 });
@@ -1172,7 +1173,7 @@ function buscarReglaImagenCoincidente(mensajeUsuario, nivelSesion) {
       // No lo dijo en ESTE mensaje — ¿ya lo estableció antes en esta misma conversación?
       const coincideEnSesion = nivelSesionLower && regla.nivel.some(n => nivelSesionLower.includes(n));
       if (coincideEnSesion) return { regla, ambigua: false };
-      return { regla: null, ambigua: true }; // tema claro, pero no hay grado ni en el mensaje ni en la sesión
+      return { regla, ambigua: true }; // tema claro, pero no hay grado ni en el mensaje ni en la sesión — se recuerda "regla" como tema pendiente
     }
     return { regla, ambigua: false }; // coincidencia clara — se puede mandar la imagen directo
   }
@@ -1200,7 +1201,7 @@ async function detectarYEnviarImagen(tenant, mensajeUsuario, contacto, canal, nu
     if (regla.nivel_educativo) filtro.nivel_educativo = { $in: [regla.nivel_educativo, 'Todos'] };
     if (regla.nombre_contiene) filtro.nombre = new RegExp(regla.nombre_contiene, 'i');
 
-    const imagen = await ImagenMarketing.findOne(filtro);
+    const imagen = await ImagenMarketing.findOne(filtro).sort({ prioridad: -1, creado: -1 });
     if (!imagen) return;
 
     // Enviar según canal — sin esperar texto, porque en el caso de coincidencia clara
@@ -1276,13 +1277,37 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
   const nivelMencionadoAhora = detectarNivelEnTexto(mensajeUsuario);
   if (nivelMencionadoAhora) ctxSesion.nivelSesion = nivelMencionadoAhora; // lo dicho en ESTE mensaje manda sobre lo anterior
 
-  const matchImagen = buscarReglaImagenCoincidente(mensajeUsuario, ctxSesion.nivelSesion);
+  let matchImagen = buscarReglaImagenCoincidente(mensajeUsuario, ctxSesion.nivelSesion);
+
+  // Si ESTE mensaje no menciona ningún tema (cuotas, papelería, etc.) pero SÍ trae el
+  // grado, y había un tema pendiente de un mensaje ANTERIOR (ej: "cuotas" → luego solo
+  // "Primaria"), completamos ese tema pendiente en vez de dejarlo pasar sin imagen.
+  if (!matchImagen && nivelMencionadoAhora && ctxSesion.temaPendiente) {
+    matchImagen = { regla: ctxSesion.temaPendiente, ambigua: false };
+  }
+
+  // "Modo Visual" — Política de Recuperación de Imágenes: si el padre/madre pide ver
+  // imágenes explícitamente ("muéstrame", "quiero ver", "envía imágenes", "fotografías",
+  // "necesito las imágenes") y ya había un tema pendiente + el nivel ya se sabe (de este
+  // mensaje o de antes en la sesión), se manda de una vez — sin volver a preguntar nada
+  // que ya se sepa, tal como pide la política.
+  const PALABRAS_MODO_VISUAL = ['muéstrame', 'muestrame', 'quiero ver', 'envía imágenes', 'envia imagenes', 'fotografías', 'fotografias', 'necesito las imágenes', 'necesito las imagenes', 'mándame las imágenes', 'mandame las imagenes'];
+  const esModoVisual = PALABRAS_MODO_VISUAL.some(p => mensajeUsuario.toLowerCase().includes(p));
+  if (!matchImagen && esModoVisual && ctxSesion.temaPendiente && ctxSesion.nivelSesion) {
+    matchImagen = { regla: ctxSesion.temaPendiente, ambigua: false };
+  }
+
+  if (matchImagen && matchImagen.ambigua) {
+    ctxSesion.temaPendiente = matchImagen.regla; // recordar para cuando llegue el grado solo
+  }
+
   if (matchImagen && !matchImagen.ambigua && matchImagen.regla) {
+    ctxSesion.temaPendiente = null; // ya se resolvió, no queda nada pendiente
     const regla = matchImagen.regla;
     const filtroImg = { tenant_id: tenant._id, activo: true, categoria: regla.categoria };
     if (regla.nivel_educativo) filtroImg.nivel_educativo = { $in: [regla.nivel_educativo, 'Todos'] };
     if (regla.nombre_contiene) filtroImg.nombre = new RegExp(regla.nombre_contiene, 'i');
-    const imagenDirecta = await ImagenMarketing.findOne(filtroImg);
+    const imagenDirecta = await ImagenMarketing.findOne(filtroImg).sort({ prioridad: -1, creado: -1 });
 
     if (imagenDirecta) {
       await enviarImagenDesdeDB(imagenDirecta, numeroOrigen, '');
@@ -2895,20 +2920,36 @@ app.post('/api/imagenes/bulk', authMiddleware, async (req, res) => {
 app.post('/api/imagenes', authMiddleware, async (req, res) => {
   try {
     if (!['admin', 'vendedor'].includes(req.user.role)) return res.status(403).json({ ok: false, error: 'Sin permisos' });
-    const { nombre, categoria, nivel_educativo, imagen_base64, mime_type } = req.body;
+    const { nombre, categoria, nivel_educativo, imagen_base64, mime_type, prioridad } = req.body;
     if (!nombre || !imagen_base64) return res.status(400).json({ ok: false, error: 'Nombre e imagen son requeridos' });
 
     const img = await ImagenMarketing.create({
       tenant_id: req.user.tenant_id,
       nombre, categoria: categoria || 'general', nivel_educativo: nivel_educativo || 'Todos',
-      imagen_base64, mime_type: mime_type || 'image/jpeg',
+      imagen_base64, mime_type: mime_type || 'image/jpeg', prioridad: parseInt(prioridad) || 0,
       subida_por: req.user.id, subida_por_nombre: req.user.nombre || req.user.email
     });
-    res.json({ ok: true, imagen: { _id: img._id, nombre: img.nombre, categoria: img.categoria, nivel_educativo: img.nivel_educativo } });
+    res.json({ ok: true, imagen: { _id: img._id, nombre: img.nombre, categoria: img.categoria, nivel_educativo: img.nivel_educativo, prioridad: img.prioridad } });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
 // Listar imágenes (sin el base64 completo, para que la lista cargue rápido)
+// Editar una imagen ya subida (por ejemplo, ajustar su prioridad de envío)
+app.put('/api/imagenes/:id', authMiddleware, async (req, res) => {
+  try {
+    if (!['admin', 'vendedor'].includes(req.user.role)) return res.status(403).json({ ok: false, error: 'Sin permisos' });
+    const { nombre, categoria, nivel_educativo, prioridad } = req.body;
+    const update = {};
+    if (nombre !== undefined) update.nombre = nombre;
+    if (categoria !== undefined) update.categoria = categoria;
+    if (nivel_educativo !== undefined) update.nivel_educativo = nivel_educativo;
+    if (prioridad !== undefined) update.prioridad = parseInt(prioridad) || 0;
+    const img = await ImagenMarketing.findOneAndUpdate({ _id: req.params.id, tenant_id: req.user.tenant_id }, update, { new: true });
+    if (!img) return res.status(404).json({ ok: false, error: 'Imagen no encontrada' });
+    res.json({ ok: true, imagen: { _id: img._id, nombre: img.nombre, categoria: img.categoria, nivel_educativo: img.nivel_educativo, prioridad: img.prioridad } });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 app.get('/api/imagenes', authMiddleware, async (req, res) => {
   try {
     const { categoria, nivel_educativo } = req.query;
