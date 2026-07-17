@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.16-fix-reconocimiento-v2'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.16-fix-reconocimiento-v3'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1344,16 +1344,16 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
   let contacto = await Contacto.findOne({ tenant_id: tenant._id, numero: numeroOrigen });
   const esPrimeraVezEnEstaSesion = !conv.memoriaSaludoHecho; // bandera dedicada — no falla aunque antes hubiera un envío de imagen sin texto en esta sesión
   conv.memoriaSaludoHecho = true;
-  if (contacto && esPrimeraVezEnEstaSesion) {
-    const diasDesdeUltimo = (Date.now() - new Date(contacto.ultimo_contacto).getTime()) / (1000*60*60*24);
-    if (diasDesdeUltimo > 0.1) { // si pasó tiempo real desde el último contacto (no la misma sesión activa)
-      contextoExtra += `\n\n🧠 MEMORIA DEL CONTACTO: Este número ya escribió antes (${contacto.total_conversaciones} veces). `;
-      if (contacto.nombre) contextoExtra += `Se llama ${contacto.nombre}. `;
-      if (contacto.nombre_alumno) contextoExtra += `Pregunta por su hijo/a ${contacto.nombre_alumno}. `;
-      if (contacto.nivel_interes) contextoExtra += `Interesado en nivel ${contacto.nivel_interes}. `;
-      if (contacto.resumen_ultimo_contacto) contextoExtra += `Última vez se habló de: ${contacto.resumen_ultimo_contacto}. `;
-      contextoExtra += `Salúdalo por su nombre reconociendo que ya hablaron antes, y pregúntale directamente en qué le puedes ayudar hoy con respecto a su nivel de interés (si lo sabes) — sin repetir preguntas que ya respondió. Usa un formato similar a: "¡Hola ${contacto.nombre || ''}! Qué gusto verte de vuelta 😊\\n\\n¿En qué te puedo ayudar hoy${contacto.nivel_interes ? ` con respecto a ${contacto.nivel_interes}` : ''} en el Colegio Capouilliez?"`;
-    }
+  if (contacto && esPrimeraVezEnEstaSesion && contacto.nombre) {
+    // Ya no exigimos que haya pasado un tiempo mínimo desde el último contacto — si es la
+    // primera vez de ESTA sesión (el servidor se reinició, o volvió después de cerrado)
+    // y ya sabemos quién es, siempre lo reconocemos, sin importar cuánto tiempo pasó.
+    contextoExtra += `\n\n🧠 MEMORIA DEL CONTACTO: Este número ya escribió antes (${contacto.total_conversaciones} veces). `;
+    if (contacto.nombre) contextoExtra += `Se llama ${contacto.nombre}. `;
+    if (contacto.nombre_alumno) contextoExtra += `Pregunta por su hijo/a ${contacto.nombre_alumno}. `;
+    if (contacto.nivel_interes) contextoExtra += `Interesado en nivel ${contacto.nivel_interes}. `;
+    if (contacto.resumen_ultimo_contacto) contextoExtra += `Última vez se habló de: ${contacto.resumen_ultimo_contacto}. `;
+    contextoExtra += `Salúdalo por su nombre reconociendo que ya hablaron antes, y pregúntale directamente en qué le puedes ayudar hoy con respecto a su nivel de interés (si lo sabes) — sin repetir preguntas que ya respondió. Usa un formato similar a: "¡Hola ${contacto.nombre || ''}! Qué gusto verte de vuelta 😊\\n\\n¿En qué te puedo ayudar hoy${contacto.nivel_interes ? ` con respecto a ${contacto.nivel_interes}` : ''} en el Colegio Capouilliez?"`;
   }
 
   // Si llegamos aquí con matchImagen ambiguo, es porque el tema es claro (cuotas,
