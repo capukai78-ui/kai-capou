@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-fix-devolver-a-kai'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-migrar-a-acrux'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1024,8 +1024,9 @@ setTimeout(procesarNuevosMensajesAcruxLab, 8000); // primera corrida poco despu�
 // ⚠️ INTERRUPTOR: apagado por defecto. Se escribe a familias REALES, así que conviene
 // probarlo primero con el botón "Contactar ahora (prueba)" antes de dejarlo automático.
 const MOTOR_PROACTIVO_ACTIVO = false; // APAGADO temporalmente: validar primero la ruta por AcruxLab con 1 lead
-// Por dónde sale el primer contacto: 'acrux' = número oficial del colegio (recomendado),
-// 'meta' = número de la API de Meta (el de pruebas). Las familias reconocen el oficial.
+// Por dónde sale el primer contacto. DEBE ser 'acrux': ese es el número OFICIAL del
+// colegio, el que las familias reconocen. El canal 'meta' usa el número 4052 2338, que
+// es SOLO DE PRUEBAS — no debe usarse para escribirle a familias reales.
 const CANAL_CONTACTO_PROACTIVO = 'acrux';
 const MAX_LEADS_POR_CORRIDA = 5;   // de cuántos en cuántos, para no mandar una avalancha
 // Arma el primer mensaje. Si el lead YA trae el nivel (viene del formulario), no se lo
@@ -5636,6 +5637,95 @@ app.post('/api/motor/proactivo/ejecutar', authMiddleware, async (req, res) => {
     res.json({
       ok: true,
       contactados: resultados.filter(r => r.ok).length,
+      fallidos: resultados.filter(r => !r.ok).length,
+      detalle: resultados
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Lleva una conversación a AcruxLab (número oficial) SIN enviarle nada al padre:
+// crea la conversación en el ChatRoom, le deja la nota con el resumen de lo que KAI
+// habló, y se la asigna a la vendedora. Sirve para los contactos que salieron por el
+// número de pruebas de Meta y deben continuar por el número oficial del colegio.
+async function migrarConversacionAAcruxLab(tenant, numero, nombre, resumen, vendedor) {
+  const tel = String(numero).replace(/\D/g, '');
+  if (tel.length < 11) return { ok: false, motivo: 'telefono_invalido' };
+
+  let conversacion;
+  try {
+    conversacion = await obtenerOCrearConversacionAcrux(tel, nombre);
+  } catch (e) {
+    return { ok: false, motivo: 'no_se_pudo_crear', detalle: e.message };
+  }
+
+  // La nota es interna del ChatRoom — el padre NO la ve. Aquí queda el contexto para
+  // que la vendedora sepa de qué se habló antes sin tener que preguntar de nuevo.
+  const nota = `🤖 Conversación iniciada por KAI.\n` +
+               (resumen ? `\nResumen de lo hablado:\n${resumen}\n` : '') +
+               `\n(El primer contacto salió por el número de pruebas; continuar desde este número oficial.)`;
+  await odooCallLocal('acrux.chat.conversation', 'write', [[conversacion.id], { note: nota }]).catch(() => {});
+
+  if (vendedor?.odoo_user_id) {
+    await odooCallLocal('acrux.chat.conversation', 'write', [[conversacion.id], { agent_id: vendedor.odoo_user_id }]).catch(() => {});
+  }
+
+  await AsignacionAcrux.findOneAndUpdate(
+    { tenant_id: tenant._id, contacto_id: conversacion.id },
+    {
+      $set: {
+        modo: 'humano',
+        fecha_modo_humano: new Date(),
+        resumen_kai: resumen || null,
+        agente_id: vendedor?._id || null,
+        agente_nombre: vendedor?.nombre || null
+      }
+    },
+    { upsert: true, setDefaultsOnInsert: true }
+  ).catch(() => {});
+
+  console.log(`🔀 [Migración] ${tel} llevado a AcruxLab (conv #${conversacion.id}${conversacion.creada ? ', nueva' : ''})${vendedor ? ' — ' + vendedor.nombre : ''}`);
+  return { ok: true, conversacion_acrux: conversacion.id, creada: conversacion.creada, vendedor: vendedor?.nombre || null };
+}
+
+// Migra a AcruxLab los contactos que KAI contactó por el número de pruebas de Meta.
+// No envía ningún mensaje: solo abre la conversación en el número oficial con el
+// contexto, para que las vendedoras continúen ahí.
+// GET  ?vista_previa=1  → muestra a quiénes migraría, sin tocar nada
+app.post('/api/motor/migrar-a-acrux', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const tenant = await Tenant.findOne({ _id: req.user.tenant_id });
+    const soloVistaPrevia = req.body?.vista_previa === true;
+
+    // Contactos que vinieron del formulario y fueron contactados por KAI
+    const contactos = await Contacto.find({
+      tenant_id: req.user.tenant_id,
+      canal_origen: 'formulario_admisiones'
+    }).sort({ ultimo_contacto: -1 }).limit(50);
+
+    if (soloVistaPrevia) {
+      return res.json({
+        ok: true,
+        vista_previa: true,
+        total: contactos.length,
+        contactos: contactos.map(c => ({ numero: c.numero, nombre: c.nombre, nivel: c.nivel_interes, lead: c.odoo_lead_id }))
+      });
+    }
+
+    const resultados = [];
+    for (const c of contactos) {
+      const conv = await Conversacion.findOne({ tenant_id: tenant._id, numero: c.numero }).sort({ ultimaActividad: -1 });
+      const vendedor = conv?.agente_id ? await UsuarioPanel.findById(conv.agente_id) : await asignarAgenteLibre(tenant._id);
+      const resumen = conv?.resumen_kai || (c.nivel_interes ? `Solicitud del Formulario de Admisiones para ${c.nivel_interes}.${c.zona ? ' Zona: ' + c.zona + '.' : ''}` : null);
+
+      const r = await migrarConversacionAAcruxLab(tenant, c.numero, c.nombre, resumen, vendedor);
+      resultados.push({ numero: c.numero, nombre: c.nombre, ...r });
+      await new Promise(x => setTimeout(x, 1200));
+    }
+
+    res.json({
+      ok: true,
+      migrados: resultados.filter(r => r.ok).length,
       fallidos: resultados.filter(r => !r.ok).length,
       detalle: resultados
     });
