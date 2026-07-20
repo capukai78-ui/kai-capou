@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-reparar-conversacion-faltante'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-estado-leads-odoo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -5740,6 +5740,244 @@ app.post('/api/motor/migrar-a-acrux', authMiddleware, async (req, res) => {
       migrados: resultados.filter(r => r.ok).length,
       fallidos: resultados.filter(r => !r.ok).length,
       detalle: resultados
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Estado REAL en Odoo de los leads que KAI contactó: si tienen vendedor asignado allá,
+// qué etiquetas traen, y a quién los tenemos asignados nosotros. Con ?asignar=1 escribe
+// en Odoo el vendedor que ya tenemos registrado (requiere odoo_user_id configurado).
+app.get('/api/debug/estado-leads-odoo', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const contactos = await Contacto.find({
+      tenant_id: req.user.tenant_id,
+      canal_origen: 'formulario_admisiones',
+      odoo_lead_id: { $ne: null }
+    }).limit(100);
+
+    if (!contactos.length) return res.json({ ok: true, total: 0, leads: [] });
+
+    const ids = contactos.map(c => c.odoo_lead_id);
+    const leadsOdoo = await odooCallLocal('crm.lead', 'read', [ids], {
+      fields: ['id', 'name', 'user_id', 'tag_ids', 'phone', 'partner_name', 'type', 'stage_id']
+    }) || [];
+    const porId = {}; leadsOdoo.forEach(l => { porId[l.id] = l; });
+
+    // Nombres de las etiquetas, para que se entienda sin ver IDs
+    const idsTags = [...new Set(leadsOdoo.flatMap(l => l.tag_ids || []))];
+    let nombresTag = {};
+    if (idsTags.length) {
+      const tags = await odooCallLocal('crm.lead.tag', 'read', [idsTags, ['id', 'name']]).catch(() => null)
+                || await odooCallLocal('crm.tag', 'read', [idsTags, ['id', 'name']]).catch(() => []);
+      (tags || []).forEach(t => { nombresTag[t.id] = t.name; });
+    }
+
+    const debeAsignar = req.query.asignar === '1';
+    let asignados = 0;
+    const resultado = [];
+
+    for (const c of contactos) {
+      const l = porId[c.odoo_lead_id];
+      if (!l) { resultado.push({ lead: c.odoo_lead_id, nombre: c.nombre, error: 'no encontrado en Odoo' }); continue; }
+
+      // A quién lo tenemos asignado nosotros (nuestra conversación manda)
+      const conv = await Conversacion.findOne({ tenant_id: req.user.tenant_id, numero: c.numero }).sort({ ultimaActividad: -1 });
+      const vendedorKai = conv?.agente_id ? await UsuarioPanel.findById(conv.agente_id) : null;
+
+      let accion = null;
+      if (debeAsignar && vendedorKai) {
+        if (!vendedorKai.odoo_user_id) {
+          accion = `NO se pudo: a ${vendedorKai.nombre} le falta el ID de Odoo en Usuarios y Sedes`;
+        } else if (l.user_id) {
+          accion = `ya tenía vendedor en Odoo (${l.user_id[1]}), no se tocó`;
+        } else {
+          await odooCallLocal('crm.lead', 'write', [[l.id], { user_id: vendedorKai.odoo_user_id }]).catch(() => {});
+          await odooCallLocal('crm.lead', 'message_post', [[l.id]], {
+            body: `👤 Asignado a ${vendedorKai.nombre} desde el panel de KAI.`
+          }).catch(() => {});
+          accion = `asignado a ${vendedorKai.nombre}`;
+          asignados++;
+        }
+      }
+
+      resultado.push({
+        lead: l.id,
+        nombre: l.partner_name || c.nombre,
+        telefono: l.phone || c.numero,
+        tipo: l.type,
+        etapa: l.stage_id?.[1] || null,
+        vendedor_en_odoo: l.user_id?.[1] || 'SIN ASIGNAR',
+        vendedor_en_kai: vendedorKai?.nombre || 'ninguno',
+        id_odoo_del_vendedor: vendedorKai?.odoo_user_id || 'NO CONFIGURADO',
+        etiquetas: (l.tag_ids || []).map(t => nombresTag[t] || t),
+        accion
+      });
+    }
+
+    res.json({
+      ok: true,
+      total: resultado.length,
+      sin_vendedor_en_odoo: resultado.filter(r => r.vendedor_en_odoo === 'SIN ASIGNAR').length,
+      asignados_ahora: asignados,
+      leads: resultado
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// ¿Qué ve exactamente un usuario en su bandeja, y por qué? Simula los mismos filtros
+// que aplica el panel para ese usuario, y explica el motivo de cada inclusión/exclusión.
+// GET /api/debug/que-ve-usuario?email=vanessa.carreto@capouilliez.edu.gt
+app.get('/api/debug/que-ve-usuario', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const email = (req.query.email || '').trim().toLowerCase();
+    if (!email) return res.json({ ok: false, error: 'Falta ?email=' });
+
+    const usuario = await UsuarioPanel.findOne({ tenant_id: req.user.tenant_id, email: new RegExp('^' + email + '$', 'i') });
+    if (!usuario) return res.json({ ok: false, error: 'Usuario no encontrado con ese correo' });
+
+    const esSupervisor = usuario.role === 'admin' || usuario.role === 'viewer';
+
+    // Todas las conversaciones abiertas (sin filtrar por usuario)
+    const todas = await Conversacion.find({
+      tenant_id: req.user.tenant_id,
+      estado: { $ne: 'cerrado' }
+    }).sort({ ultimaActividad: -1 }).limit(100).select('numero nombre canal estado agente_id agente_nombre ultimaActividad');
+
+    const detalle = todas.map(c => {
+      const asignadaAEl = c.agente_id && c.agente_id.toString() === usuario._id.toString();
+      const sinAsignar = !c.agente_id;
+      let visible, motivo;
+
+      if (esSupervisor) {
+        visible = true; motivo = 'es supervisor: ve todo';
+      } else if (asignadaAEl) {
+        visible = true; motivo = 'asignada a él/ella';
+      } else if (sinAsignar) {
+        visible = true; motivo = 'sin asignar: cualquiera puede tomarla';
+      } else {
+        visible = false; motivo = `asignada a otra persona (${c.agente_nombre || 'desconocida'})`;
+      }
+
+      // Los chats en modo 'bot' solo salen si el interruptor "Ver los que atiende KAI"
+      // está encendido — si está apagado, se ocultan aunque le pertenezcan.
+      const requiereInterruptorKai = c.estado === 'bot';
+
+      return {
+        numero: c.numero,
+        nombre: c.nombre || 'Sin nombre',
+        canal: c.canal,
+        estado: c.estado,
+        asignada_a: c.agente_nombre || 'SIN ASIGNAR',
+        visible_para_este_usuario: visible,
+        motivo,
+        solo_si_interruptor_kai_encendido: requiereInterruptorKai
+      };
+    });
+
+    res.json({
+      ok: true,
+      usuario: { nombre: usuario.nombre, email: usuario.email, role: usuario.role, activo: usuario.activo, disponible: usuario.disponible, id: usuario._id },
+      es_supervisor: esSupervisor,
+      total_conversaciones_abiertas: detalle.length,
+      ve_en_total: detalle.filter(d => d.visible_para_este_usuario).length,
+      de_esas_requieren_interruptor_kai: detalle.filter(d => d.visible_para_este_usuario && d.solo_si_interruptor_kai_encendido).length,
+      conversaciones: detalle
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// ===== ESCÁNER DE INSTAGRAM Y MESSENGER =====
+// Por estos canales llega de todo: felicitaciones a alumnos, comentarios sueltos, gente
+// bromeando... y en medio, padres que SÍ quieren inscribir. Esto lee cada conversación
+// y la clasifica, para que el equipo sepa a cuáles vale la pena responder primero.
+// GET /api/motor/escanear-social            → últimos 30 días
+// GET /api/motor/escanear-social?dias=60
+app.get('/api/motor/escanear-social', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const dias = Math.min(parseInt(req.query.dias) || 30, 180);
+    const desde = new Date(Date.now() - dias * 24 * 3600 * 1000);
+
+    const convs = await Conversacion.find({
+      tenant_id: req.user.tenant_id,
+      canal: { $in: ['instagram', 'messenger'] },
+      ultimaActividad: { $gte: desde }
+    }).sort({ ultimaActividad: -1 }).limit(80);
+
+    if (!convs.length) return res.json({ ok: true, total: 0, mensaje: 'No hay conversaciones de Instagram/Messenger en ese rango', conversaciones: [] });
+
+    // Armamos un resumen corto de cada conversación para que la IA las clasifique en lote
+    const paraClasificar = convs.map((c, i) => {
+      const textos = (c.mensajes || [])
+        .filter(m => m.de === 'padre')
+        .map(m => m.texto)
+        .join(' | ')
+        .substring(0, 500);
+      return { indice: i, id: c._id.toString(), canal: c.canal, numero: c.numero, nombre: c.nombre || null, texto: textos || '(sin mensajes)' };
+    });
+
+    const systemPrompt = `Eres un asistente del Colegio Capouilliez (Guatemala) que revisa mensajes recibidos por Instagram y Facebook Messenger.
+
+Clasifica CADA conversación en una de estas categorías:
+- "CALIENTE": el mensaje muestra interés real en inscribir a un alumno (pregunta por cuotas, admisión, cupos, requisitos, o dice que quiere inscribir).
+- "EXPLORATORIO": pregunta algo del colegio sin intención clara de inscribir todavía (horarios, ubicación, información general).
+- "TRAMITE": es un padre/alumno actual pidiendo algo administrativo (constancias, notas, pagos, papelería de alumno inscrito). NO es admisión.
+- "NO_RELEVANTE": felicitaciones, saludos, comentarios sobre publicaciones, bromas, spam, o cualquier cosa que no requiera acción de admisiones.
+
+Devuelve ÚNICAMENTE un arreglo JSON, sin explicaciones ni markdown, con este formato exacto:
+[{"indice": 0, "categoria": "CALIENTE", "motivo": "explicación breve", "accion_sugerida": "qué debería hacer el equipo"}]
+
+Incluye TODOS los índices que te den. No inventes datos que no estén en el texto.`;
+
+    const entrada = paraClasificar.map(c => `[${c.indice}] (${c.canal}) ${c.nombre || 'Sin nombre'}: ${c.texto}`).join('\n');
+    const respuesta = await llamarClaude(systemPrompt, [{ role: 'user', content: entrada.substring(0, 12000) }], 3000);
+    if (!respuesta) return res.json({ ok: false, error: 'La IA no respondió (revisar saldo de Anthropic)' });
+
+    let clasificaciones;
+    try {
+      clasificaciones = JSON.parse(respuesta.replace(/```json|```/g, '').trim());
+    } catch (e) {
+      return res.json({ ok: false, error: 'La IA devolvió un formato inesperado', respuesta_cruda: respuesta.substring(0, 800) });
+    }
+
+    const porIndice = {};
+    (clasificaciones || []).forEach(c => { porIndice[c.indice] = c; });
+
+    const resultado = paraClasificar.map(c => {
+      const cl = porIndice[c.indice] || {};
+      const conv = convs[c.indice];
+      return {
+        id: c.id,
+        canal: c.canal,
+        identificador: c.numero,
+        nombre: c.nombre || 'Sin nombre',
+        estado: conv.estado,
+        agente: conv.agente_nombre || 'SIN ASIGNAR',
+        ultima_actividad: conv.ultimaActividad,
+        categoria: cl.categoria || 'SIN_CLASIFICAR',
+        motivo: cl.motivo || null,
+        accion_sugerida: cl.accion_sugerida || null,
+        mensaje: c.texto.substring(0, 200)
+      };
+    });
+
+    // Los calientes primero — son los que no pueden esperar
+    const orden = { CALIENTE: 0, EXPLORATORIO: 1, TRAMITE: 2, NO_RELEVANTE: 3, SIN_CLASIFICAR: 4 };
+    resultado.sort((a, b) => (orden[a.categoria] ?? 9) - (orden[b.categoria] ?? 9));
+
+    res.json({
+      ok: true,
+      dias_revisados: dias,
+      total: resultado.length,
+      resumen: {
+        calientes: resultado.filter(r => r.categoria === 'CALIENTE').length,
+        exploratorios: resultado.filter(r => r.categoria === 'EXPLORATORIO').length,
+        tramites: resultado.filter(r => r.categoria === 'TRAMITE').length,
+        no_relevantes: resultado.filter(r => r.categoria === 'NO_RELEVANTE').length
+      },
+      conversaciones: resultado
     });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
