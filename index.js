@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-ver-kai-por-defecto'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-sin-asteriscos-y-no-desaparecen'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1031,11 +1031,11 @@ const MAX_LEADS_POR_CORRIDA = 5;   // de cuántos en cuántos, para no mandar un
 // no leímos su solicitud.
 const MENSAJE_PRIMER_CONTACTO = (primerNombre, nivel) => {
   const saludo = primerNombre ? `Hola ${primerNombre}` : 'Hola';
-  const cabecera = `${saludo} 👋 Te escribimos del *Colegio Capouilliez*.`;
+  const cabecera = `${saludo} 👋 Te escribimos del Colegio Capouilliez.`;
 
   if (nivel) {
     return `${cabecera}\n\n` +
-      `Recibimos tu solicitud de información para *${nivel}* 🏫\n\n` +
+      `Recibimos tu solicitud de información para ${nivel} 🏫\n\n` +
       `Con gusto te ayudo con todo lo del proceso de admisión: cuotas, requisitos, horarios o lo que necesites saber.\n\n` +
       `¿Con qué te puedo ayudar primero?`;
   }
@@ -1811,7 +1811,11 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
 
       const resumenAgente = await generarResumenParaKai(convActiva);
       convActiva.resumen_agente = resumenAgente;
-      convActiva.estado = 'cerrado';
+      // Antes se marcaba como 'cerrado' aquí, y eso hacía que el chat DESAPARECIERA del
+      // panel de un momento a otro (el famoso "se van y vienen"). Ahora pasa a modo 'bot':
+      // KAI retoma la atención, pero la conversación sigue visible para todos.
+      convActiva.estado = 'bot';
+      convActiva.ultimaActividad = new Date();
       await convActiva.save();
 
       // Inyectar el contexto en la memoria de KAI para que no repita preguntas, igual que en "Devolver a KAI" manual
@@ -2257,6 +2261,11 @@ setInterval(async () => {
     for (const [numero, conv] of conversaciones.entries()) {
       if (conv.cerrada) continue; // ya se cerró, no volver a mandar el mensaje
       if (!conv.historial || !conv.historial.length) continue; // nunca hubo conversación real
+      // Si el padre NUNCA ha escrito (solo KAI, por contacto proactivo del formulario),
+      // mandarle "no tuvimos respuesta de tu parte" queda fuera de lugar: él no inició
+      // nada. Esos casos se dejan en paz esperando a que conteste cuando pueda.
+      const padreYaEscribio = conv.historial.some(m => m.role === 'user');
+      if (!padreYaEscribio) continue;
       const inactivoPor = ahora - (conv.ultimaActividad || ahora);
       if (inactivoPor < limiteMs) continue; // aún no pasa 1 hora
 
@@ -5504,6 +5513,42 @@ app.post('/api/motor/proactivo/ejecutar', authMiddleware, async (req, res) => {
       fallidos: resultados.filter(r => !r.ok).length,
       detalle: resultados
     });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// ¿Se puede INICIAR una conversación en AcruxLab con alguien que nunca nos ha escrito?
+// Necesario para saber si los contactos proactivos del formulario pueden salir por el
+// número oficial (AcruxLab) en vez del número de Meta. Este endpoint solo INSPECCIONA
+// el modelo, no crea ni envía nada.
+app.get('/api/debug/acrux-puede-iniciar', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const resultado = {};
+
+    // 1) Campos disponibles en la conversación (para saber si podemos crear una con un número)
+    try {
+      const campos = await odooCallLocal('acrux.chat.conversation', 'fields_get', [], { attributes: ['string', 'type', 'required', 'relation'] });
+      const relevantes = {};
+      for (const [k, v] of Object.entries(campos || {})) {
+        if (/number|phone|mobile|name|agent|connector|res_partner|partner/i.test(k)) {
+          relevantes[k] = { etiqueta: v.string, tipo: v.type, requerido: !!v.required, relacion: v.relation || null };
+        }
+      }
+      resultado.campos_conversacion = relevantes;
+    } catch (e) { resultado.campos_conversacion = { error: e.message }; }
+
+    // 2) Conectores configurados (el "canal" por el que sale el mensaje)
+    try {
+      resultado.conectores = await odooCallLocal('acrux.chat.connector', 'search_read', [[]], { fields: ['id', 'name', 'connector_type'], limit: 10 });
+    } catch (e) { resultado.conectores = { error: e.message }; }
+
+    // 3) Una conversación real de ejemplo, para ver cómo está armada por dentro
+    try {
+      const ejemplo = await odooCallLocal('acrux.chat.conversation', 'search_read', [[]], { limit: 1, order: 'id desc' });
+      resultado.ejemplo_conversacion = ejemplo?.[0] || null;
+    } catch (e) { resultado.ejemplo_conversacion = { error: e.message }; }
+
+    res.json({ ok: true, ...resultado });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
