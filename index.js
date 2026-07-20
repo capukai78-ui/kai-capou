@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-formulario-automatico'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-mensaje-con-nivel'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -998,11 +998,37 @@ setTimeout(procesarNuevosMensajesAcruxLab, 8000); // primera corrida poco despu�
 // probarlo primero con el botón "Contactar ahora (prueba)" antes de dejarlo automático.
 const MOTOR_PROACTIVO_ACTIVO = false;
 const MAX_LEADS_POR_CORRIDA = 5;   // de cuántos en cuántos, para no mandar una avalancha
-const MENSAJE_PRIMER_CONTACTO = (primerNombre) =>
-  `${primerNombre ? 'Hola ' + primerNombre : 'Hola'} 👋 Te escribimos del *Colegio Capouilliez*.\n\n` +
-  `Recibimos tu solicitud de información y con gusto te ayudamos con el proceso de admisiones 🏫\n\n` +
-  `¿Para qué nivel educativo estás buscando información?\n\n` +
-  `1️⃣ Preprimaria\n2️⃣ Primaria\n3️⃣ Secundaria (Básico y Bachillerato)`;
+// Arma el primer mensaje. Si el lead YA trae el nivel (viene del formulario), no se lo
+// volvemos a preguntar — se le confirma que recibimos su solicitud para ese nivel y se
+// le abre la conversación. Preguntar algo que el padre ya escribió se siente como que
+// no leímos su solicitud.
+const MENSAJE_PRIMER_CONTACTO = (primerNombre, nivel) => {
+  const saludo = primerNombre ? `Hola ${primerNombre}` : 'Hola';
+  const cabecera = `${saludo} 👋 Te escribimos del *Colegio Capouilliez*.`;
+
+  if (nivel) {
+    return `${cabecera}\n\n` +
+      `Recibimos tu solicitud de información para *${nivel}* 🏫\n\n` +
+      `Con gusto te ayudo con todo lo del proceso de admisión: cuotas, requisitos, horarios o lo que necesites saber.\n\n` +
+      `¿Con qué te puedo ayudar primero?`;
+  }
+
+  return `${cabecera}\n\n` +
+    `Recibimos tu solicitud de información y con gusto te ayudamos con el proceso de admisiones 🏫\n\n` +
+    `¿Para qué nivel educativo estás buscando información?\n\n` +
+    `1️⃣ Preprimaria\n2️⃣ Primaria\n3️⃣ Secundaria (Básico y Bachillerato)`;
+};
+
+// Normaliza el nivel que viene de Odoo a los tres que usamos (Básico y Bachillerato
+// se unifican como Secundaria, igual que en el menú y en las imágenes).
+function normalizarNivelParaMensaje(textoNivel) {
+  const t = String(textoNivel || '').toLowerCase();
+  if (!t || t === 'false') return null;
+  if (t.includes('prepri') || t.includes('jard') || t.includes('kinder') || t.includes('párvul') || t.includes('parvul')) return 'Preprimaria';
+  if (t.includes('secundaria') || t.includes('básico') || t.includes('basico') || t.includes('bachiller') || t.includes('diversificado')) return 'Secundaria';
+  if (t.includes('primaria')) return 'Primaria';
+  return null;
+}
 
 // Contacta un lead concreto. Devuelve { ok, motivo } — se reutiliza tanto por el motor
 // automático como por el botón manual del panel, para que ambos hagan exactamente lo mismo.
@@ -1034,8 +1060,9 @@ async function contactarLeadPorWhatsApp(tenant, lead) {
 
   const nombre = lead.partner_name || lead.contact_name || null;
   const primerNombre = nombre ? nombre.split(' ')[0] : null;
+  const nivel = normalizarNivelParaMensaje(lead.x_studio_comentarios);
 
-  const resultado = await enviarWhatsAppMeta(tel, MENSAJE_PRIMER_CONTACTO(primerNombre));
+  const resultado = await enviarWhatsAppMeta(tel, MENSAJE_PRIMER_CONTACTO(primerNombre, nivel));
 
   if (resultado?.messages?.length) {
     const tagContactadoId = await getOdooTagId(TAG_KAI_CONTACTADO);
@@ -1044,19 +1071,31 @@ async function contactarLeadPorWhatsApp(tenant, lead) {
       body: `📱 KAI contactó por WhatsApp (${tel}) automáticamente. Queda a la espera de respuesta del padre/madre.`
     }).catch(() => {});
 
-    // Vincular el contacto para que, cuando conteste, KAI ya sepa de qué lead viene
-    // y no cree uno duplicado en Odoo.
+    // Vincular el contacto para que, cuando conteste, KAI ya sepa de qué lead viene,
+    // qué nivel pidió y en qué zona vive — así no le vuelve a preguntar lo que ya
+    // escribió en el formulario, y no se crea un lead duplicado en Odoo.
+    const zona = (lead.x_studio_notas_1 && String(lead.x_studio_notas_1) !== 'false' && !String(lead.x_studio_notas_1).startsWith('http'))
+      ? String(lead.x_studio_notas_1) : null;
+
     await Contacto.findOneAndUpdate(
       { tenant_id: tenant._id, numero: tel },
       {
-        $set: { nombre: nombre || undefined, odoo_lead_id: lead.id, canal_origen: 'formulario_admisiones', ultimo_contacto: new Date() },
+        $set: {
+          nombre: nombre || undefined,
+          odoo_lead_id: lead.id,
+          canal_origen: 'formulario_admisiones',
+          nivel_interes: nivel || undefined,
+          zona: zona || undefined,
+          correo: (lead.email_from && String(lead.email_from) !== 'false') ? lead.email_from : undefined,
+          ultimo_contacto: new Date()
+        },
         $setOnInsert: { primer_contacto: new Date() }
       },
       { upsert: true }
     ).catch(() => {});
 
-    console.log(`📤 [Motor proactivo] KAI contactó a ${nombre || tel} (lead #${lead.id})`);
-    return { ok: true, telefono: tel, nombre };
+    console.log(`📤 [Motor proactivo] KAI contactó a ${nombre || tel} (lead #${lead.id})${nivel ? ' — nivel: ' + nivel : ''}`);
+    return { ok: true, telefono: tel, nombre, nivel };
   }
 
   // No se pudo enviar — lo marcamos para que el equipo lo llame a mano
@@ -1080,7 +1119,7 @@ async function buscarLeadsPendientesDeContactar(limite) {
       ['create_date', '>=', hace30d],
       ['tag_ids', 'not in', [tagContactadoId, tagSinWAId]] // que KAI no haya tocado ya
     ]],
-    { fields: ['id', 'name', 'phone', 'mobile', 'partner_name', 'contact_name', 'email_from', 'create_date'], limit: limite, order: 'create_date desc' }
+    { fields: ['id', 'name', 'phone', 'mobile', 'partner_name', 'contact_name', 'email_from', 'create_date', 'x_studio_comentarios', 'x_studio_notas_1'], limit: limite, order: 'create_date desc' }
   ) || [];
 }
 
@@ -5106,17 +5145,42 @@ async function extraerDatosDelFormulario(leadId) {
   if (!leads?.length) return { ok: false, error: 'Lead no encontrado' };
   const lead = leads[0];
 
-  // Quitar etiquetas HTML del cuerpo del correo para que la IA lea texto limpio
-  const cuerpo = String(lead.description || '')
+  // El texto del formulario puede estar en dos lugares: en el campo "description" del
+  // lead, o —lo más común cuando el lead nace de un correo— en el historial de mensajes
+  // (el chatter). Buscamos en ambos y nos quedamos con el que traiga más contenido.
+  const limpiarHtml = (txt) => String(txt || '')
     .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n')
+    .replace(/<\/(p|div|tr|li)>/gi, '\n')
     .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/g, ' ')
     .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
     .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
 
-  if (!cuerpo) return { ok: false, error: 'El lead no tiene contenido en la descripción' };
+  let cuerpo = limpiarHtml(lead.description);
+
+  if (cuerpo.length < 40) {
+    try {
+      const mensajes = await odooCallLocal('mail.message', 'search_read',
+        [[['model', '=', 'crm.lead'], ['res_id', '=', leadId]]],
+        { fields: ['id', 'body', 'subject', 'date'], limit: 10, order: 'date asc' }
+      ) || [];
+      // Nos quedamos con el mensaje más largo — normalmente es el correo original
+      // del formulario, no las notas cortas del sistema.
+      const cuerposMensajes = mensajes.map(m => limpiarHtml(m.body)).filter(t => t.length > 40);
+      if (cuerposMensajes.length) {
+        cuerposMensajes.sort((a, b) => b.length - a.length);
+        cuerpo = cuerposMensajes[0];
+      }
+    } catch (e) { /* si falla, seguimos con lo que haya en description */ }
+  }
+
+  if (!cuerpo || cuerpo.length < 20) {
+    return { ok: false, error: 'No se encontró el texto del formulario ni en la descripción ni en el historial de mensajes del lead' };
+  }
 
   const systemPrompt = `Eres un asistente que extrae datos de solicitudes de admisión de un colegio en Guatemala.
 Te voy a dar el texto de un correo. Devuelve ÚNICAMENTE un objeto JSON, sin explicaciones ni markdown.
@@ -5158,6 +5222,42 @@ Reglas importantes:
 
   return { ok: true, lead_id: leadId, datos, texto_original: cuerpo.substring(0, 1500) };
 }
+
+// Diagnóstico — muestra TODO lo que trae un lead (campos con texto + historial de
+// mensajes), para ubicar dónde quedó guardado el contenido del formulario.
+app.get('/api/motor/formulario/inspeccionar/:leadId', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const leadId = parseInt(req.params.leadId);
+    const leads = await odooCallLocal('crm.lead', 'read', [[leadId]], {}) || [];
+    if (!leads.length) return res.json({ ok: false, error: 'Lead no encontrado' });
+
+    // Solo los campos que traen texto de verdad (los vacíos no sirven para nada aquí)
+    const camposConTexto = {};
+    for (const [k, v] of Object.entries(leads[0])) {
+      if (typeof v === 'string' && v.trim().length > 3) camposConTexto[k] = v.substring(0, 800);
+    }
+
+    let mensajes = [];
+    try {
+      mensajes = await odooCallLocal('mail.message', 'search_read',
+        [[['model', '=', 'crm.lead'], ['res_id', '=', leadId]]],
+        { fields: ['id', 'subject', 'body', 'message_type', 'date'], limit: 10, order: 'date asc' }
+      ) || [];
+    } catch (e) { mensajes = [{ error: e.message }]; }
+
+    res.json({
+      ok: true,
+      lead_id: leadId,
+      campos_con_texto: camposConTexto,
+      total_mensajes_en_chatter: mensajes.length,
+      mensajes: mensajes.map(m => ({
+        id: m.id, tipo: m.message_type, fecha: m.date, asunto: m.subject,
+        cuerpo: String(m.body || '').substring(0, 1200)
+      }))
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
 
 // Vista previa — NO graba nada en Odoo, solo muestra qué se extrajo
 app.get('/api/motor/formulario/extraer/:leadId', authMiddleware, async (req, res) => {
@@ -5221,13 +5321,17 @@ app.get('/api/motor/proactivo/vista-previa', authMiddleware, async (req, res) =>
       total_por_contactar: leads.length,
       leads: leads.map(l => {
         const tel = (l.mobile && String(l.mobile) !== 'false') ? l.mobile : ((l.phone && String(l.phone) !== 'false') ? l.phone : null);
+        const nombreLead = l.partner_name || l.contact_name || l.name;
+        const nivel = normalizarNivelParaMensaje(l.x_studio_comentarios);
         return {
           lead_id: l.id,
-          nombre: l.partner_name || l.contact_name || l.name,
+          nombre: nombreLead,
           telefono: tel,
           correo: l.email_from || null,
+          nivel_detectado: nivel,
           creado: l.create_date?.substring(0, 16),
-          se_puede_contactar: !!tel
+          se_puede_contactar: !!tel,
+          MENSAJE_QUE_RECIBIRIA: tel ? MENSAJE_PRIMER_CONTACTO(nombreLead ? nombreLead.split(' ')[0] : null, nivel) : null
         };
       })
     });
