@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-motor-proactivo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-motor-proactivo-fix'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1007,13 +1007,30 @@ const MENSAJE_PRIMER_CONTACTO = (primerNombre) =>
 // Contacta un lead concreto. Devuelve { ok, motivo } — se reutiliza tanto por el motor
 // automático como por el botón manual del panel, para que ambos hagan exactamente lo mismo.
 async function contactarLeadPorWhatsApp(tenant, lead) {
+  // Marca el lead para que no se vuelva a intentar en cada corrida. Sin esto, los
+  // registros sin teléfono (correos del formulario, boletines, etc.) se re-consultaban
+  // cada 10 minutos para siempre y ocupaban los cupos de los papás reales.
+  const marcarSinWhatsApp = async (nota) => {
+    const tagSinWAId = await getOdooTagId(TAG_KAI_SIN_WHATSAPP);
+    await odooCallLocal('crm.lead', 'write', [[lead.id], { tag_ids: [[4, tagSinWAId]] }]).catch(() => {});
+    await odooCallLocal('crm.lead', 'message_post', [[lead.id]], {
+      body: `⚠️ KAI no pudo contactar por WhatsApp: ${nota}. Queda para seguimiento manual del equipo.`
+    }).catch(() => {});
+  };
+
   const telCrudo = (lead.mobile && String(lead.mobile) !== 'false') ? lead.mobile
                  : ((lead.phone && String(lead.phone) !== 'false') ? lead.phone : null);
-  if (!telCrudo) return { ok: false, motivo: 'sin_telefono' };
+  if (!telCrudo) {
+    await marcarSinWhatsApp('el registro no trae número de teléfono');
+    return { ok: false, motivo: 'sin_telefono' };
+  }
 
   let tel = String(telCrudo).replace(/\D/g, '');
   if (tel.length === 8) tel = '502' + tel;
-  if (tel.length < 11) return { ok: false, motivo: 'telefono_invalido' };
+  if (tel.length < 11) {
+    await marcarSinWhatsApp(`el número "${telCrudo}" no parece válido`);
+    return { ok: false, motivo: 'telefono_invalido' };
+  }
 
   const nombre = lead.partner_name || lead.contact_name || null;
   const primerNombre = nombre ? nombre.split(' ')[0] : null;
@@ -1080,11 +1097,17 @@ async function motorProactivoContactarLeads() {
     const tenant = await Tenant.findOne({ activo: true });
     if (!tenant) return;
 
-    const leads = await buscarLeadsPendientesDeContactar(MAX_LEADS_POR_CORRIDA);
+    const leads = await buscarLeadsPendientesDeContactar(MAX_LEADS_POR_CORRIDA * 3);
     if (!leads.length) return;
 
-    console.log(`🎯 [Motor proactivo] ${leads.length} lead(s) por contactar en esta corrida`);
-    for (const lead of leads) {
+    // Primero los que sí tienen teléfono (papás reales), después los demás — así los
+    // registros sin número no consumen los cupos de la corrida.
+    const conTelefono = leads.filter(l => (l.mobile && String(l.mobile) !== 'false') || (l.phone && String(l.phone) !== 'false'));
+    const sinTelefono = leads.filter(l => !conTelefono.includes(l));
+    const aProcesar = [...conTelefono.slice(0, MAX_LEADS_POR_CORRIDA), ...sinTelefono];
+
+    console.log(`🎯 [Motor proactivo] ${conTelefono.length} con teléfono, ${sinTelefono.length} sin teléfono (se marcan para seguimiento manual)`);
+    for (const lead of aProcesar) {
       await contactarLeadPorWhatsApp(tenant, lead);
       await new Promise(r => setTimeout(r, 3000)); // pausa entre envíos, para no saturar
     }
@@ -5104,8 +5127,14 @@ app.post('/api/motor/proactivo/ejecutar', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
     const limite = Math.min(parseInt(req.body?.limite) || 1, 25); // por defecto SOLO 1, a propósito
+    const incluirSinTelefono = req.body?.incluir_sin_telefono === true;
     const tenant = await Tenant.findOne({ _id: req.user.tenant_id });
-    const leads = await buscarLeadsPendientesDeContactar(limite);
+    const todos = await buscarLeadsPendientesDeContactar(limite * 4);
+
+    // Priorizar los que sí tienen teléfono: si se pide contactar 1, que sea un papá real
+    // y no un correo del formulario sin número.
+    const conTelefono = todos.filter(l => (l.mobile && String(l.mobile) !== 'false') || (l.phone && String(l.phone) !== 'false'));
+    const leads = incluirSinTelefono ? todos.slice(0, limite) : conTelefono.slice(0, limite);
 
     const resultados = [];
     for (const lead of leads) {
