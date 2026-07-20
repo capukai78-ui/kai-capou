@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-forzar-vendedor'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-social-calientes-y-soltar'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -5930,6 +5930,105 @@ app.get('/api/debug/que-ve-usuario', authMiddleware, async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
+// Procesa los CALIENTES de Instagram/Messenger: crea el lead en Odoo con etiqueta,
+// le asigna vendedora, y si dejaron teléfono, KAI los contacta por el número oficial.
+// Sin ?ejecutar=1 solo muestra qué haría, sin tocar nada.
+const TAG_KAI_REDES = 'KAI — Caliente (Redes)';
+app.post('/api/motor/procesar-social-calientes', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const ejecutar = req.body?.ejecutar === true;
+    const lista = req.body?.calientes; // se le pasa el resultado del escáner
+    if (!Array.isArray(lista) || !lista.length) {
+      return res.json({ ok: false, error: 'Manda el arreglo "calientes" con lo que devolvió el escáner' });
+    }
+
+    const tenant = await Tenant.findOne({ _id: req.user.tenant_id });
+    const resultados = [];
+
+    for (const item of lista) {
+      let tel = item.telefono_detectado ? String(item.telefono_detectado).replace(/\D/g, '') : null;
+      if (tel && tel.length === 8) tel = '502' + tel;
+      const nombre = item.nombre_detectado || item.nombre || 'Sin nombre';
+
+      if (!ejecutar) {
+        resultados.push({
+          nombre, canal: item.canal, telefono: tel,
+          accion_que_se_haria: tel
+            ? 'crear lead en Odoo con etiqueta, asignar vendedora y contactar por WhatsApp oficial'
+            : 'crear lead en Odoo con etiqueta y asignar vendedora (sin teléfono: responder por la red social)'
+        });
+        continue;
+      }
+
+      try {
+        const vendedor = await asignarAgenteLibre(tenant._id);
+        const tagRedes = await getOdooTagId(TAG_KAI_REDES);
+
+        // Crear el lead en Odoo con lo que se pudo rescatar del mensaje
+        const leadId = await odooCallLocal('crm.lead', 'create', [{
+          name: `Lead ${item.canal === 'instagram' ? 'Instagram' : 'Messenger'} — ${nombre}`,
+          contact_name: nombre,
+          partner_name: nombre,
+          phone: tel || undefined,
+          email_from: item.correo_detectado || undefined,
+          description: `Origen: ${item.canal}\nMensaje recibido: ${item.mensaje || ''}\nClasificado por KAI como CALIENTE: ${item.motivo || ''}`,
+          type: 'lead',
+          tag_ids: tagRedes ? [[6, 0, [tagRedes]]] : undefined,
+          user_id: vendedor?.odoo_user_id || undefined
+        }]);
+
+        let contactado = false;
+        if (tel && leadId) {
+          const r = await contactarLeadPorAcruxLab(tenant, {
+            id: leadId, phone: tel, mobile: false,
+            partner_name: nombre, contact_name: nombre,
+            email_from: item.correo_detectado || false,
+            x_studio_comentarios: item.nivel_detectado || false,
+            x_studio_notas_1: false
+          });
+          contactado = !!r.ok;
+        }
+
+        // La conversación de la red social se cierra: ya quedó convertida en lead y
+        // se sigue por WhatsApp, así no estorba en la bandeja.
+        if (item.id) {
+          await Conversacion.findOneAndUpdate(
+            { _id: item.id, tenant_id: req.user.tenant_id },
+            { $set: { estado: 'cerrado', motivo: `Convertido en lead #${leadId} y trasladado a WhatsApp` } }
+          ).catch(() => {});
+        }
+
+        resultados.push({ nombre, canal: item.canal, telefono: tel, lead_creado: leadId, vendedor: vendedor?.nombre || null, contactado_por_whatsapp: contactado });
+        await new Promise(x => setTimeout(x, 2000));
+      } catch (e) {
+        resultados.push({ nombre, canal: item.canal, error: e.message });
+      }
+    }
+
+    res.json({
+      ok: true,
+      modo: ejecutar ? 'EJECUTADO' : 'vista previa (no se tocó nada)',
+      total: resultados.length,
+      detalle: resultados
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// "Soltar" una conversación: la saca de la bandeja sin borrar nada. Sirve para los
+// mensajes que no requieren acción (felicitaciones, comentarios) y solo estorban.
+app.post('/api/conversaciones/:id/soltar', authMiddleware, async (req, res) => {
+  try {
+    const conv = await Conversacion.findOneAndUpdate(
+      { _id: req.params.id, tenant_id: req.user.tenant_id },
+      { $set: { estado: 'cerrado', motivo: `Soltada por ${req.user.nombre || 'un usuario'} — no requiere atención` } },
+      { new: true }
+    );
+    if (!conv) return res.status(404).json({ ok: false, error: 'No encontrada' });
+    res.json({ ok: true, mensaje: 'Conversación soltada' });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 // ===== ESCÁNER DE INSTAGRAM Y MESSENGER =====
 // Por estos canales llega de todo: felicitaciones a alumnos, comentarios sueltos, gente
 // bromeando... y en medio, padres que SÍ quieren inscribir. Esto lee cada conversación
@@ -5969,9 +6068,12 @@ Clasifica CADA conversación en una de estas categorías:
 - "NO_RELEVANTE": felicitaciones, saludos, comentarios sobre publicaciones, bromas, spam, o cualquier cosa que no requiera acción de admisiones.
 
 Devuelve ÚNICAMENTE un arreglo JSON, sin explicaciones ni markdown, con este formato exacto:
-[{"indice": 0, "categoria": "CALIENTE", "motivo": "explicación breve", "accion_sugerida": "qué debería hacer el equipo"}]
+[{"indice": 0, "categoria": "CALIENTE", "motivo": "explicación breve", "accion_sugerida": "qué debería hacer el equipo", "nombre_detectado": "nombre del padre si aparece, o null", "telefono": "solo dígitos si aparece un teléfono en el mensaje, o null", "nivel": "Preprimaria, Primaria, Secundaria o null", "correo": "correo si aparece, o null"}]
 
-Incluye TODOS los índices que te den. No inventes datos que no estén en el texto.`;
+Para el nivel: "2do primaria" o "4to grado" → "Primaria"; "básico" o "bachillerato" → "Secundaria"; "kinder", "párvulos" o "preparatoria" → "Preprimaria".
+Los teléfonos de Guatemala tienen 8 dígitos. NO inventes datos que no estén en el texto.
+
+Incluye TODOS los índices que te den.`;
 
     const entrada = paraClasificar.map(c => `[${c.indice}] (${c.canal}) ${c.nombre || 'Sin nombre'}: ${c.texto}`).join('\n');
     const respuesta = await llamarClaude(systemPrompt, [{ role: 'user', content: entrada.substring(0, 12000) }], 3000);
@@ -6001,6 +6103,10 @@ Incluye TODOS los índices que te den. No inventes datos que no estén en el tex
         categoria: cl.categoria || 'SIN_CLASIFICAR',
         motivo: cl.motivo || null,
         accion_sugerida: cl.accion_sugerida || null,
+        nombre_detectado: cl.nombre_detectado || null,
+        telefono_detectado: cl.telefono ? String(cl.telefono).replace(/\D/g, '') : null,
+        nivel_detectado: cl.nivel || null,
+        correo_detectado: cl.correo || null,
         mensaje: c.texto.substring(0, 200)
       };
     });
