@@ -1146,6 +1146,7 @@ let _chatsLivePollInterval = null;
 
 async function loadChatsLive(){
   const lista = document.getElementById('cl-lista');
+  if(!lista){ setTimeout(loadChatsLive, 300); return; }
   lista.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text3);font-size:12px">Cargando...</div>';
   try {
     const r = await fetch(API+'/api/conversaciones',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
@@ -1578,6 +1579,13 @@ function filtrarListaAcrux(){
 
 async function loadAcruxLista(){
   const lista = document.getElementById('acrux-lista');
+  if(!lista){
+    // El DOM todavía no está listo (puede pasar si esta pestaña se restaura automáticamente
+    // al cargar la página, antes de que el HTML termine de montarse) — reintentamos una vez
+    // en breve, en vez de rendirnos en silencio para siempre.
+    setTimeout(loadAcruxLista, 300);
+    return;
+  }
   const scrollCont = document.getElementById('acrux-lista-scroll');
   const scrollPrevio = scrollCont ? scrollCont.scrollTop : 0;
   if(!lista.dataset.cargadoUnaVez){
