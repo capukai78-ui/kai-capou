@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-social-calientes-y-soltar'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-antiduplicados-redes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -533,13 +533,16 @@ async function asignarAgenteLibre(tenantId) {
       { $group: { _id: '$agente_id', total: { $sum: 1 } } }
     ]),
     AsignacionAcrux.aggregate([
-      { $match: { tenant_id: tenantId } },
+      // Ojo: hay que excluir los que NO tienen vendedor. Se crean así al sincronizar el
+      // semáforo de AcruxLab, y al agruparlos daban un _id nulo que reventaba el conteo
+      // (y con él, TODA la asignación de vendedores del sistema).
+      { $match: { tenant_id: tenantId, agente_id: { $ne: null } } },
       { $group: { _id: '$agente_id', total: { $sum: 1 } } }
     ])
   ]);
   const countMap = {};
-  countsMeta.forEach(c => countMap[c._id.toString()] = (countMap[c._id.toString()] || 0) + c.total);
-  countsAcrux.forEach(c => countMap[c._id.toString()] = (countMap[c._id.toString()] || 0) + c.total);
+  countsMeta.forEach(c => { if (c._id) countMap[c._id.toString()] = (countMap[c._id.toString()] || 0) + c.total; });
+  countsAcrux.forEach(c => { if (c._id) countMap[c._id.toString()] = (countMap[c._id.toString()] || 0) + c.total; });
 
   // El agente con menos conversaciones asignadas en total (entre ambos canales) recibe
   // la siguiente. Si hay empate, gana el que aparece primero en la lista (orden estable).
@@ -5952,16 +5955,84 @@ app.post('/api/motor/procesar-social-calientes', authMiddleware, async (req, res
       const nombre = item.nombre_detectado || item.nombre || 'Sin nombre';
 
       if (!ejecutar) {
+        // En vista previa también revisamos duplicados, para que se vea de antemano
+        // a quién se le crearía lead nuevo y a quién no.
+        let yaExiste = null;
+        if (tel) {
+          const ultimos8 = tel.slice(-8);
+          const encontrados = await odooCallLocal('crm.lead', 'search_read',
+            [[['active', '=', true], '|', ['phone', 'like', ultimos8], ['mobile', 'like', ultimos8]]],
+            { fields: ['id', 'partner_name', 'name', 'user_id', 'create_date'], limit: 3, order: 'create_date desc' }
+          ) || [];
+          if (encontrados.length) yaExiste = encontrados[0];
+        }
         resultados.push({
           nombre, canal: item.canal, telefono: tel,
-          accion_que_se_haria: tel
-            ? 'crear lead en Odoo con etiqueta, asignar vendedora y contactar por WhatsApp oficial'
-            : 'crear lead en Odoo con etiqueta y asignar vendedora (sin teléfono: responder por la red social)'
+          YA_EXISTE_EN_ODOO: yaExiste ? `lead #${yaExiste.id} (${yaExiste.partner_name || yaExiste.name}) — ${yaExiste.user_id?.[1] || 'sin vendedor'}` : 'no',
+          accion_que_se_haria: yaExiste
+            ? 'NO crear lead: solo etiquetar el existente y dejar nota'
+            : (tel
+              ? 'crear lead en Odoo con etiqueta, asignar vendedora y contactar por WhatsApp oficial'
+              : 'crear lead en Odoo con etiqueta y asignar vendedora (sin teléfono: responder por la red social)')
         });
         continue;
       }
 
       try {
+        // ===== REVISAR DUPLICADOS ANTES DE CREAR =====
+        // Estos papás pudieron haber escrito antes por otro canal, o alguien pudo
+        // haberlos metido a mano en Odoo. Crear otro lead ensuciaría el CRM.
+        let leadExistente = null;
+        const condiciones = [];
+        if (tel) {
+          const ultimos8 = tel.slice(-8);
+          condiciones.push(['phone', 'like', ultimos8]);
+          condiciones.push(['mobile', 'like', ultimos8]);
+        }
+        if (item.correo_detectado) condiciones.push(['email_from', 'ilike', item.correo_detectado]);
+
+        if (condiciones.length) {
+          // OR entre todas las condiciones, en el formato que espera Odoo
+          const dominio = [];
+          for (let i = 0; i < condiciones.length - 1; i++) dominio.push('|');
+          condiciones.forEach(c => dominio.push(c));
+          const encontrados = await odooCallLocal('crm.lead', 'search_read',
+            [[['active', '=', true], ...dominio]],
+            { fields: ['id', 'name', 'partner_name', 'phone', 'email_from', 'user_id', 'create_date', 'type'], limit: 5, order: 'create_date desc' }
+          ) || [];
+          if (encontrados.length) leadExistente = encontrados[0];
+        }
+
+        if (leadExistente) {
+          // Ya existe: solo le agregamos la etiqueta y dejamos nota — NO creamos otro.
+          const tagRedesExistente = await getOdooTagId(TAG_KAI_REDES);
+          if (tagRedesExistente) {
+            await odooCallLocal('crm.lead', 'write', [[leadExistente.id], { tag_ids: [[4, tagRedesExistente]] }]).catch(() => {});
+          }
+          await odooCallLocal('crm.lead', 'message_post', [[leadExistente.id]], {
+            body: `📲 Este contacto también escribió por ${item.canal === 'instagram' ? 'Instagram' : 'Messenger'}: "${(item.mensaje || '').substring(0, 200)}"<br>KAI lo clasificó como CALIENTE. No se creó lead nuevo para no duplicar.`
+          }).catch(() => {});
+
+          if (item.id) {
+            await Conversacion.findOneAndUpdate(
+              { _id: item.id, tenant_id: req.user.tenant_id },
+              { $set: { estado: 'cerrado', motivo: `Ya existía el lead #${leadExistente.id} — se agregó la etiqueta y la nota` } }
+            ).catch(() => {});
+          }
+
+          resultados.push({
+            nombre, canal: item.canal, telefono: tel,
+            YA_EXISTIA: true,
+            lead_existente: leadExistente.id,
+            nombre_en_odoo: leadExistente.partner_name || leadExistente.name,
+            vendedor_en_odoo: leadExistente.user_id?.[1] || 'SIN ASIGNAR',
+            creado_el: leadExistente.create_date?.substring(0, 16),
+            accion: 'se etiquetó y se dejó nota, NO se creó lead nuevo'
+          });
+          await new Promise(x => setTimeout(x, 1500));
+          continue;
+        }
+
         const vendedor = await asignarAgenteLibre(tenant._id);
         const tagRedes = await getOdooTagId(TAG_KAI_REDES);
 
