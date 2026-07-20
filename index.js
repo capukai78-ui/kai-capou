@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-proactivo-visible-en-chats'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-fix-negacion-agente'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -467,7 +467,16 @@ function buildDocsContext(docs) {
 // Frases que detectan intención de hablar con un agente humano
 function detectaSolicitudAgente(texto) {
   const t = (texto || '').toLowerCase();
-  return /asesor|agente|persona real|hablar con (alguien|un humano)|atenci[oó]n humana|hablar con alguien/.test(t);
+  const pideAgente = /asesor|agente|persona real|hablar con (alguien|un humano)|atenci[oó]n humana|hablar con alguien/.test(t);
+  if (!pideAgente) return false;
+
+  // Ojo con las negaciones: "no quiero hablar con agente" contiene la palabra "agente",
+  // pero significa EXACTAMENTE LO CONTRARIO. Sin esta comprobación, a un padre que pide
+  // que NO lo transfieran se le transfiere igual, que es lo peor que puede pasar.
+  const estaNegado = /\bno\s+(quiero|necesito|deseo|me\s+interesa|hace\s+falta|es\s+necesario)\b|\bprefiero\s+no\b|\bsin\s+(asesor|agente)\b|\bno\s+con\s+(un\s+)?(asesor|agente)\b|\bpor\s+ahora\s+no\b/.test(t);
+  if (estaNegado) return false;
+
+  return true;
 }
 
 // Frases de insistencia — el padre quiere humano YA, sin importar el contexto
