@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.16-diagnostico-completo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.16-reconciliacion-asignaciones'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -549,14 +549,16 @@ async function asegurarAsignacionesAcrux(tenantId, conversaciones) {
   const yaAsignadasMap = {};
   yaAsignadas.forEach(a => { yaAsignadasMap[a.contacto_id] = a; });
 
-  // Traer los vendedores una sola vez, para poder emparejar el nombre real de Odoo
-  // (ej. "Vanessa Lopez Carreto") contra nuestros usuarios (ej. "Vanessa Carreto").
-  const vendedores = await UsuarioPanel.find({ tenant_id: tenantId, role: 'vendedor' });
+  // Traer TODOS los usuarios activos (no solo vendedores) — Sylvia es "admin" en
+  // nuestro sistema pero también atiende chats reales directo desde Odoo, así que
+  // debe poder reconocerse igual que Cindy o Vanessa. Excluimos solo a "Administrador"
+  // (la cuenta de servicio compartida), que no es una persona real.
+  const usuariosActivos = await UsuarioPanel.find({ tenant_id: tenantId, activo: true, nombre: { $ne: 'Administrador' } });
   const normalizar = s => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').split(/\s+/).filter(Boolean);
   const encontrarVendedorPorNombre = (nombreOdoo) => {
     const palabrasOdoo = normalizar(nombreOdoo);
     if (!palabrasOdoo.length) return null;
-    return vendedores.find(v => {
+    return usuariosActivos.find(v => {
       const palabrasV = normalizar(v.nombre);
       const coincidencias = palabrasV.filter(p => palabrasOdoo.includes(p)).length;
       return coincidencias >= Math.min(2, palabrasV.length);
@@ -4821,6 +4823,69 @@ app.get('/api/debug/contacto/:numero', authMiddleware, async (req, res) => {
 // Diagnóstico COMPLETO — todo de una vez, sin teorías: roles reales de cada usuario,
 // asignaciones guardadas en AsignacionAcrux, y los últimos 20 registros crudos de
 // AcruxLab con el agente que cada uno tiene ANTES de cualquier filtro.
+// CORRECCIÓN ÚNICA (no automática, hay que llamarla a propósito): revisa TODAS las
+// asignaciones ya guardadas en AsignacionAcrux, las compara contra quién realmente
+// respondió en Odoo (el agente derivado del último mensaje saliente real), y corrige
+// cualquier caso donde no coincidan — por ejemplo, chats que Vanessa o Sylvia
+// atendieron de verdad pero quedaron mal guardados como "Cindy Godoy" por el bug
+// anterior del reparto automático.
+app.post('/api/debug/reconciliar-asignaciones-acrux', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const usuariosActivos = await UsuarioPanel.find({ tenant_id: req.user.tenant_id, activo: true, nombre: { $ne: 'Administrador' } });
+    const normalizar = s => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').split(/\s+/).filter(Boolean);
+    const encontrarUsuarioPorNombre = (nombreOdoo) => {
+      const palabrasOdoo = normalizar(nombreOdoo);
+      if (!palabrasOdoo.length) return null;
+      return usuariosActivos.find(v => {
+        const palabrasV = normalizar(v.nombre);
+        const coincidencias = palabrasV.filter(p => palabrasOdoo.includes(p)).length;
+        return coincidencias >= Math.min(2, palabrasV.length);
+      }) || null;
+    };
+
+    // Traer el agente REAL más reciente (derivado de Odoo) para cada contacto_id
+    const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
+      [[]],
+      { fields: ['id', 'contact_id', 'from_me', 'user_id', 'date_message'], limit: 1000, order: 'date_message desc' }
+    ) || [];
+    const agenteOdooPorContacto = {};
+    const fechaPorContacto = {};
+    mensajes.forEach(m => {
+      if (!m.from_me || !m.user_id || !m.contact_id) return;
+      const cid = m.contact_id[0];
+      if (!fechaPorContacto[cid] || m.date_message > fechaPorContacto[cid]) {
+        fechaPorContacto[cid] = m.date_message;
+        agenteOdooPorContacto[cid] = m.user_id[1];
+      }
+    });
+
+    const asignaciones = await AsignacionAcrux.find({ tenant_id: req.user.tenant_id });
+    let corregidas = 0;
+    const detalle = [];
+
+    for (const asign of asignaciones) {
+      const agenteOdoo = agenteOdooPorContacto[asign.contacto_id];
+      if (!agenteOdoo || agenteOdoo === 'Administrador') continue; // sin agente real detectable, no tocar
+
+      const usuarioReal = encontrarUsuarioPorNombre(agenteOdoo);
+      if (!usuarioReal) continue; // el agente de Odoo no corresponde a ningún usuario nuestro conocido
+
+      if (usuarioReal.nombre !== asign.agente_nombre) {
+        detalle.push({ contacto_id: asign.contacto_id, antes: asign.agente_nombre, ahora: usuarioReal.nombre });
+        asign.agente_id = usuarioReal._id;
+        asign.agente_nombre = usuarioReal.nombre;
+        await asign.save();
+        corregidas++;
+      }
+    }
+
+    res.json({ ok: true, total_revisadas: asignaciones.length, total_corregidas: corregidas, detalle });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get('/api/debug/diagnostico-completo-acrux', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
