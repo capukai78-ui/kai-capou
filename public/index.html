@@ -1171,9 +1171,16 @@ async function loadChatsLive(){
 }
 
 function actualizarBadge(convs){
-  const esperando = convs.filter(c=>c.estado==='esperando_agente').length;
+  // Cuenta todo lo que requiere acción: los que esperan agente + los que ya están en
+  // atención pero el padre escribió de último y aún no se le contesta.
+  const porAtender = convs.filter(c => {
+    if(c.estado === 'esperando_agente') return true;
+    if(c.estado !== 'humano') return false;
+    const ultimo = c.mensajes?.length ? c.mensajes[c.mensajes.length-1] : null;
+    return ultimo && ultimo.de === 'padre';
+  }).length;
   const badge = document.getElementById('badge-chatslive');
-  if(esperando>0){ badge.style.display='block'; badge.textContent=esperando; }
+  if(porAtender>0){ badge.style.display='block'; badge.textContent=porAtender; }
   else { badge.style.display='none'; }
 }
 
@@ -1190,11 +1197,20 @@ function pintarListaChats(convs){
     return `<span style="font-size:9px;padding:2px 7px;border-radius:10px;background:${cfg.bg};color:${cfg.color};font-weight:500">${cfg.label}</span>`;
   };
 
-  lista.innerHTML = convs.map(c => `
-    <div onclick="abrirChat('${c._id}')" style="padding:12px;border-radius:10px;cursor:pointer;margin-bottom:6px;background:${_chatActivoId===c._id?'var(--bg3)':'transparent'};border:1px solid ${_chatActivoId===c._id?'var(--border2)':'transparent'}" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='${_chatActivoId===c._id?'var(--bg3)':'transparent'}'">
+  lista.innerHTML = convs.map(c => {
+    // PENDIENTE = la agente ya tiene el chat en atención, el padre escribió de último,
+    // y todavía no se le contesta. No se muestra cuando el estado es "Esperando",
+    // porque esa etiqueta ya avisa lo mismo y saldrían dos avisos repetidos.
+    const ultimoMsg = c.mensajes?.length ? c.mensajes[c.mensajes.length-1] : null;
+    const pendiente = ultimoMsg && ultimoMsg.de === 'padre' && c.estado === 'humano';
+    return `
+    <div onclick="abrirChat('${c._id}')" style="padding:12px;border-radius:10px;cursor:pointer;margin-bottom:6px;${pendiente?'border-left:3px solid #D8503C;':''}background:${_chatActivoId===c._id?'var(--bg3)':(pendiente?'rgba(216,80,60,.04)':'transparent')};border:1px solid ${_chatActivoId===c._id?'var(--border2)':'transparent'}" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='${_chatActivoId===c._id?'var(--bg3)':(pendiente?'rgba(216,80,60,.04)':'transparent')}'">
       <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:4px">
         <div style="font-weight:600;font-size:13px">${c.nombre || c.numero}</div>
-        <span style="font-size:9px;padding:2px 6px;border-radius:5px;background:${estadoColor(c.estado)}22;color:${estadoColor(c.estado)};white-space:nowrap">${estadoTxt(c.estado)}</span>
+        <div style="display:flex;align-items:center;gap:5px">
+          ${pendiente ? `<span style="font-size:9px;font-weight:700;padding:2px 6px;border-radius:5px;background:#FDE4E4;color:#D8503C;white-space:nowrap">⏳ PENDIENTE</span>` : ''}
+          <span style="font-size:9px;padding:2px 6px;border-radius:5px;background:${estadoColor(c.estado)}22;color:${estadoColor(c.estado)};white-space:nowrap">${estadoTxt(c.estado)}</span>
+        </div>
       </div>
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
         ${canalBadge(c)}
@@ -1204,7 +1220,8 @@ function pintarListaChats(convs){
       <div style="font-size:11px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.mensajes?.length?c.mensajes[c.mensajes.length-1].texto:''}</div>
       ${c.agente_nombre?`<div style="font-size:10px;color:var(--g);margin-top:4px">👤 ${c.agente_nombre}</div>`:''}
     </div>
-  `).join('');
+  `;
+  }).join('');
 }
 
 async function abrirChat(id){
@@ -1558,13 +1575,19 @@ function renderListaAcrux(conversaciones){
     lista.innerHTML = '<div style="text-align:center;padding:30px 14px;color:var(--text3);font-size:12px">No hay chats que coincidan</div>';
     return;
   }
-  lista.innerHTML = conversaciones.map(c => `
-    <div onclick="abrirAcruxChat(${c.contacto_id})" style="padding:12px;border-radius:10px;cursor:pointer;margin-bottom:0;border-bottom:1px solid var(--border);background:${_acruxContactoActivo===c.contacto_id?'var(--acrux2)':'transparent'}" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='${_acruxContactoActivo===c.contacto_id?'var(--acrux2)':'transparent'}'">
+  lista.innerHTML = conversaciones.map(c => {
+    // PENDIENTE = el último mensaje es del padre/madre y todavía nadie le ha contestado.
+    // Se marca bien visible para que la vendedora sepa de un vistazo a quién le debe respuesta.
+    const pendiente = c.ultimo_de === 'padre';
+    return `
+    <div onclick="abrirAcruxChat(${c.contacto_id})" style="padding:12px;border-radius:10px;cursor:pointer;margin-bottom:0;border-bottom:1px solid var(--border);${pendiente?'border-left:3px solid #D8503C;':''}background:${_acruxContactoActivo===c.contacto_id?'var(--acrux2)':(pendiente?'rgba(216,80,60,.04)':'transparent')}" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='${_acruxContactoActivo===c.contacto_id?'var(--acrux2)':(pendiente?'rgba(216,80,60,.04)':'transparent')}'">
       <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:4px">
         <div style="font-weight:600;font-size:13px">${c.nombre || c.numero || 'Sin nombre'}</div>
         <div style="display:flex;align-items:center;gap:6px">
           <span style="font-size:9px;color:var(--text3)">${tiempoRelativo(c.ultima_fecha)}</span>
-          ${c.no_leidos ? `<span style="font-size:9px;padding:2px 6px;border-radius:5px;background:var(--acrux2);color:var(--acrux)">${c.no_leidos} nuevo${c.no_leidos>1?'s':''}</span>` : ''}
+          ${c.no_leidos
+            ? `<span style="font-size:9px;font-weight:700;padding:2px 6px;border-radius:5px;background:#FDE4E4;color:#D8503C">${c.no_leidos} nuevo${c.no_leidos>1?'s':''}</span>`
+            : (pendiente ? `<span style="font-size:9px;font-weight:700;padding:2px 6px;border-radius:5px;background:#FDE4E4;color:#D8503C">⏳ PENDIENTE</span>` : '')}
         </div>
       </div>
       ${c.etiquetas?.length ? `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px">${c.etiquetas.map(t=>{const col=colorEtiqueta(t);return `<span style="font-size:9px;font-weight:600;background:${col.bg};color:${col.fg};padding:2px 8px;border-radius:8px">${t}</span>`;}).join('')}</div>` : ''}
@@ -1572,7 +1595,8 @@ function renderListaAcrux(conversaciones){
       <div style="font-size:11px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.ultimo_de==='agente'?(c.agente?c.agente+': ':'Tú: '):''}${c.ultimo_mensaje||''}</div>
       ${c.agente ? `<div style="font-size:9px;color:var(--acrux);margin-top:2px">Atendido por ${c.agente}${c.agente_fecha?' · '+tiempoRelativo(c.agente_fecha):''}</div>` : ''}
     </div>
-  `).join('');
+  `;
+  }).join('');
 }
 
 function filtrarListaAcrux(){
@@ -1601,7 +1625,12 @@ async function loadAcruxLista(){
   try {
     const r = await fetch(API+'/api/acrux/conversaciones',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
     const badgeVista = document.getElementById('cl-vista-usuario');
-    if(badgeVista) badgeVista.textContent = r.es_supervisor ? '👁 Vista supervisor — todos' : '👤 Mis chats';
+    if(badgeVista){
+      // Un solo número: chats donde el padre escribió de último y aún no se le contesta
+      // (incluye tanto los que tienen mensajes sin leer como los ya leídos sin responder).
+      const pendientes = (r.conversaciones||[]).filter(c => c.ultimo_de === 'padre').length;
+      badgeVista.textContent = (r.es_supervisor ? '👁 Vista supervisor — todos' : '👤 Mis chats') + (pendientes ? `  ·  ⏳ ${pendientes} por responder` : '');
+    }
 
     // Mostrar/ocultar el selector de agente ANTES del return temprano — si esto se
     // dejaba después, un vendedor con cero chats (ni propios ni sin asignar) se
