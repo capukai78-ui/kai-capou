@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.16-fix-consistencia-traspaso'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.16-reintento-odoo-refresh'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -783,22 +783,35 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
 
 // Envía un mensaje de texto por AcruxLab — misma llamada real confirmada y usada en
 // /api/acrux/responder, extraída aquí para reutilizarla también desde el motor automático.
-async function enviarTextoAcruxLab(contactoId, texto) {
-  return odooCallLocal(
-    'acrux.chat.conversation',
-    'send_message',
-    [[contactoId], {
-      text: texto,
-      from_me: true,
-      ttype: 'text',
-      res_model: '',
-      res_id: 0,
-      id: -2,
-      date_message: new Date().toISOString().replace('T', ' ').substring(0, 19),
-      button_ids: []
-    }],
-    { context: { lang: 'es_GT', tz: 'America/Guatemala', is_acrux_chat_room: true } }
-  );
+async function enviarTextoAcruxLab(contactoId, texto, intento = 1) {
+  try {
+    return await odooCallLocal(
+      'acrux.chat.conversation',
+      'send_message',
+      [[contactoId], {
+        text: texto,
+        from_me: true,
+        ttype: 'text',
+        res_model: '',
+        res_id: 0,
+        id: -2,
+        date_message: new Date().toISOString().replace('T', ' ').substring(0, 19),
+        button_ids: []
+      }],
+      { context: { lang: 'es_GT', tz: 'America/Guatemala', is_acrux_chat_room: true } }
+    );
+  } catch (e) {
+    // Error transitorio conocido del conector de WhatsApp de Odoo ("no puede escribir en
+    // esta conversación, refresque la pantalla") — pasa por condiciones de carrera internas
+    // del módulo, no por algo que hicimos mal. Reintentamos 1 vez tras una breve pausa.
+    const esErrorTransitorio = /refresque la pantalla|can't write in this conversation/i.test(e.message || '');
+    if (esErrorTransitorio && intento < 3) {
+      console.log(`🔁 [AcruxLab] Reintentando envío a contacto ${contactoId} (intento ${intento + 1}) tras error transitorio de Odoo`);
+      await new Promise(r => setTimeout(r, 2000 * intento));
+      return enviarTextoAcruxLab(contactoId, texto, intento + 1);
+    }
+    throw e;
+  }
 }
 
 // ⚠️ INTERRUPTOR — KAI atendiendo automático por AcruxLab. Apagado a propósito por
