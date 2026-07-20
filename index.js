@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-filtro-correos-entrantes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-motor-activo-y-contactados'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1014,7 +1014,7 @@ setTimeout(procesarNuevosMensajesAcruxLab, 8000); // primera corrida poco despu�
 //
 // ⚠️ INTERRUPTOR: apagado por defecto. Se escribe a familias REALES, así que conviene
 // probarlo primero con el botón "Contactar ahora (prueba)" antes de dejarlo automático.
-const MOTOR_PROACTIVO_ACTIVO = false;
+const MOTOR_PROACTIVO_ACTIVO = true;  // ACTIVADO — contacta leads sin asignar cada 10 min en horario laboral
 const MAX_LEADS_POR_CORRIDA = 5;   // de cuántos en cuántos, para no mandar una avalancha
 // Arma el primer mensaje. Si el lead YA trae el nivel (viene del formulario), no se lo
 // volvemos a preguntar — se le confirma que recibimos su solicitud para ese nivel y se
@@ -3917,7 +3917,38 @@ app.get('/api/motor/escanear', authMiddleware, async (req, res) => {
       { fields: ['id','name','phone','mobile','partner_name','contact_name','email_from','stage_id','tag_ids','user_id','create_date','type','team_id','fb_form_id','x_studio_comentarios','x_studio_notas_1'], limit: 200 }
     ) || [];
 
-    const contactados = [];
+    // Leads que KAI YA contactó — antes esta lista estaba siempre vacía y por eso
+    // nunca se veían en el panel. Se cruzan con MongoDB para saber si el padre ya
+    // contestó y en qué nivel de interés va.
+    const contactadosOdoo = await odooCallLocal('crm.lead', 'search_read',
+      [[['active', '=', true], ['tag_ids', 'in', [tagContactadoId]], ['create_date', '>=', hace30d]]],
+      { fields: ['id', 'name', 'phone', 'mobile', 'partner_name', 'contact_name', 'email_from', 'create_date', 'user_id', 'x_studio_comentarios'], limit: 100, order: 'create_date desc' }
+    ) || [];
+
+    const contactados = await Promise.all(contactadosOdoo.map(async (l) => {
+      const tel = (l.mobile && String(l.mobile) !== 'false') ? l.mobile : ((l.phone && String(l.phone) !== 'false') ? l.phone : null);
+      const telLimpio = tel ? String(tel).replace(/\D/g, '') : null;
+      const contactoMongo = telLimpio
+        ? await Contacto.findOne({ tenant_id: req.user.tenant_id, numero: telLimpio })
+            .select('nombre nivel_interes nivel_calor_etiqueta ultimo_contacto total_conversaciones')
+        : null;
+
+      // ¿Ya contestó? Si tiene más de una interacción registrada es que hubo diálogo.
+      const yaRespondio = !!(contactoMongo && (contactoMongo.total_conversaciones || 0) > 0);
+
+      return {
+        id: l.id,
+        nombre: l.partner_name || l.contact_name || l.name,
+        telefono: tel,
+        email: l.email_from || null,
+        nivel: contactoMongo?.nivel_interes || l.x_studio_comentarios || null,
+        vendedor: l.user_id?.[1] || null,
+        contactado_el: l.create_date?.substring(0, 16),
+        ya_respondio: yaRespondio,
+        clasificacion: contactoMongo?.nivel_calor_etiqueta || (yaRespondio ? 'En conversación con KAI' : 'Esperando respuesta'),
+        ultima_actividad: contactoMongo?.ultimo_contacto || null
+      };
+    }));
 
     // Leads sin WhatsApp válido
     const sinWA = await odooCallLocal('crm.lead', 'search_read',
@@ -3947,6 +3978,8 @@ app.get('/api/motor/escanear', authMiddleware, async (req, res) => {
       ok: true,
       resumen: {
         pendientes_de_contactar: pendientes.length,
+        contactados_por_kai: contactados.length,
+        ya_respondieron: contactados.filter(c => c.ya_respondio).length,
   
         sin_whatsapp_valido: sinWA.length
       },
@@ -3965,7 +3998,7 @@ app.get('/api/motor/escanear', authMiddleware, async (req, res) => {
         posible_duplicado: !!duplicadoDe,
         duplicado_de_id: duplicadoDe
       })),
-      contactados: contactados.map(l => ({ id: l.id, nombre: l.partner_name || l.name, telefono: l.phone })),
+      contactados,
       sin_whatsapp: sinWA.map(l => ({ id: l.id, nombre: l.partner_name || l.name, telefono: l.phone }))
     });
   } catch(e) { res.status(500).json({ ok: false, error: e.message }); }
