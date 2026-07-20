@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-fix-desaparecen-al-clic'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-reparar-conversacion-faltante'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -5740,6 +5740,62 @@ app.post('/api/motor/migrar-a-acrux', authMiddleware, async (req, res) => {
       migrados: resultados.filter(r => r.ok).length,
       fallidos: resultados.filter(r => !r.ok).length,
       detalle: resultados
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Contactos del formulario que NO tienen conversación en el panel — pasa con los que
+// se contactaron antes de que el sistema creara la conversación automáticamente, y por
+// eso no aparecen en Chats en Vivo. Con ?reparar=1 se les crea la que falta.
+app.get('/api/debug/contactos-sin-conversacion', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const contactos = await Contacto.find({
+      tenant_id: req.user.tenant_id,
+      canal_origen: 'formulario_admisiones'
+    }).limit(100);
+
+    const revisados = [];
+    let reparados = 0;
+
+    for (const c of contactos) {
+      const conv = await Conversacion.findOne({ tenant_id: req.user.tenant_id, numero: c.numero });
+      const tiene = !!conv;
+
+      if (!tiene && req.query.reparar === '1') {
+        const vendedor = await asignarAgenteLibre(req.user.tenant_id);
+        const primerNombre = c.nombre ? c.nombre.split(' ')[0] : null;
+        await Conversacion.create({
+          tenant_id: req.user.tenant_id,
+          numero: c.numero,
+          nombre: c.nombre || null,
+          canal: 'whatsapp',
+          estado: 'bot',
+          agente_id: vendedor?._id || null,
+          agente_nombre: vendedor?.nombre || null,
+          motivo: `Contacto proactivo de KAI — Formulario de Admisiones${c.nivel_interes ? ' (' + c.nivel_interes + ')' : ''}`,
+          mensajes: [{ de: 'bot', texto: MENSAJE_PRIMER_CONTACTO(primerNombre, c.nivel_interes || null), fecha: c.ultimo_contacto || new Date() }],
+          ultimaActividad: c.ultimo_contacto || new Date()
+        });
+        reparados++;
+      }
+
+      revisados.push({
+        numero: c.numero,
+        nombre: c.nombre,
+        nivel: c.nivel_interes || null,
+        lead: c.odoo_lead_id || null,
+        tiene_conversacion: tiene,
+        estado: conv?.estado || null
+      });
+    }
+
+    res.json({
+      ok: true,
+      total_contactos: revisados.length,
+      sin_conversacion: revisados.filter(r => !r.tiene_conversacion).length,
+      reparados,
+      contactos: revisados
     });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
