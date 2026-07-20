@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-migrar-a-acrux'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-motor-acrux-y-sin-parpadeo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1023,7 +1023,7 @@ setTimeout(procesarNuevosMensajesAcruxLab, 8000); // primera corrida poco despu�
 //
 // ⚠️ INTERRUPTOR: apagado por defecto. Se escribe a familias REALES, así que conviene
 // probarlo primero con el botón "Contactar ahora (prueba)" antes de dejarlo automático.
-const MOTOR_PROACTIVO_ACTIVO = false; // APAGADO temporalmente: validar primero la ruta por AcruxLab con 1 lead
+const MOTOR_PROACTIVO_ACTIVO = true; // ACTIVO — contacta por AcruxLab (número oficial) cada 10 min en horario laboral
 // Por dónde sale el primer contacto. DEBE ser 'acrux': ese es el número OFICIAL del
 // colegio, el que las familias reconocen. El canal 'meta' usa el número 4052 2338, que
 // es SOLO DE PRUEBAS — no debe usarse para escribirle a familias reales.
