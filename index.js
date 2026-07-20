@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-asignar-faltantes-odoo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-forzar-vendedor'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -5774,6 +5774,17 @@ app.get('/api/debug/estado-leads-odoo', authMiddleware, async (req, res) => {
     }
 
     const debeAsignar = req.query.asignar === '1';
+    // Opcional: forzar que TODOS vayan a un vendedor concreto, en vez del reparto
+    // automático. Útil cuando el equipo ya decidió quién los va a trabajar.
+    // Ej: ?asignar=1&forzar=vanessa.carreto@capouilliez.edu.gt
+    let vendedorForzado = null;
+    if (req.query.forzar) {
+      vendedorForzado = await UsuarioPanel.findOne({
+        tenant_id: req.user.tenant_id,
+        email: new RegExp('^' + String(req.query.forzar).trim() + '$', 'i')
+      });
+      if (!vendedorForzado) return res.json({ ok: false, error: `No existe un usuario con el correo "${req.query.forzar}"` });
+    }
     let asignados = 0;
     const resultado = [];
 
@@ -5785,10 +5796,21 @@ app.get('/api/debug/estado-leads-odoo', authMiddleware, async (req, res) => {
       const conv = await Conversacion.findOne({ tenant_id: req.user.tenant_id, numero: c.numero }).sort({ ultimaActividad: -1 });
       let vendedorKai = conv?.agente_id ? await UsuarioPanel.findById(conv.agente_id) : null;
 
+      // Si se pidió forzar un vendedor concreto, ese manda sobre lo que hubiera.
+      let asignadoAhoraEnKai = false;
+      if (debeAsignar && vendedorForzado && conv) {
+        if (String(conv.agente_id || '') !== String(vendedorForzado._id)) {
+          conv.agente_id = vendedorForzado._id;
+          conv.agente_nombre = vendedorForzado.nombre;
+          await conv.save();
+          asignadoAhoraEnKai = true;
+        }
+        vendedorKai = vendedorForzado;
+      }
+
       // Si la conversación quedó SIN vendedor (pasa con las que se crearon antes de que
       // el sistema asignara desde el primer contacto), le damos uno ahora por reparto
       // 1 a 1 y lo guardamos, para que Odoo y el panel queden diciendo lo mismo.
-      let asignadoAhoraEnKai = false;
       if (debeAsignar && !vendedorKai && conv) {
         const nuevo = await asignarAgenteLibre(req.user.tenant_id);
         if (nuevo) {
@@ -5804,14 +5826,18 @@ app.get('/api/debug/estado-leads-odoo', authMiddleware, async (req, res) => {
       if (debeAsignar && vendedorKai) {
         if (!vendedorKai.odoo_user_id) {
           accion = `NO se pudo: a ${vendedorKai.nombre} le falta el ID de Odoo en Usuarios y Sedes`;
-        } else if (l.user_id) {
+        } else if (l.user_id && !vendedorForzado) {
           accion = `ya tenía vendedor en Odoo (${l.user_id[1]}), no se tocó`;
+        } else if (l.user_id && vendedorForzado && l.user_id[0] === vendedorKai.odoo_user_id) {
+          accion = `ya estaba con ${vendedorKai.nombre} en Odoo`;
         } else {
           await odooCallLocal('crm.lead', 'write', [[l.id], { user_id: vendedorKai.odoo_user_id }]).catch(() => {});
           await odooCallLocal('crm.lead', 'message_post', [[l.id]], {
             body: `👤 Asignado a ${vendedorKai.nombre} desde el panel de KAI.`
           }).catch(() => {});
-          accion = `asignado a ${vendedorKai.nombre}`;
+          accion = l.user_id
+            ? `reasignado de ${l.user_id[1]} a ${vendedorKai.nombre}`
+            : `asignado a ${vendedorKai.nombre}`;
           asignados++;
         }
       }
