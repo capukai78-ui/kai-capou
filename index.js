@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-fix-negacion-agente'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-vendedor-desde-primer-contacto'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1094,8 +1094,24 @@ async function contactarLeadPorWhatsApp(tenant, lead) {
   if (resultado?.messages?.length) {
     const tagContactadoId = await getOdooTagId(TAG_KAI_CONTACTADO);
     await odooCallLocal('crm.lead', 'write', [[lead.id], { tag_ids: [[4, tagContactadoId]] }]).catch(() => {});
+
+    // Asignar vendedor DESDE YA (reparto 1 a 1), aunque KAI siga atendiendo la
+    // conversación. Así la vendedora ve el lead como suyo desde el primer momento y
+    // puede seguirlo, mientras KAI hace el trabajo de pedir datos y resolver dudas.
+    // El traspaso real (cuando KAI deja de responder) ocurre después, al detectar
+    // interés de verdad — y se le entrega a ESTA MISMA vendedora, no a otra.
+    let vendedorAsignado = null;
+    try {
+      vendedorAsignado = await asignarAgenteLibre(tenant._id);
+      if (vendedorAsignado?.odoo_user_id) {
+        await odooCallLocal('crm.lead', 'write', [[lead.id], { user_id: vendedorAsignado.odoo_user_id }]).catch(() => {});
+      }
+    } catch (e) { /* si falla la asignación, el lead sigue sin vendedor — no bloquea el contacto */ }
+
     await odooCallLocal('crm.lead', 'message_post', [[lead.id]], {
-      body: `📱 KAI contactó por WhatsApp (${tel}) automáticamente. Queda a la espera de respuesta del padre/madre.`
+      body: `📱 KAI contactó por WhatsApp (${tel}) automáticamente.` +
+            (vendedorAsignado ? ` Asignado a ${vendedorAsignado.nombre}.` : '') +
+            ` KAI seguirá atendiendo para recabar datos y se lo traspasará cuando muestre interés real.`
     }).catch(() => {});
 
     // Vincular el contacto para que, cuando conteste, KAI ya sepa de qué lead viene,
@@ -1132,7 +1148,9 @@ async function contactarLeadPorWhatsApp(tenant, lead) {
           numero: tel,
           nombre: nombre || null,
           canal: 'whatsapp',
-          estado: 'bot',
+          estado: 'bot', // KAI sigue atendiendo, aunque ya tenga vendedora asignada
+          agente_id: vendedorAsignado?._id || null,
+          agente_nombre: vendedorAsignado?.nombre || null,
           motivo: `Contacto proactivo de KAI — lead #${lead.id} del Formulario de Admisiones${nivel ? ' (' + nivel + ')' : ''}`,
           mensajes: [{ de: 'bot', texto: MENSAJE_PRIMER_CONTACTO(primerNombre, nivel), fecha: new Date() }],
           ultimaActividad: new Date()
@@ -1206,6 +1224,7 @@ async function motorProactivoContactarLeads() {
 }
 
 setInterval(motorProactivoContactarLeads, 10 * 60000); // cada 10 minutos
+setTimeout(motorProactivoContactarLeads, 30000);       // primera corrida a los 30 segundos de arrancar
 
 // Pasa una conversación a estado "esperando_agente" y le asigna uno si hay disponible
 // Genera un resumen breve usando IA del historial de conversación con KAI
@@ -1246,7 +1265,17 @@ async function iniciarHandoff(tenant, numero, nombre, motivoMsg) {
   // Generar resumen de KAI para que el agente vea contexto al entrar
   conv.resumen_kai = await generarResumenParaAgente(numero);
 
-  const agente = await asignarAgenteLibre(tenant._id);
+  // Si esta conversación YA tenía vendedora asignada (ej. desde el contacto proactivo
+  // del formulario), se le entrega a ELLA — no se vuelve a sortear. El padre ya viene
+  // siendo seguido por esa persona y cambiarla a media conversación no tiene sentido.
+  let agente = null;
+  if (conv.agente_id) {
+    agente = await UsuarioPanel.findById(conv.agente_id);
+  }
+  if (!agente) {
+    agente = await asignarAgenteLibre(tenant._id);
+  }
+
   if (agente) {
     conv.estado = 'humano';
     conv.agente_id = agente._id;
