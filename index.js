@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.16-acrux-auto-recuperacion'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.16-fix-raiz-coincidencia-imagenes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -440,7 +440,7 @@ function detectarIndustria(nombreTenant, bienvenida) {
 function buildSystemPrompt(tenant) {
   const industria = detectarIndustria(tenant.nombre, tenant.config?.bienvenida);
   const base = `Eres el asistente virtual oficial de "${tenant.nombre}", una institución de prestigio en Guatemala.\n\nSOBRE ESTE NEGOCIO:\n${tenant.config?.bienvenida || ''}\n\nSERVICIOS:\n${(tenant.config?.menu || []).map(m => `▸ ${m.opcion}: ${m.respuesta}`).join('\n')}\n\nUBICACIONES:\n${(tenant.config?.sedes || []).map(s => `📍 ${s.nombre}: ${s.direccion} | Tel: ${s.telefono} | Horario: ${s.horario}`).join('\n')}`;
-  const instruccionesColegio = `\nERES: Kai, asistente virtual de admisiones. Cálido, profesional, orientado a resultados.\nMISIÓN: Convertir cada conversación en una visita o inscripción.\n\nFLUJO INICIAL:\n1) Saluda con calidez y, si es la primera vez que escribe, pregúntale su nombre antes de continuar. Usa exactamente este formato: "¡Hola! Bienvenido al Colegio Capouilliez 👋 Soy Kai, tu asistente de admisiones.\n\n¿Con quién tengo el gusto de hablar?". Si ya sabes su nombre (por el contexto interno de memoria), NO se lo vuelvas a pedir — salúdalo por su nombre directamente y continúa con calidez, sin sonar frío ni ir directo al grano.\n2) Pregunta el nivel ofreciendo un menú numerado:\n   "¿En qué nivel está interesado? Marca el número:\n   1. Preprimaria\n   2. Primaria\n   3. Básico\n   4. Bachillerato en Ciencias y Letras"\n3) Si elige Preprimaria (1): solicita la fecha de nacimiento del niño/a y, con esa fecha, comparte la tabla de edades para confirmar el grado exacto que le corresponde.\n4) Explica beneficios relevantes al nivel elegido.\n5) Captura: nombre del padre/madre, nombre del alumno, grado, zona, colegio actual, correo.\n6) Ofrece agendar una visita o invita al próximo Open House (sin mencionar que es "el primer sábado de cada mes" — la fecha puede variar, siempre confirma la fecha exacta vigente).\n7) Una sola vez por conversación, después de tener el correo o nombre del alumno, pregunta de forma natural y breve si desea recibir noticias del colegio (ej: "¿Te gustaría que te avisemos de nuestro próximo Open House y noticias del colegio? 📩"). Respeta la respuesta — si dice que no, no insistas ni lo vuelvas a preguntar en esta conversación.\n\nCONTACTO Y ASESORES — MUY IMPORTANTE:\n- Tu prioridad es avanzar la conversación hacia la visita/inscripción TÚ MISMO. NO ofrezcas pasar con un asesor como primera opción ni como salida fácil para dudas generales.\n- Solo sugiere hablar con un asesor humano DESPUÉS de haber intentado avanzar el proceso, o cuando el padre necesita algo que tú no puedes resolver (pregunta muy específica, quiere negociar, pide hablar con alguien directamente).\n- CUANDO EL PADRE MUESTRE INTERÉS REAL DE AGENDAR UNA VISITA, OPEN HOUSE, O INSCRIBIR (ej: "quiero agendar", "sí, quiero la visita", "cómo inscribo", "quiero inscribirlo"): NO le des el número de PBX/WhatsApp como si tuviera que llamar él mismo. En su lugar dile que con gusto lo conecta directamente AHORA con un asesor que le ayudará a coordinar todo, y pregúntale si desea que lo transfieras (ej: "¡Perfecto! Te conecto ahora mismo con un asesor que te ayudará a coordinar la visita y confirmar la fecha. ¿Te parece?"). El sistema detecta esto automáticamente y transfiere la conversación.\n- Los números de PBX 2429-1999 y 2429-1908 son SOLO para si el padre prefiere llamar por su cuenta fuera de WhatsApp, no los ofrezcas como la opción principal cuando ya estás conversando con él aquí mismo.\n- NUNCA uses la palabra "mientras tanto" — está prohibida, suena repetitiva. Usa alternativas naturales o reformula sin esa frase.\n\nSOBRE LAS IMÁGENES — MUY IMPORTANTE:\n- Tú NUNCA decides ni controlas si se manda una imagen — eso lo hace el sistema automáticamente, por fuera de ti, según la pregunta exacta del padre/madre en CADA mensaje (una imagen por mensaje, sobre UN tema específico: cuotas, horarios, requisitos, proceso de admisión, edades, ubicación, o papelería).\n- JAMÁS afirmes en tu respuesta que "ya mandaste una imagen", "aquí tienes las imágenes", o similar — a menos que veas una nota de sistema real confirmándolo para ESE turno exacto. No lo asumas ni lo inventes nunca.\n- Si el padre/madre pide VARIAS cosas o "todas las imágenes" a la vez (ej: "mándame todo", "las 4", "cuotas, horarios y requisitos"): explícale con calidez que puedes ayudarle mejor si pregunta un tema a la vez (ej: "¡Con gusto te ayudo con todo eso! Para que te llegue bien la información, empecemos con uno: ¿qué te gustaría ver primero, cuotas, horarios, requisitos o el proceso de admisión?"). NUNCA pretendas que ya se envió algo cuando el padre pidió varios temas juntos.\n- REGLA ABSOLUTA, SIN EXCEPCIÓN: NUNCA escribas precios, montos, cifras en quetzales, ni rangos de precios en tus respuestas de texto — bajo NINGUNA circunstancia, sin importar cómo esté formulada la pregunta. Todo lo relacionado a precios/cuotas/colegiaturas se resuelve SOLO con imagen. Si el padre pregunta por precios de una forma que no reconoces con claridad, NO inventes ni cites ningún número — en su lugar, pregúntale amablemente de qué nivel/grado necesita el precio, para poder ayudarle con la información exacta.\n\nFORMATO DE RESPUESTA:\n- NUNCA uses asteriscos (**texto**) para negritas ni ningún otro formato de markdown. WhatsApp no lo necesita y se ve mal. Escribe en texto plano natural.\n- No uses guiones para listas si la respuesta es corta — prefiere texto fluido y conversacional.\n\nINACTIVIDAD:\n- Si la conversación lleva más de 3 horas sin actividad ni respuesta del padre, antes de cerrar pregúntale si desea comunicarse con un asesor.\n- Si no responde, informa que se terminará la comunicación por inactividad pero que sigues a las órdenes y que pueden volver a escribir cuando quieran.\n\nLEDS (Liderazgo, Expresión, Deportes y Salud):\n- Alumnos de Primaria y Secundaria reciben 1 vez a la semana un período doble de actividades extracurriculares dentro del horario escolar, sin costo adicional.\n- Actividades disponibles: Fútbol, Baloncesto, Tenis de Mesa, Natación, Artes Visuales, Marimba, Teatro Musical.\n- Los alumnos son quienes eligen a qué actividad inscribirse, y participan en ella durante todo el ciclo escolar (la oferta puede variar cada año).\n\nREGLAS GENERALES:\nResponde de forma natural y cálida como WhatsApp, no como un correo. Nunca des listas largas ni tablas completas — si quieren más info ellos preguntan. Español guatemalteco. NUNCA inventes datos. NUNCA menciones Claude.`;
+  const instruccionesColegio = `\nERES: Kai, asistente virtual de admisiones. Cálido, profesional, orientado a resultados.\nMISIÓN: Convertir cada conversación en una visita o inscripción.\n\nFLUJO INICIAL:\n1) Saluda con calidez y, si es la primera vez que escribe, pregúntale su nombre antes de continuar. Usa exactamente este formato: "¡Hola! Bienvenido al Colegio Capouilliez 👋 Soy Kai, tu asistente de admisiones.\n\n¿Con quién tengo el gusto de hablar?". Si ya sabes su nombre (por el contexto interno de memoria), NO se lo vuelvas a pedir — salúdalo por su nombre directamente y continúa con calidez, sin sonar frío ni ir directo al grano.\n2) Pregunta el nivel ofreciendo un menú numerado:\n   "¿En qué nivel está interesado? Marca el número:\n   1. Preprimaria\n   2. Primaria\n   3. Secundaria (Básico y Bachillerato en Ciencias y Letras)"\n3) Si elige Preprimaria (1): solicita la fecha de nacimiento del niño/a y, con esa fecha, comparte la tabla de edades para confirmar el grado exacto que le corresponde.\n4) Explica beneficios relevantes al nivel elegido.\n5) Captura: nombre del padre/madre, nombre del alumno, grado, zona, colegio actual, correo.\n6) Ofrece agendar una visita o invita al próximo Open House (sin mencionar que es "el primer sábado de cada mes" — la fecha puede variar, siempre confirma la fecha exacta vigente).\n7) Una sola vez por conversación, después de tener el correo o nombre del alumno, pregunta de forma natural y breve si desea recibir noticias del colegio (ej: "¿Te gustaría que te avisemos de nuestro próximo Open House y noticias del colegio? 📩"). Respeta la respuesta — si dice que no, no insistas ni lo vuelvas a preguntar en esta conversación.\n\nCONTACTO Y ASESORES — MUY IMPORTANTE:\n- Tu prioridad es avanzar la conversación hacia la visita/inscripción TÚ MISMO. NO ofrezcas pasar con un asesor como primera opción ni como salida fácil para dudas generales.\n- Solo sugiere hablar con un asesor humano DESPUÉS de haber intentado avanzar el proceso, o cuando el padre necesita algo que tú no puedes resolver (pregunta muy específica, quiere negociar, pide hablar con alguien directamente).\n- CUANDO EL PADRE MUESTRE INTERÉS REAL DE AGENDAR UNA VISITA, OPEN HOUSE, O INSCRIBIR (ej: "quiero agendar", "sí, quiero la visita", "cómo inscribo", "quiero inscribirlo"): NO le des el número de PBX/WhatsApp como si tuviera que llamar él mismo. En su lugar dile que con gusto lo conecta directamente AHORA con un asesor que le ayudará a coordinar todo, y pregúntale si desea que lo transfieras (ej: "¡Perfecto! Te conecto ahora mismo con un asesor que te ayudará a coordinar la visita y confirmar la fecha. ¿Te parece?"). El sistema detecta esto automáticamente y transfiere la conversación.\n- Los números de PBX 2429-1999 y 2429-1908 son SOLO para si el padre prefiere llamar por su cuenta fuera de WhatsApp, no los ofrezcas como la opción principal cuando ya estás conversando con él aquí mismo.\n- NUNCA uses la palabra "mientras tanto" — está prohibida, suena repetitiva. Usa alternativas naturales o reformula sin esa frase.\n\nSOBRE LAS IMÁGENES — MUY IMPORTANTE:\n- Tú NUNCA decides ni controlas si se manda una imagen — eso lo hace el sistema automáticamente, por fuera de ti, según la pregunta exacta del padre/madre en CADA mensaje (una imagen por mensaje, sobre UN tema específico: cuotas, horarios, requisitos, proceso de admisión, edades, ubicación, o papelería).\n- JAMÁS afirmes en tu respuesta que "ya mandaste una imagen", "aquí tienes las imágenes", o similar — a menos que veas una nota de sistema real confirmándolo para ESE turno exacto. No lo asumas ni lo inventes nunca.\n- Si el padre/madre pide VARIAS cosas o "todas las imágenes" a la vez (ej: "mándame todo", "las 4", "cuotas, horarios y requisitos"): explícale con calidez que puedes ayudarle mejor si pregunta un tema a la vez (ej: "¡Con gusto te ayudo con todo eso! Para que te llegue bien la información, empecemos con uno: ¿qué te gustaría ver primero, cuotas, horarios, requisitos o el proceso de admisión?"). NUNCA pretendas que ya se envió algo cuando el padre pidió varios temas juntos.\n- REGLA ABSOLUTA, SIN EXCEPCIÓN: NUNCA escribas precios, montos, cifras en quetzales, ni rangos de precios en tus respuestas de texto — bajo NINGUNA circunstancia, sin importar cómo esté formulada la pregunta. Todo lo relacionado a precios/cuotas/colegiaturas se resuelve SOLO con imagen. Si el padre pregunta por precios de una forma que no reconoces con claridad, NO inventes ni cites ningún número — en su lugar, pregúntale amablemente de qué nivel/grado necesita el precio, para poder ayudarle con la información exacta.\n\nFORMATO DE RESPUESTA:\n- NUNCA uses asteriscos (**texto**) para negritas ni ningún otro formato de markdown. WhatsApp no lo necesita y se ve mal. Escribe en texto plano natural.\n- No uses guiones para listas si la respuesta es corta — prefiere texto fluido y conversacional.\n\nINACTIVIDAD:\n- Si la conversación lleva más de 3 horas sin actividad ni respuesta del padre, antes de cerrar pregúntale si desea comunicarse con un asesor.\n- Si no responde, informa que se terminará la comunicación por inactividad pero que sigues a las órdenes y que pueden volver a escribir cuando quieran.\n\nLEDS (Liderazgo, Expresión, Deportes y Salud):\n- Alumnos de Primaria y Secundaria reciben 1 vez a la semana un período doble de actividades extracurriculares dentro del horario escolar, sin costo adicional.\n- Actividades disponibles: Fútbol, Baloncesto, Tenis de Mesa, Natación, Artes Visuales, Marimba, Teatro Musical.\n- Los alumnos son quienes eligen a qué actividad inscribirse, y participan en ella durante todo el ciclo escolar (la oferta puede variar cada año).\n\nREGLAS GENERALES:\nResponde de forma natural y cálida como WhatsApp, no como un correo. Nunca des listas largas ni tablas completas — si quieren más info ellos preguntan. Español guatemalteco. NUNCA inventes datos. NUNCA menciones Claude.`;
   const instruccionesGeneral = `\nINSTRUCCIONES: Responde en español guatemalteco natural. Máximo 4 líneas. Usa emojis con moderación. NUNCA inventes precios. Eres cálido y profesional.`;
   return base + (industria === 'colegio' ? instruccionesColegio : instruccionesGeneral);
 }
@@ -598,19 +598,21 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
   if (nivelMencionadoAhora) conv.nivelSesion = nivelMencionadoAhora;
 
   let matchImagen = buscarReglaImagenCoincidente(mensajeUsuario, conv.nivelSesion);
-  if (!matchImagen && nivelMencionadoAhora && conv.temaPendiente) {
-    matchImagen = { regla: conv.temaPendiente, ambigua: false };
+  if (!matchImagen && nivelMencionadoAhora && conv.temaPendienteCategoria) {
+    const reglaCompletada = completarTemaPendiente(conv.temaPendienteCategoria, nivelMencionadoAhora);
+    if (reglaCompletada) matchImagen = { regla: reglaCompletada, ambigua: false };
   }
   const PALABRAS_MODO_VISUAL = ['muéstrame', 'muestrame', 'quiero ver', 'envía imágenes', 'envia imagenes', 'fotografías', 'fotografias', 'necesito las imágenes', 'necesito las imagenes', 'mándame las imágenes', 'mandame las imagenes'];
   const esModoVisual = PALABRAS_MODO_VISUAL.some(p => mensajeUsuario.toLowerCase().includes(p));
-  if (!matchImagen && esModoVisual && conv.temaPendiente && conv.nivelSesion) {
-    matchImagen = { regla: conv.temaPendiente, ambigua: false };
+  if (!matchImagen && esModoVisual && conv.temaPendienteCategoria && conv.nivelSesion) {
+    const reglaCompletada = completarTemaPendiente(conv.temaPendienteCategoria, conv.nivelSesion);
+    if (reglaCompletada) matchImagen = { regla: reglaCompletada, ambigua: false };
   }
-  if (matchImagen && matchImagen.ambigua) conv.temaPendiente = matchImagen.regla;
+  if (matchImagen && matchImagen.ambigua) conv.temaPendienteCategoria = matchImagen.categoria;
 
   // ===== IMAGEN DIRECTA — sin pasar por la IA, igual que en WhatsApp =====
   if (matchImagen && !matchImagen.ambigua && matchImagen.regla) {
-    conv.temaPendiente = null;
+    conv.temaPendienteCategoria = null;
     const regla = matchImagen.regla;
     const filtroImg = { tenant_id: tenant._id, activo: true, categoria: regla.categoria };
     if (regla.nivel_educativo) filtroImg.nivel_educativo = { $in: [regla.nivel_educativo, 'Todos'] };
@@ -1271,9 +1273,9 @@ const REGLAS_IMAGEN = [
   { keywords: ['horario','hora','a qué hora','a que hora','cuándo entra','cuando entra','cuándo sale','cuando sale','qué hora'], nivel: [], categoria: 'info_general', nombre_contiene: 'Horario' },
 
   // ── PROGRAMAS ACADÉMICOS ──
-  { keywords: ['cómo es','como es','qué enseñan','que enseñan','metodología','metodologia','programa','plan de estudios','cómo trabajan','como trabajan'], nivel: ['preprimaria','jardín','jardin','infantil','kínder','kinder','párvulos','parvulos'], categoria: 'programas', nombre_contiene: 'Preprimaria' },
-  { keywords: ['cómo es','como es','qué enseñan','que enseñan','metodología','metodologia','programa'], nivel: ['primaria','1°','2°','3°','4°','5°','6°'], categoria: 'programas', nombre_contiene: '(?<!Pre)Primaria' },
-  { keywords: ['cómo es','como es','qué enseñan','que enseñan','metodología','metodologia','programa'], nivel: ['secundaria','básico','basico'], categoria: 'programas', nombre_contiene: 'Secundaria' },
+  { keywords: ['cómo es la','como es la','qué enseñan','que enseñan','metodología','metodologia','programa','plan de estudios','cómo trabajan','como trabajan'], nivel: ['preprimaria','jardín','jardin','infantil','kínder','kinder','párvulos','parvulos'], categoria: 'programas', nombre_contiene: 'Preprimaria' },
+  { keywords: ['cómo es la','como es la','qué enseñan','que enseñan','metodología','metodologia','programa'], nivel: ['primaria','1°','2°','3°','4°','5°','6°'], categoria: 'programas', nombre_contiene: '(?<!Pre)Primaria' },
+  { keywords: ['cómo es la','como es la','qué enseñan','que enseñan','metodología','metodologia','programa'], nivel: ['secundaria','básico','basico'], categoria: 'programas', nombre_contiene: 'Secundaria' },
   { keywords: ['bachillerato','carrera','ciencias y letras','qué bachillerato','que bachillerato'], nivel: [], categoria: 'programas', nombre_contiene: 'Bachillerato' },
 
   // ── UBICACIÓN ──
@@ -1290,24 +1292,54 @@ const REGLAS_IMAGEN = [
 // - { regla:null, ambigua:true } si el tema es claro pero no hay ningún grado — ni en
 //   este mensaje ni establecido antes en esta misma conversación — hay que PREGUNTAR.
 // - null si el mensaje no tiene nada que ver con ningún tema de imagen.
+// Compara si "keyword" aparece en "texto" — comparación simple por substring.
+function contieneKeyword(texto, keyword) {
+  return texto.includes(keyword);
+}
+
 function buscarReglaImagenCoincidente(mensajeUsuario, nivelSesion) {
   const t = (mensajeUsuario || '').toLowerCase();
   const nivelSesionLower = (nivelSesion || '').toLowerCase();
 
-  for (const regla of REGLAS_IMAGEN) {
-    const tieneKeyword = regla.keywords.some(k => t.includes(k));
-    if (!tieneKeyword) continue;
-    if (regla.nivel && regla.nivel.length > 0) {
-      const coincideEnMensaje = regla.nivel.some(n => t.includes(n));
-      if (coincideEnMensaje) return { regla, ambigua: false };
-      // No lo dijo en ESTE mensaje — ¿ya lo estableció antes en esta misma conversación?
-      const coincideEnSesion = nivelSesionLower && regla.nivel.some(n => nivelSesionLower.includes(n));
-      if (coincideEnSesion) return { regla, ambigua: false };
-      return { regla, ambigua: true }; // tema claro, pero no hay grado ni en el mensaje ni en la sesión — se recuerda "regla" como tema pendiente
-    }
-    return { regla, ambigua: false }; // coincidencia clara — se puede mandar la imagen directo
+  // Agrupar TODAS las reglas cuya keyword coincide con el mensaje — puede haber varias
+  // (una por nivel/grado: Preprimaria, Primaria, Secundaria, etc.) bajo el mismo tema,
+  // y hasta de temas distintos si comparten alguna palabra (ej. "bachillerato" es nivel
+  // de Cuotas pero también keyword propia de Programas).
+  const candidatas = REGLAS_IMAGEN.filter(regla => regla.keywords.some(k => contieneKeyword(t, k)));
+  if (!candidatas.length) return null; // no tiene nada que ver con ningún tema de imagen
+
+  // PRIORIDAD 1: una candidata con grado específico que SÍ coincide con ESTE mensaje —
+  // esto es lo más específico posible, va primero para que un grado (ej. "bachillerato")
+  // no termine "secuestrando" la coincidencia hacia un tema distinto sin querer.
+  const matchEnMensaje = candidatas.find(r => r.nivel && r.nivel.length > 0 && r.nivel.some(n => contieneKeyword(t, n)));
+  if (matchEnMensaje) return { regla: matchEnMensaje, ambigua: false, categoria: matchEnMensaje.categoria };
+
+  // PRIORIDAD 2: una candidata que no requiere grado/nivel (coincidencia directa)
+  const sinNivelRequerido = candidatas.find(r => !r.nivel || r.nivel.length === 0);
+  if (sinNivelRequerido) return { regla: sinNivelRequerido, ambigua: false, categoria: sinNivelRequerido.categoria };
+
+  // PRIORIDAD 3: alguna candidata coincide con el grado ya establecido antes en la sesión
+  if (nivelSesionLower) {
+    const matchEnSesion = candidatas.find(r => r.nivel.some(n => nivelSesionLower.includes(n)));
+    if (matchEnSesion) return { regla: matchEnSesion, ambigua: false, categoria: matchEnSesion.categoria };
   }
-  return null; // no tiene nada que ver con ningún tema de imagen
+
+  // Ninguna candidata tiene el grado — el tema es claro, pero falta el grado. Guardamos
+  // la CATEGORÍA (no una regla específica) para poder re-evaluar correctamente cuando
+  // llegue el grado en un mensaje posterior.
+  return { regla: null, ambigua: true, categoria: candidatas[0].categoria };
+}
+
+// Cuando ya sabemos la categoría pendiente (ej. "cuotas") y llega un mensaje que SOLO
+// trae el grado (sin repetir la palabra clave del tema), busca entre TODAS las reglas
+// de esa categoría cuál coincide con el grado — mismo principio que arriba, para no
+// quedarse pegado en la primera regla de la categoría.
+function completarTemaPendiente(categoria, nivelMencionado) {
+  if (!categoria || !nivelMencionado) return null;
+  const nivelLower = nivelMencionado.toLowerCase();
+  const candidatas = REGLAS_IMAGEN.filter(r => r.categoria === categoria);
+  const match = candidatas.find(r => !r.nivel || r.nivel.length === 0 || r.nivel.some(n => nivelLower.includes(n)));
+  return match || null;
 }
 
 // Detecta si un texto menciona un nivel educativo reconocible — se usa para "recordar"
@@ -1411,9 +1443,11 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
 
   // Si ESTE mensaje no menciona ningún tema (cuotas, papelería, etc.) pero SÍ trae el
   // grado, y había un tema pendiente de un mensaje ANTERIOR (ej: "cuotas" → luego solo
-  // "Primaria"), completamos ese tema pendiente en vez de dejarlo pasar sin imagen.
-  if (!matchImagen && nivelMencionadoAhora && ctxSesion.temaPendiente) {
-    matchImagen = { regla: ctxSesion.temaPendiente, ambigua: false };
+  // "Bachillerato"), completamos ese tema pendiente revisando TODAS las reglas de esa
+  // categoría — no una regla fija — para no volver a chocar con la misma limitación.
+  if (!matchImagen && nivelMencionadoAhora && ctxSesion.temaPendienteCategoria) {
+    const reglaCompletada = completarTemaPendiente(ctxSesion.temaPendienteCategoria, nivelMencionadoAhora);
+    if (reglaCompletada) matchImagen = { regla: reglaCompletada, ambigua: false };
   }
 
   // "Modo Visual" — Política de Recuperación de Imágenes: si el padre/madre pide ver
@@ -1423,16 +1457,17 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
   // que ya se sepa, tal como pide la política.
   const PALABRAS_MODO_VISUAL = ['muéstrame', 'muestrame', 'quiero ver', 'envía imágenes', 'envia imagenes', 'fotografías', 'fotografias', 'necesito las imágenes', 'necesito las imagenes', 'mándame las imágenes', 'mandame las imagenes'];
   const esModoVisual = PALABRAS_MODO_VISUAL.some(p => mensajeUsuario.toLowerCase().includes(p));
-  if (!matchImagen && esModoVisual && ctxSesion.temaPendiente && ctxSesion.nivelSesion) {
-    matchImagen = { regla: ctxSesion.temaPendiente, ambigua: false };
+  if (!matchImagen && esModoVisual && ctxSesion.temaPendienteCategoria && ctxSesion.nivelSesion) {
+    const reglaCompletada = completarTemaPendiente(ctxSesion.temaPendienteCategoria, ctxSesion.nivelSesion);
+    if (reglaCompletada) matchImagen = { regla: reglaCompletada, ambigua: false };
   }
 
   if (matchImagen && matchImagen.ambigua) {
-    ctxSesion.temaPendiente = matchImagen.regla; // recordar para cuando llegue el grado solo
+    ctxSesion.temaPendienteCategoria = matchImagen.categoria; // recordar para cuando llegue el grado solo
   }
 
   if (matchImagen && !matchImagen.ambigua && matchImagen.regla) {
-    ctxSesion.temaPendiente = null; // ya se resolvió, no queda nada pendiente
+    ctxSesion.temaPendienteCategoria = null; // ya se resolvió, no queda nada pendiente
     const regla = matchImagen.regla;
     const filtroImg = { tenant_id: tenant._id, activo: true, categoria: regla.categoria };
     if (regla.nivel_educativo) filtroImg.nivel_educativo = { $in: [regla.nivel_educativo, 'Todos'] };
