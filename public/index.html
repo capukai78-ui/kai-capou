@@ -381,6 +381,7 @@ tr:hover td{background:var(--g4)}
                 <div id="cl-chat-numero" style="font-size:11px;color:var(--text3)"></div>
               </div>
               <button class="btn-g" onclick="devolverAKai()" style="font-size:11px;padding:6px 12px">✓ Devolver a KAI</button>
+              <button onclick="soltarConversacion()" title="Quita este chat de la bandeja. Úsalo para felicitaciones o comentarios que no necesitan respuesta." style="font-size:11px;padding:6px 12px;background:none;border:1px solid var(--border2);color:var(--text2);border-radius:6px;cursor:pointer">🗑️ Soltar</button>
             </div>
             <div id="cl-resumen-kai" style="display:none;margin-top:10px;background:var(--g4);border:1px solid var(--border2);border-radius:8px;padding:10px 12px;font-size:11px;color:var(--text2);line-height:1.5">
               <span style="font-weight:600;color:var(--g)">📋 Resumen de KAI:</span> <span id="cl-resumen-kai-texto"></span>
@@ -2048,6 +2049,22 @@ async function enviarMensajeAgente(){
     if(r.ok){ quitarImagenChat(); abrirChat(_chatActivoId); showToast('Enviado ✓','ok'); }
     else { showToast(r.error||'Error al enviar','error'); }
   } catch(e) { showToast('Error de conexión','error'); }
+}
+
+async function soltarConversacion(){
+  if(!_chatActivoId) return;
+  if(!confirm('¿Soltar esta conversación? Se quita de la bandeja para que no estorbe. Úsalo cuando no requiere respuesta (felicitaciones, comentarios). No se borra nada.')) return;
+  try {
+    await fetch(API+'/api/conversaciones/'+_chatActivoId+'/soltar',{
+      method:'POST', headers:{'Authorization':'Bearer '+TOKEN}
+    }).then(r=>r.json());
+    showToast('Conversación soltada ✓','ok');
+    _chatActivoId = null;
+    document.getElementById('cl-chat-header').style.display='none';
+    document.getElementById('cl-input-area').style.display='none';
+    document.getElementById('cl-mensajes').innerHTML = '<div style="text-align:center;color:var(--text3);margin-top:40px;font-size:13px">Selecciona una conversación de la lista</div>';
+    loadChatsLive();
+  } catch(e) { showToast('Error','error'); }
 }
 
 async function devolverAKai(){
