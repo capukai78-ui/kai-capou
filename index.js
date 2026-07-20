@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-contacto-por-acruxlab'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-fix-devolver-a-kai'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -5642,6 +5642,39 @@ app.post('/api/motor/proactivo/ejecutar', authMiddleware, async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
+// Conversaciones CERRADAS (invisibles en el panel) — para revisar si alguna se cerró
+// sin querer y "desapareció". Con ?reabrir=1 las devuelve a modo KAI para que se vean.
+app.get('/api/debug/conversaciones-cerradas', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const cerradas = await Conversacion.find({ tenant_id: req.user.tenant_id, estado: 'cerrado' })
+      .sort({ ultimaActividad: -1 }).limit(50)
+      .select('numero nombre canal agente_nombre ultimaActividad motivo mensajes');
+
+    const lista = cerradas.map(c => ({
+      id: c._id,
+      numero: c.numero,
+      nombre: c.nombre || 'Sin nombre',
+      canal: c.canal,
+      agente: c.agente_nombre || null,
+      ultima_actividad: c.ultimaActividad,
+      total_mensajes: (c.mensajes || []).length,
+      ultimo_mensaje: c.mensajes?.length ? c.mensajes[c.mensajes.length - 1].texto?.substring(0, 100) : null
+    }));
+
+    let reabiertas = 0;
+    if (req.query.reabrir === '1') {
+      const r = await Conversacion.updateMany(
+        { tenant_id: req.user.tenant_id, estado: 'cerrado' },
+        { $set: { estado: 'bot', agente_id: null, agente_nombre: null } }
+      );
+      reabiertas = r.modifiedCount || 0;
+    }
+
+    res.json({ ok: true, total_cerradas: lista.length, reabiertas, conversaciones: lista });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 // ¿Se puede INICIAR una conversación en AcruxLab con alguien que nunca nos ha escrito?
 // Necesario para saber si los contactos proactivos del formulario pueden salir por el
 // número oficial (AcruxLab) en vez del número de Meta. Este endpoint solo INSPECCIONA
@@ -6241,7 +6274,13 @@ app.post('/api/conversaciones/:id/devolver-a-kai', authMiddleware, async (req, r
     // Generar resumen del agente para que KAI tenga contexto al retomar
     const resumenAgente = await generarResumenParaKai(conv);
     conv.resumen_agente = resumenAgente;
-    conv.estado = 'cerrado';
+    // Antes se marcaba como 'cerrado' y el chat DESAPARECÍA del panel de inmediato —
+    // parecía que se había perdido. Ahora pasa a 'bot': KAI retoma la atención y la
+    // conversación sigue visible, marcada como "🤖 KAI atendiendo".
+    conv.estado = 'bot';
+    conv.agente_id = null;
+    conv.agente_nombre = null;
+    conv.ultimaActividad = new Date();
     await conv.save();
 
     // Inyectar el resumen en el historial de KAI para esa conversación, para que no repita preguntas
