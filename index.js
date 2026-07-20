@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-mensaje-con-nivel'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-filtro-correos-entrantes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -860,14 +860,15 @@ async function enviarTextoAcruxLab(contactoId, texto, intento = 1) {
       { context: { lang: 'es_GT', tz: 'America/Guatemala', is_acrux_chat_room: true } }
     );
   } catch (e) {
-    // Error transitorio conocido del conector de WhatsApp de Odoo ("no puede escribir en
-    // esta conversación, refresque la pantalla") — pasa por condiciones de carrera internas
-    // del módulo, no por algo que hicimos mal. Reintentamos 1 vez tras una breve pausa.
-    const esErrorTransitorio = /refresque la pantalla|can't write in this conversation/i.test(e.message || '');
-    if (esErrorTransitorio && intento < 3) {
-      console.log(`🔁 [AcruxLab] Reintentando envío a contacto ${contactoId} (intento ${intento + 1}) tras error transitorio de Odoo`);
-      await new Promise(r => setTimeout(r, 2000 * intento));
-      return enviarTextoAcruxLab(contactoId, texto, intento + 1);
+    // Este error NO es transitorio: el módulo de AcruxLab lo lanza cuando un agente
+    // humano tiene tomada la conversación en el ChatRoom. Reintentar no sirve de nada
+    // (mientras la tenga tomada, siempre va a fallar) — hay que dejársela a esa persona.
+    // Lo marcamos como tal para que el motor sincronice la conversación a modo humano.
+    const esConversacionTomada = /refresque la pantalla|can't write in this conversation/i.test(e.message || '');
+    if (esConversacionTomada) {
+      const err = new Error('CONVERSACION_TOMADA_POR_AGENTE');
+      err.conversacionTomada = true;
+      throw err;
     }
     throw e;
   }
@@ -928,7 +929,12 @@ async function procesarNuevosMensajesAcruxLab() {
             agentePorContacto[c.id] = c.agent_id[1]; // nombre del agente humano que la tiene tomada
           }
         });
-      } catch (e) { /* si falla la lectura, seguimos sin este filtro (el reintento cubre lo transitorio) */ }
+      } catch (e) {
+        // Si esta lectura falla, KAI queda "a ciegas" y puede intentar escribir en una
+        // conversación que un agente ya tiene tomada — que es justo lo que provoca el
+        // error de Odoo. Antes se ignoraba en silencio; ahora queda registrado.
+        console.error(`⚠️ [AcruxLab] No se pudo leer quién tiene tomadas las conversaciones (agent_id): ${e.message}`);
+      }
     }
 
     for (const contactoId of Object.keys(porContacto).map(Number)) {
@@ -972,7 +978,19 @@ async function procesarNuevosMensajesAcruxLab() {
         }
         console.log(`🤖 KAI respondió por AcruxLab a contacto ${contactoId}${resultado.handoff ? ' (con traspaso a humano)' : ''}${!resultado.texto ? ' (solo imagen)' : ''}`);
       } catch (e) {
-        console.error(`❌ Error al procesar/responder AcruxLab contacto ${contactoId}:`, e.message);
+        if (e.conversacionTomada) {
+          // Un agente tomó la conversación justo antes de que KAI escribiera. No es un
+          // fallo del sistema: se la dejamos a esa persona y la marcamos como suya, para
+          // no volver a intentarlo cada 45 segundos ni llenar los logs de errores rojos.
+          await AsignacionAcrux.findOneAndUpdate(
+            { tenant_id: tenant._id, contacto_id: contactoId },
+            { modo: 'humano', fecha_modo_humano: new Date() },
+            { upsert: true, setDefaultsOnInsert: true }
+          ).catch(() => {});
+          console.log(`👤 [AcruxLab] Contacto ${contactoId} lo tomó un agente — KAI se retira y se lo deja a esa persona`);
+        } else {
+          console.error(`❌ Error al procesar/responder AcruxLab contacto ${contactoId}:`, e.message);
+        }
       }
     }
   } catch (e) {
@@ -5165,29 +5183,38 @@ async function extraerDatosDelFormulario(leadId) {
   if (cuerpo.length < 40) {
     try {
       const mensajes = await odooCallLocal('mail.message', 'search_read',
-        [[['model', '=', 'crm.lead'], ['res_id', '=', leadId]]],
-        { fields: ['id', 'body', 'subject', 'date'], limit: 10, order: 'date asc' }
+        [[
+          ['model', '=', 'crm.lead'],
+          ['res_id', '=', leadId],
+          ['message_type', '=', 'email']   // SOLO correos entrantes
+        ]],
+        { fields: ['id', 'body', 'subject', 'date', 'message_type'], limit: 10, order: 'date asc' }
       ) || [];
-      // Nos quedamos con el mensaje más largo — normalmente es el correo original
-      // del formulario, no las notas cortas del sistema.
-      const cuerposMensajes = mensajes.map(m => limpiarHtml(m.body)).filter(t => t.length > 40);
+      // Ojo: hay que excluir los correos que SALEN del colegio (respuestas automáticas
+      // tipo "Gracias por su interés..."). Antes se tomaba el mensaje más largo y casi
+      // siempre ganaba esa plantilla de respuesta, no el formulario que llenó la persona.
+      const entrantes = mensajes.filter(m => m.message_type === 'email');
+      const cuerposMensajes = entrantes.map(m => limpiarHtml(m.body)).filter(t => t.length > 40);
       if (cuerposMensajes.length) {
-        cuerposMensajes.sort((a, b) => b.length - a.length);
-        cuerpo = cuerposMensajes[0];
+        cuerpo = cuerposMensajes[0]; // el primero = el formulario original que llegó
       }
-    } catch (e) { /* si falla, seguimos con lo que haya en description */ }
+    } catch (e) {
+      console.error(`⚠️ No se pudo leer el historial del lead ${leadId}: ${e.message}`);
+    }
   }
 
   if (!cuerpo || cuerpo.length < 20) {
     return { ok: false, error: 'No se encontró el texto del formulario ni en la descripción ni en el historial de mensajes del lead' };
   }
 
-  const systemPrompt = `Eres un asistente que extrae datos de solicitudes de admisión de un colegio en Guatemala.
+  const systemPrompt = `Eres un asistente que revisa correos que llegan al Colegio Capouilliez (Guatemala).
 Te voy a dar el texto de un correo. Devuelve ÚNICAMENTE un objeto JSON, sin explicaciones ni markdown.
 
 Formato exacto:
 {
   "es_formulario_admisiones": true o false,
+  "tema": "texto del asunto o tema del formulario, o null",
+  "motivo_descarte": "si es_formulario_admisiones es false, explica brevemente por qué; si es true, null",
   "nombre_padre": "texto o null",
   "nombre_alumno": "texto o null",
   "telefono": "solo dígitos, o null",
@@ -5197,14 +5224,21 @@ Formato exacto:
   "notas": "cualquier dato adicional relevante, o null"
 }
 
-Reglas importantes:
-- "es_formulario_admisiones" es false si el correo es un boletín, publicidad, notificación automática o cualquier cosa que NO sea un padre/madre solicitando información de admisión.
+MUY IMPORTANTE — "es_formulario_admisiones" debe ser FALSE si:
+- La persona busca EMPLEO o manda su currículum (ej. tema "Trabaja con nosotros"). Esto NO es una admisión.
+- Es un boletín, publicidad, notificación automática o correo masivo.
+- Es una respuesta automática enviada POR el colegio.
+- Es cualquier consulta que no sea un padre/madre pidiendo información para inscribir a un hijo.
+
+Solo pon TRUE cuando sea claramente un padre/madre interesado en inscribir a un alumno.
+
+Otras reglas:
 - Si un dato no aparece con claridad, pon null. NO inventes datos.
-- Para el nivel: Básico y Bachillerato cuentan como "Secundaria".
+- Básico y Bachillerato cuentan como "Secundaria".
 - El teléfono debe ser solo dígitos, sin espacios ni símbolos.`;
 
   const respuesta = await llamarClaude(systemPrompt, [{ role: 'user', content: cuerpo.substring(0, 6000) }], 700);
-  if (!respuesta) return { ok: false, error: 'La IA no pudo procesar el correo' };
+  if (!respuesta) return { ok: false, error: 'La IA no devolvió respuesta (puede ser saldo agotado o fallo de conexión con Anthropic)', texto_leido: cuerpo.substring(0, 600) };
 
   let datos;
   try {
@@ -5278,7 +5312,18 @@ app.post('/api/motor/formulario/grabar/:leadId', authMiddleware, async (req, res
 
     const d = extraccion.datos;
     if (!d.es_formulario_admisiones) {
-      return res.json({ ok: false, error: 'Este correo no parece una solicitud de admisión (boletín o notificación automática)', datos: d });
+      // Lo marcamos y dejamos el motivo en Odoo, para que el equipo sepa que ya se revisó
+      // y por qué no aplica (solicitud de empleo, boletín, etc.) sin tener que abrirlo.
+      const tagSinWAId = await getOdooTagId(TAG_KAI_SIN_WHATSAPP);
+      await odooCallLocal('crm.lead', 'write', [[leadId], { tag_ids: [[4, tagSinWAId]] }]).catch(() => {});
+      await odooCallLocal('crm.lead', 'message_post', [[leadId]], {
+        body: `🤖 KAI revisó este correo y NO es una solicitud de admisión.<br>` +
+              `• Tema: ${d.tema || '—'}<br>` +
+              `• Motivo: ${d.motivo_descarte || 'no corresponde a admisiones'}<br>` +
+              `• Remitente: ${d.nombre_padre || '—'} ${d.correo ? '(' + d.correo + ')' : ''}<br>` +
+              `No se contactará por WhatsApp. Queda para que el equipo decida qué hacer.`
+      }).catch(() => {});
+      return res.json({ ok: false, descartado: true, error: 'Este correo no es una solicitud de admisión', datos: d });
     }
 
     const actualizacion = {};
