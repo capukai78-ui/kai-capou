@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-sin-asteriscos-y-no-desaparecen'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-contacto-por-acruxlab'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1023,7 +1023,10 @@ setTimeout(procesarNuevosMensajesAcruxLab, 8000); // primera corrida poco despu�
 //
 // ⚠️ INTERRUPTOR: apagado por defecto. Se escribe a familias REALES, así que conviene
 // probarlo primero con el botón "Contactar ahora (prueba)" antes de dejarlo automático.
-const MOTOR_PROACTIVO_ACTIVO = true;  // ACTIVADO — contacta leads sin asignar cada 10 min en horario laboral
+const MOTOR_PROACTIVO_ACTIVO = false; // APAGADO temporalmente: validar primero la ruta por AcruxLab con 1 lead
+// Por dónde sale el primer contacto: 'acrux' = número oficial del colegio (recomendado),
+// 'meta' = número de la API de Meta (el de pruebas). Las familias reconocen el oficial.
+const CANAL_CONTACTO_PROACTIVO = 'acrux';
 const MAX_LEADS_POR_CORRIDA = 5;   // de cuántos en cuántos, para no mandar una avalancha
 // Arma el primer mensaje. Si el lead YA trae el nivel (viene del formulario), no se lo
 // volvemos a preguntar — se le confirma que recibimos su solicitud para ese nivel y se
@@ -1057,8 +1060,129 @@ function normalizarNivelParaMensaje(textoNivel) {
   return null;
 }
 
-// Contacta un lead concreto. Devuelve { ok, motivo } — se reutiliza tanto por el motor
-// automático como por el botón manual del panel, para que ambos hagan exactamente lo mismo.
+// ===== CONTACTO PROACTIVO POR ACRUXLAB (número oficial del colegio) =====
+// Los mensajes por la API de Meta salen del número de pruebas, no del número oficial
+// que las familias conocen. AcruxLab usa el conector real del colegio, así que el
+// primer contacto sale del número correcto y la conversación queda en el ChatRoom,
+// donde las vendedoras ya trabajan.
+const ACRUX_CONNECTOR_ID = 2; // "Whatsapp conector" (apichat.io) — el número oficial
+
+// Busca la conversación de AcruxLab para un número; si no existe, la crea.
+async function obtenerOCrearConversacionAcrux(numero, nombre) {
+  const existentes = await odooCallLocal('acrux.chat.conversation', 'search_read',
+    [[['number', '=', numero]]],
+    { fields: ['id', 'name', 'number', 'agent_id'], limit: 1 }
+  ) || [];
+  if (existentes.length) return { id: existentes[0].id, creada: false, agente: existentes[0].agent_id?.[1] || null };
+
+  const nuevoId = await odooCallLocal('acrux.chat.conversation', 'create', [{
+    name: nombre || numero,
+    number: numero,
+    connector_id: ACRUX_CONNECTOR_ID
+  }]);
+  if (!nuevoId) throw new Error('Odoo no devolvió el ID de la conversación creada');
+  return { id: nuevoId, creada: true, agente: null };
+}
+
+async function contactarLeadPorAcruxLab(tenant, lead) {
+  const marcarSinWhatsApp = async (nota) => {
+    const tagSinWAId = await getOdooTagId(TAG_KAI_SIN_WHATSAPP);
+    await odooCallLocal('crm.lead', 'write', [[lead.id], { tag_ids: [[4, tagSinWAId]] }]).catch(() => {});
+    await odooCallLocal('crm.lead', 'message_post', [[lead.id]], {
+      body: `⚠️ KAI no pudo contactar por WhatsApp: ${nota}. Queda para seguimiento manual del equipo.`
+    }).catch(() => {});
+  };
+
+  const telCrudo = (lead.mobile && String(lead.mobile) !== 'false') ? lead.mobile
+                 : ((lead.phone && String(lead.phone) !== 'false') ? lead.phone : null);
+  if (!telCrudo) { await marcarSinWhatsApp('el registro no trae número de teléfono'); return { ok: false, motivo: 'sin_telefono' }; }
+
+  let tel = String(telCrudo).replace(/\D/g, '');
+  if (tel.length === 8) tel = '502' + tel;
+  if (tel.length < 11) { await marcarSinWhatsApp(`el número "${telCrudo}" no parece válido`); return { ok: false, motivo: 'telefono_invalido' }; }
+
+  const nombre = lead.partner_name || lead.contact_name || null;
+  const primerNombre = nombre ? nombre.split(' ')[0] : null;
+  const nivel = normalizarNivelParaMensaje(lead.x_studio_comentarios);
+  const texto = MENSAJE_PRIMER_CONTACTO(primerNombre, nivel);
+
+  let conversacion;
+  try {
+    conversacion = await obtenerOCrearConversacionAcrux(tel, nombre);
+  } catch (e) {
+    console.error(`❌ [Motor proactivo] No se pudo abrir conversación en AcruxLab para ${tel}: ${e.message}`);
+    return { ok: false, motivo: 'no_se_pudo_crear_conversacion', detalle: e.message };
+  }
+
+  // Si ya la tenía tomada una vendedora, no nos metemos: es su conversación.
+  if (conversacion.agente) {
+    console.log(`👤 [Motor proactivo] ${tel} ya lo atiende ${conversacion.agente} en el ChatRoom — KAI no interviene`);
+    return { ok: false, motivo: 'ya_atendido_por_agente', agente: conversacion.agente };
+  }
+
+  try {
+    await enviarTextoAcruxLab(conversacion.id, texto);
+  } catch (e) {
+    console.error(`❌ [Motor proactivo] Falló el envío por AcruxLab a ${tel}: ${e.message}`);
+    return { ok: false, motivo: 'envio_rechazado', detalle: e.message };
+  }
+
+  // Registro en Odoo + asignación de vendedora (igual que en el flujo por Meta)
+  const tagContactadoId = await getOdooTagId(TAG_KAI_CONTACTADO);
+  await odooCallLocal('crm.lead', 'write', [[lead.id], { tag_ids: [[4, tagContactadoId]] }]).catch(() => {});
+
+  let vendedorAsignado = null;
+  try {
+    vendedorAsignado = await asignarAgenteLibre(tenant._id);
+    if (vendedorAsignado?.odoo_user_id) {
+      await odooCallLocal('crm.lead', 'write', [[lead.id], { user_id: vendedorAsignado.odoo_user_id }]).catch(() => {});
+    }
+  } catch (e) { /* no bloquea el contacto */ }
+
+  await odooCallLocal('crm.lead', 'message_post', [[lead.id]], {
+    body: `📱 KAI contactó por el número oficial (AcruxLab, ${tel}).` +
+          (vendedorAsignado ? ` Asignado a ${vendedorAsignado.nombre}.` : '') +
+          ` KAI seguirá atendiendo para recabar datos y lo traspasará cuando muestre interés real.`
+  }).catch(() => {});
+
+  // Dejar la asignación registrada en nuestro control de AcruxLab, en modo bot
+  await AsignacionAcrux.findOneAndUpdate(
+    { tenant_id: tenant._id, contacto_id: conversacion.id },
+    {
+      $set: { modo: 'bot' },
+      $setOnInsert: {
+        agente_id: vendedorAsignado?._id || null,
+        agente_nombre: vendedorAsignado?.nombre || null
+      }
+    },
+    { upsert: true, setDefaultsOnInsert: true }
+  ).catch(() => {});
+
+  const zona = (lead.x_studio_notas_1 && String(lead.x_studio_notas_1) !== 'false' && !String(lead.x_studio_notas_1).startsWith('http'))
+    ? String(lead.x_studio_notas_1) : null;
+
+  await Contacto.findOneAndUpdate(
+    { tenant_id: tenant._id, numero: tel },
+    {
+      $set: {
+        nombre: nombre || undefined,
+        odoo_lead_id: lead.id,
+        canal_origen: 'formulario_admisiones',
+        nivel_interes: nivel || undefined,
+        zona: zona || undefined,
+        correo: (lead.email_from && String(lead.email_from) !== 'false') ? lead.email_from : undefined,
+        ultimo_contacto: new Date()
+      },
+      $setOnInsert: { primer_contacto: new Date() }
+    },
+    { upsert: true }
+  ).catch(() => {});
+
+  console.log(`📤 [Motor proactivo] KAI contactó a ${nombre || tel} por AcruxLab (lead #${lead.id}, conv #${conversacion.id}${conversacion.creada ? ', conversación nueva' : ''})${nivel ? ' — ' + nivel : ''}`);
+  return { ok: true, telefono: tel, nombre, nivel, conversacion_acrux: conversacion.id, conversacion_creada: conversacion.creada, vendedor: vendedorAsignado?.nombre || null };
+}
+
+
 async function contactarLeadPorWhatsApp(tenant, lead) {
   // Marca el lead para que no se vuelva a intentar en cada corrida. Sin esto, los
   // registros sin teléfono (correos del formulario, boletines, etc.) se re-consultaban
@@ -1213,7 +1337,8 @@ async function motorProactivoContactarLeads() {
 
     console.log(`🎯 [Motor proactivo] ${conTelefono.length} con teléfono, ${sinTelefono.length} sin teléfono (se marcan para seguimiento manual)`);
     for (const lead of aProcesar) {
-      await contactarLeadPorWhatsApp(tenant, lead);
+      const contactar = CANAL_CONTACTO_PROACTIVO === 'acrux' ? contactarLeadPorAcruxLab : contactarLeadPorWhatsApp;
+      await contactar(tenant, lead);
       await new Promise(r => setTimeout(r, 3000)); // pausa entre envíos, para no saturar
     }
   } catch (e) {
@@ -5502,7 +5627,8 @@ app.post('/api/motor/proactivo/ejecutar', authMiddleware, async (req, res) => {
 
     const resultados = [];
     for (const lead of leads) {
-      const r = await contactarLeadPorWhatsApp(tenant, lead);
+      const contactar = CANAL_CONTACTO_PROACTIVO === 'acrux' ? contactarLeadPorAcruxLab : contactarLeadPorWhatsApp;
+      const r = await contactar(tenant, lead);
       resultados.push({ lead_id: lead.id, nombre: lead.partner_name || lead.contact_name || lead.name, ...r });
       await new Promise(x => setTimeout(x, 3000));
     }
