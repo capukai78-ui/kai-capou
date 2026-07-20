@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-estado-leads-odoo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-asignar-faltantes-odoo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -5783,7 +5783,22 @@ app.get('/api/debug/estado-leads-odoo', authMiddleware, async (req, res) => {
 
       // A quién lo tenemos asignado nosotros (nuestra conversación manda)
       const conv = await Conversacion.findOne({ tenant_id: req.user.tenant_id, numero: c.numero }).sort({ ultimaActividad: -1 });
-      const vendedorKai = conv?.agente_id ? await UsuarioPanel.findById(conv.agente_id) : null;
+      let vendedorKai = conv?.agente_id ? await UsuarioPanel.findById(conv.agente_id) : null;
+
+      // Si la conversación quedó SIN vendedor (pasa con las que se crearon antes de que
+      // el sistema asignara desde el primer contacto), le damos uno ahora por reparto
+      // 1 a 1 y lo guardamos, para que Odoo y el panel queden diciendo lo mismo.
+      let asignadoAhoraEnKai = false;
+      if (debeAsignar && !vendedorKai && conv) {
+        const nuevo = await asignarAgenteLibre(req.user.tenant_id);
+        if (nuevo) {
+          conv.agente_id = nuevo._id;
+          conv.agente_nombre = nuevo.nombre;
+          await conv.save();
+          vendedorKai = nuevo;
+          asignadoAhoraEnKai = true;
+        }
+      }
 
       let accion = null;
       if (debeAsignar && vendedorKai) {
@@ -5809,6 +5824,7 @@ app.get('/api/debug/estado-leads-odoo', authMiddleware, async (req, res) => {
         etapa: l.stage_id?.[1] || null,
         vendedor_en_odoo: l.user_id?.[1] || 'SIN ASIGNAR',
         vendedor_en_kai: vendedorKai?.nombre || 'ninguno',
+        asignado_en_kai_ahora: asignadoAhoraEnKai,
         id_odoo_del_vendedor: vendedorKai?.odoo_user_id || 'NO CONFIGURADO',
         etiquetas: (l.tag_ids || []).map(t => nombresTag[t] || t),
         accion
