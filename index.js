@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.16-reconciliacion-asignaciones'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-oportunidad-sylvia'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -229,6 +229,7 @@ const asignacionAcruxSchema = new mongoose.Schema({
   fecha_asignado:{ type: Date, default: Date.now },
   modo:          { type: String, enum: ['bot', 'humano'], default: 'bot' }, // ¿KAI responde o ya es de un humano?
   fecha_modo_humano: { type: Date, default: null }, // cuándo pasó a modo humano — para la auto-recuperación a los 30 min
+  sin_auto_recuperacion: { type: Boolean, default: false }, // true = KAI nunca retoma este chat solo (ej. Oportunidades de Sylvia)
   resumen_kai: { type: String, default: null } // resumen generado por IA de lo que ya habló KAI, para que el agente no repita preguntas
 });
 asignacionAcruxSchema.index({ tenant_id: 1, contacto_id: 1 }, { unique: true });
@@ -565,15 +566,46 @@ async function asegurarAsignacionesAcrux(tenantId, conversaciones) {
     }) || null;
   };
 
+  // ===== REGLA DE NEGOCIO: etiqueta "Oportunidad" → las atiende Sylvia =====
+  // Las conversaciones que en Odoo tengan la etiqueta "Oportunidad" no entran al
+  // reparto 1 a 1 entre vendedoras — se asignan directo a Sylvia (admisiones/admin).
+  const usuarioOportunidad = usuariosActivos.find(u => normalizar(u.nombre).includes('sylvia')) || null;
+  const tieneEtiquetaOportunidad = (c) => (c.etiquetas || []).some(e => (e || '').toLowerCase().includes('oportunidad'));
+
   for (const conv of conversaciones) {
     const existente = yaAsignadasMap[conv.contacto_id];
     if (existente) {
+      // Si le pusieron la etiqueta "Oportunidad" DESPUÉS de haberse asignado a una
+      // vendedora, y todavía la está atendiendo KAI (modo bot), la movemos a Sylvia.
+      // No tocamos las que ya están en modo humano — ahí ya hay alguien trabajando.
+      if (usuarioOportunidad && tieneEtiquetaOportunidad(conv) && existente.modo === 'bot' && existente.agente_nombre !== usuarioOportunidad.nombre) {
+        try {
+          existente.agente_id = usuarioOportunidad._id;
+          existente.agente_nombre = usuarioOportunidad.nombre;
+          existente.modo = 'humano';
+          existente.fecha_modo_humano = new Date();
+          existente.sin_auto_recuperacion = true;
+          await existente.save();
+          console.log(`🏷️ [Oportunidad] Contacto ${conv.contacto_id} reasignado a ${usuarioOportunidad.nombre} por etiqueta`);
+        } catch (e) { /* no bloqueante */ }
+      }
       conv.agente = existente.agente_nombre;
       conv.agente_fecha = existente.fecha_asignado;
       conv.modo = existente.modo || 'bot';
       continue;
     }
     conv.modo = 'bot'; // por defecto, hasta que se asigne
+
+    // Etiqueta "Oportunidad" en una conversación nueva → directo a Sylvia, sin round-robin.
+    if (usuarioOportunidad && tieneEtiquetaOportunidad(conv)) {
+      try {
+        await AsignacionAcrux.create({ tenant_id: tenantId, contacto_id: conv.contacto_id, agente_id: usuarioOportunidad._id, agente_nombre: usuarioOportunidad.nombre, modo: 'humano', fecha_modo_humano: new Date(), sin_auto_recuperacion: true });
+        conv.agente = usuarioOportunidad.nombre;
+        conv.modo = 'humano';
+        console.log(`🏷️ [Oportunidad] Contacto ${conv.contacto_id} asignado directo a ${usuarioOportunidad.nombre} por etiqueta`);
+      } catch (e) { /* condición de carrera — se toma en el próximo refresh */ }
+      continue;
+    }
 
     // Si ya hay un agente humano REAL (respondió directo desde Odoo, no desde nuestro
     // panel) para esta conversación, respetamos eso — no lo pisamos con el reparto
@@ -887,6 +919,7 @@ async function procesarNuevosMensajesAcruxLab() {
       // la familia sin atención — mismo mecanismo que ya existe en WhatsApp.
       const asign = await AsignacionAcrux.findOne({ tenant_id: tenant._id, contacto_id: contactoId });
       if (asign?.modo === 'humano') {
+        if (asign.sin_auto_recuperacion) continue; // chat fijo con humano (ej. Oportunidad de Sylvia) — KAI nunca lo retoma solo
         const desde = asign.fecha_modo_humano || asign.fecha_asignado;
         const minutosSinRespuestaHumana = (Date.now() - new Date(desde).getTime()) / (1000 * 60);
         if (minutosSinRespuestaHumana < 30) continue; // todavía dentro del tiempo de espera — no meterse
@@ -4829,6 +4862,39 @@ app.get('/api/debug/contacto/:numero', authMiddleware, async (req, res) => {
 // cualquier caso donde no coincidan — por ejemplo, chats que Vanessa o Sylvia
 // atendieron de verdad pero quedaron mal guardados como "Cindy Godoy" por el bug
 // anterior del reparto automático.
+// Papás A LA ESPERA de atención humana, en ambos canales — para revisar de un vistazo
+// si alguien quedó transferido sin que ningún vendedor lo haya atendido todavía.
+app.get('/api/debug/pendientes-atencion', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    // Canal WhatsApp/IG/Messenger (Mongo): transferidas y aún abiertas
+    const convsMeta = await Conversacion.find({
+      tenant_id: req.user.tenant_id,
+      estado: { $in: ['esperando_agente', 'humano'] }
+    }).sort({ ultimaActividad: -1 }).limit(50).select('numero nombre canal estado agente_nombre ultimaActividad motivo');
+
+    // Canal AcruxLab: asignaciones en modo humano (transferidas por KAI o atendidas por humano)
+    const asignAcrux = await AsignacionAcrux.find({
+      tenant_id: req.user.tenant_id,
+      modo: 'humano'
+    }).sort({ fecha_modo_humano: -1 }).limit(50).select('contacto_id agente_nombre fecha_modo_humano sin_auto_recuperacion');
+
+    res.json({
+      ok: true,
+      whatsapp_ig_messenger: convsMeta.map(c => ({
+        numero: c.numero, nombre: c.nombre, canal: c.canal, estado: c.estado,
+        agente: c.agente_nombre || 'SIN ASIGNAR', ultima_actividad: c.ultimaActividad, motivo: c.motivo
+      })),
+      acruxlab_modo_humano: asignAcrux.map(a => ({
+        contacto_id: a.contacto_id, agente: a.agente_nombre,
+        transferido_desde: a.fecha_modo_humano, es_oportunidad_fija: !!a.sin_auto_recuperacion
+      }))
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.post('/api/debug/reconciliar-asignaciones-acrux', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
