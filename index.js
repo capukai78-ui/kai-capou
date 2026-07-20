@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.16-fix-raiz-coincidencia-imagenes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.16-prioridad-tema-pendiente'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -597,10 +597,15 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
   const nivelMencionadoAhora = detectarNivelEnTexto(mensajeUsuario);
   if (nivelMencionadoAhora) conv.nivelSesion = nivelMencionadoAhora;
 
-  let matchImagen = buscarReglaImagenCoincidente(mensajeUsuario, conv.nivelSesion);
-  if (!matchImagen && nivelMencionadoAhora && conv.temaPendienteCategoria) {
+  // Si había una pregunta pendiente y este mensaje trae grado, completarla tiene
+  // prioridad sobre cualquier coincidencia nueva no relacionada (ver misma lógica en WhatsApp).
+  let matchImagen = null;
+  if (nivelMencionadoAhora && conv.temaPendienteCategoria) {
     const reglaCompletada = completarTemaPendiente(conv.temaPendienteCategoria, nivelMencionadoAhora);
     if (reglaCompletada) matchImagen = { regla: reglaCompletada, ambigua: false };
+  }
+  if (!matchImagen) {
+    matchImagen = buscarReglaImagenCoincidente(mensajeUsuario, conv.nivelSesion);
   }
   const PALABRAS_MODO_VISUAL = ['muéstrame', 'muestrame', 'quiero ver', 'envía imágenes', 'envia imagenes', 'fotografías', 'fotografias', 'necesito las imágenes', 'necesito las imagenes', 'mándame las imágenes', 'mandame las imagenes'];
   const esModoVisual = PALABRAS_MODO_VISUAL.some(p => mensajeUsuario.toLowerCase().includes(p));
@@ -1439,15 +1444,18 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
   const nivelMencionadoAhora = detectarNivelEnTexto(mensajeUsuario);
   if (nivelMencionadoAhora) ctxSesion.nivelSesion = nivelMencionadoAhora; // lo dicho en ESTE mensaje manda sobre lo anterior
 
-  let matchImagen = buscarReglaImagenCoincidente(mensajeUsuario, ctxSesion.nivelSesion);
-
-  // Si ESTE mensaje no menciona ningún tema (cuotas, papelería, etc.) pero SÍ trae el
-  // grado, y había un tema pendiente de un mensaje ANTERIOR (ej: "cuotas" → luego solo
-  // "Bachillerato"), completamos ese tema pendiente revisando TODAS las reglas de esa
-  // categoría — no una regla fija — para no volver a chocar con la misma limitación.
-  if (!matchImagen && nivelMencionadoAhora && ctxSesion.temaPendienteCategoria) {
+  // Si había una PREGUNTA PENDIENTE (ej: "¿cuotas de qué grado?") y este mensaje trae un
+  // grado, completar esa pregunta pendiente tiene prioridad sobre cualquier otra cosa —
+  // aunque el mensaje también toque, por casualidad, la palabra clave de un tema distinto
+  // (ej. "bachillerato" es grado de Cuotas pero también palabra propia de Programas). El
+  // padre está respondiendo la pregunta que le acabamos de hacer, no cambiando de tema.
+  let matchImagen = null;
+  if (nivelMencionadoAhora && ctxSesion.temaPendienteCategoria) {
     const reglaCompletada = completarTemaPendiente(ctxSesion.temaPendienteCategoria, nivelMencionadoAhora);
     if (reglaCompletada) matchImagen = { regla: reglaCompletada, ambigua: false };
+  }
+  if (!matchImagen) {
+    matchImagen = buscarReglaImagenCoincidente(mensajeUsuario, ctxSesion.nivelSesion);
   }
 
   // "Modo Visual" — Política de Recuperación de Imágenes: si el padre/madre pide ver
