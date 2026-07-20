@@ -205,7 +205,7 @@ tr:hover td{background:var(--g4)}
 <div id="app" class="app" style="display:none">
   <aside class="sb">
     <div class="logo"><div class="logo-pulse"></div>KAI</div>
-    <div style="font-size:9px;color:var(--text3);margin:-8px 0 10px 2px;letter-spacing:.05em">v2026.06.24-resumen</div>
+    <div id="kai-version-display" style="font-size:9px;color:var(--text3);margin:-8px 0 10px 2px;letter-spacing:.05em">v...</div>
     <div id="plan-tag" class="plan-tag">Plan Profesional</div>
     <div id="role-badge" class="role-badge ra">👑 Administrador</div>
 
@@ -1022,6 +1022,13 @@ const VENTAS=[
 ];
 
 window.onload=async()=>{
+  // Mostrar la versión real que está corriendo el servidor — así se ve de un vistazo
+  // sin tener que consultar /api/version aparte cada vez que hay dudas de despliegue.
+  fetch(`${API}/api/version`).then(r=>r.json()).then(d=>{
+    const el = document.getElementById('kai-version-display');
+    if(el && d.version) el.textContent = d.version;
+  }).catch(()=>{});
+
   if(TOKEN){
     try{
       const r=await fetch(`${API}/api/verify`,{method:'POST',headers:{Authorization:`Bearer ${TOKEN}`}});
