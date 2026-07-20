@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-motor-proactivo-fix'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-formulario-automatico'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -5095,6 +5095,117 @@ app.get('/api/debug/contacto/:numero', authMiddleware, async (req, res) => {
 // cualquier caso donde no coincidan — por ejemplo, chats que Vanessa o Sylvia
 // atendieron de verdad pero quedaron mal guardados como "Cindy Godoy" por el bug
 // anterior del reparto automático.
+// ===== FORMULARIO DE ADMISIONES QUE LLEGA POR CORREO =====
+// Estos leads entran a Odoo con el cuerpo del correo en "description" y sin los campos
+// llenos (nombre, teléfono, nivel...), por eso quedan sin teléfono y hay que copiarlos
+// a mano. Aquí KAI lee ese texto y saca los datos para poder grabarlos automáticamente.
+async function extraerDatosDelFormulario(leadId) {
+  const leads = await odooCallLocal('crm.lead', 'read', [[leadId]], {
+    fields: ['id', 'name', 'description', 'email_from', 'phone', 'mobile', 'partner_name', 'contact_name']
+  });
+  if (!leads?.length) return { ok: false, error: 'Lead no encontrado' };
+  const lead = leads[0];
+
+  // Quitar etiquetas HTML del cuerpo del correo para que la IA lea texto limpio
+  const cuerpo = String(lead.description || '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/[ \t]+/g, ' ')
+    .trim();
+
+  if (!cuerpo) return { ok: false, error: 'El lead no tiene contenido en la descripción' };
+
+  const systemPrompt = `Eres un asistente que extrae datos de solicitudes de admisión de un colegio en Guatemala.
+Te voy a dar el texto de un correo. Devuelve ÚNICAMENTE un objeto JSON, sin explicaciones ni markdown.
+
+Formato exacto:
+{
+  "es_formulario_admisiones": true o false,
+  "nombre_padre": "texto o null",
+  "nombre_alumno": "texto o null",
+  "telefono": "solo dígitos, o null",
+  "correo": "texto o null",
+  "nivel": "Preprimaria, Primaria, Secundaria, o null",
+  "zona": "texto o null",
+  "notas": "cualquier dato adicional relevante, o null"
+}
+
+Reglas importantes:
+- "es_formulario_admisiones" es false si el correo es un boletín, publicidad, notificación automática o cualquier cosa que NO sea un padre/madre solicitando información de admisión.
+- Si un dato no aparece con claridad, pon null. NO inventes datos.
+- Para el nivel: Básico y Bachillerato cuentan como "Secundaria".
+- El teléfono debe ser solo dígitos, sin espacios ni símbolos.`;
+
+  const respuesta = await llamarClaude(systemPrompt, [{ role: 'user', content: cuerpo.substring(0, 6000) }], 700);
+  if (!respuesta) return { ok: false, error: 'La IA no pudo procesar el correo' };
+
+  let datos;
+  try {
+    datos = JSON.parse(respuesta.replace(/```json|```/g, '').trim());
+  } catch (e) {
+    return { ok: false, error: 'La IA devolvió un formato inesperado', respuesta_cruda: respuesta };
+  }
+
+  // Normalizar el teléfono al formato de Guatemala
+  if (datos.telefono) {
+    let tel = String(datos.telefono).replace(/\D/g, '');
+    if (tel.length === 8) tel = '502' + tel;
+    datos.telefono = tel.length >= 11 ? tel : null;
+  }
+
+  return { ok: true, lead_id: leadId, datos, texto_original: cuerpo.substring(0, 1500) };
+}
+
+// Vista previa — NO graba nada en Odoo, solo muestra qué se extrajo
+app.get('/api/motor/formulario/extraer/:leadId', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const resultado = await extraerDatosDelFormulario(parseInt(req.params.leadId));
+    res.json(resultado);
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Graba en Odoo los datos extraídos, dejando el lead igual que los que sí traen teléfono
+app.post('/api/motor/formulario/grabar/:leadId', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const leadId = parseInt(req.params.leadId);
+    const extraccion = await extraerDatosDelFormulario(leadId);
+    if (!extraccion.ok) return res.json(extraccion);
+
+    const d = extraccion.datos;
+    if (!d.es_formulario_admisiones) {
+      return res.json({ ok: false, error: 'Este correo no parece una solicitud de admisión (boletín o notificación automática)', datos: d });
+    }
+
+    const actualizacion = {};
+    if (d.nombre_padre) { actualizacion.contact_name = d.nombre_padre; actualizacion.partner_name = d.nombre_padre; }
+    if (d.telefono) actualizacion.phone = d.telefono;
+    if (d.correo) actualizacion.email_from = d.correo;
+    if (d.nombre_padre) actualizacion.name = `Formulario Admisiones — ${d.nombre_padre}`;
+
+    if (!Object.keys(actualizacion).length) {
+      return res.json({ ok: false, error: 'No se encontró ningún dato aprovechable en el correo', datos: d });
+    }
+
+    await odooCallLocal('crm.lead', 'write', [[leadId], actualizacion]);
+    await odooCallLocal('crm.lead', 'message_post', [[leadId]], {
+      body: `🤖 KAI leyó el correo del formulario y completó los datos automáticamente:<br>` +
+            `• Padre/Madre: ${d.nombre_padre || '—'}<br>` +
+            `• Alumno: ${d.nombre_alumno || '—'}<br>` +
+            `• Teléfono: ${d.telefono || '—'}<br>` +
+            `• Nivel: ${d.nivel || '—'}<br>` +
+            `• Zona: ${d.zona || '—'}` +
+            (d.notas ? `<br>• Notas: ${d.notas}` : '')
+    }).catch(() => {});
+
+    res.json({ ok: true, lead_id: leadId, datos_grabados: actualizacion, extraido: d });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 // MOTOR PROACTIVO — ejecución manual y controlada, para probar antes de automatizar.
 // GET  /api/motor/proactivo/vista-previa      → muestra a quién contactaría, SIN enviar nada
 // POST /api/motor/proactivo/ejecutar {limite} → contacta de verdad, máximo "limite" leads
