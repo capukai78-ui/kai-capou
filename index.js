@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-motor-activo-y-contactados'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-proactivo-visible-en-chats'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1111,6 +1111,27 @@ async function contactarLeadPorWhatsApp(tenant, lead) {
       },
       { upsert: true }
     ).catch(() => {});
+
+    // Crear la conversación en el panel desde YA — así el equipo ve, en Chats en Vivo,
+    // a quién le escribió KAI y qué le dijo, sin tener que esperar a que el padre
+    // conteste. Queda en estado 'bot' (visible con el interruptor "Ver los que atiende KAI").
+    try {
+      const yaExiste = await Conversacion.findOne({ tenant_id: tenant._id, numero: tel, estado: { $ne: 'cerrado' } });
+      if (!yaExiste) {
+        await Conversacion.create({
+          tenant_id: tenant._id,
+          numero: tel,
+          nombre: nombre || null,
+          canal: 'whatsapp',
+          estado: 'bot',
+          motivo: `Contacto proactivo de KAI — lead #${lead.id} del Formulario de Admisiones${nivel ? ' (' + nivel + ')' : ''}`,
+          mensajes: [{ de: 'bot', texto: MENSAJE_PRIMER_CONTACTO(primerNombre, nivel), fecha: new Date() }],
+          ultimaActividad: new Date()
+        });
+      }
+    } catch (e) {
+      console.error(`⚠️ No se pudo crear la conversación en el panel para ${tel}: ${e.message}`);
+    }
 
     console.log(`📤 [Motor proactivo] KAI contactó a ${nombre || tel} (lead #${lead.id})${nivel ? ' — nivel: ' + nivel : ''}`);
     return { ok: true, telefono: tel, nombre, nivel };
@@ -3906,13 +3927,16 @@ app.get('/api/motor/escanear', authMiddleware, async (req, res) => {
     const tagContactadoId = await getOdooTagId(TAG_KAI_CONTACTADO);
     const tagSinWAId = await getOdooTagId(TAG_KAI_SIN_WHATSAPP);
 
-    // Leads SIN ASIGNAR de los últimos 30 días — igual que vista "Sin asignar" en Odoo
+    // Leads SIN ASIGNAR de los últimos 30 días que KAI todavía NO ha contactado.
+    // Antes no se excluían los ya contactados y seguían apareciendo como "pendientes"
+    // aunque ya se les hubiera escrito — daba la impresión de que no se había hecho nada.
     const hace30d = new Date(Date.now() - 30*24*60*60*1000).toISOString().replace('T',' ').substring(0,19);
     const pendientes = await odooCallLocal('crm.lead', 'search_read',
       [[
         ['active', '=', true],
         ['user_id', '=', false],
         ['create_date', '>=', hace30d],
+        ['tag_ids', 'not in', [tagContactadoId, tagSinWAId]],
       ]],
       { fields: ['id','name','phone','mobile','partner_name','contact_name','email_from','stage_id','tag_ids','user_id','create_date','type','team_id','fb_form_id','x_studio_comentarios','x_studio_notas_1'], limit: 200 }
     ) || [];
