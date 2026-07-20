@@ -351,6 +351,10 @@ tr:hover td{background:var(--g4)}
             <input type="checkbox" id="cl-disponible" onchange="toggleDisponibilidad()" style="width:16px;height:16px;accent-color:var(--g)">
             Disponible para recibir chats
           </label>
+          <label id="cl-verkai-label" style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);cursor:pointer" title="Muestra también las conversaciones que KAI está atendiendo solo, sin transferir a nadie">
+            <input type="checkbox" id="cl-ver-kai" onchange="loadChatsLive()" style="width:16px;height:16px;accent-color:var(--acrux)">
+            🤖 Ver los que atiende KAI
+          </label>
           <button class="rpill" id="cl-btn-actualizar" onclick="loadChatsLive()">↻ Actualizar</button>
         </div>
       </div>
@@ -1156,7 +1160,8 @@ async function loadChatsLive(){
   if(!lista){ setTimeout(loadChatsLive, 300); return; }
   lista.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text3);font-size:12px">Cargando...</div>';
   try {
-    const r = await fetch(API+'/api/conversaciones',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+    const verKai = document.getElementById('cl-ver-kai')?.checked ? '?incluir_kai=1' : '';
+    const r = await fetch(API+'/api/conversaciones'+verKai,{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
     const convs = r.ok ? r.conversaciones : [];
     pintarListaChats(convs);
     actualizarBadge(convs);
@@ -1190,8 +1195,8 @@ function pintarListaChats(convs){
     lista.innerHTML = '<div style="text-align:center;padding:30px 14px;color:var(--text3);font-size:12px">No hay chats activos</div>';
     return;
   }
-  const estadoColor = e => e==='esperando_agente' ? 'var(--amber)' : e==='humano' ? 'var(--g)' : 'var(--text3)';
-  const estadoTxt = e => e==='esperando_agente' ? 'Esperando' : e==='humano' ? 'En atención' : 'Cerrado';
+  const estadoColor = e => e==='esperando_agente' ? 'var(--amber)' : e==='humano' ? 'var(--g)' : e==='bot' ? 'var(--acrux)' : 'var(--text3)';
+  const estadoTxt = e => e==='esperando_agente' ? 'Esperando' : e==='humano' ? 'En atención' : e==='bot' ? '🤖 KAI atendiendo' : 'Cerrado';
   const canalBadge = c => {
     const cfg = {instagram:{label:'Instagram',bg:'#EEEDFE',color:'#3C3489'},messenger:{label:'Messenger',bg:'#E6F1FB',color:'#0C447C'},whatsapp:{label:'WhatsApp',bg:'#E1F5EE',color:'#085041'}}[c.canal||'whatsapp']||{label:'WhatsApp',bg:'#E1F5EE',color:'#085041'};
     return `<span style="font-size:9px;padding:2px 7px;border-radius:10px;background:${cfg.bg};color:${cfg.color};font-weight:500">${cfg.label}</span>`;
@@ -1329,6 +1334,8 @@ function cambiarClTab(tab){
     : 'font-weight:600';
   // El checkbox de disponibilidad y el botón de "Devolver a KAI" solo aplican al omnichannel
   document.getElementById('cl-disp-label').style.display = esOmni ? 'flex' : 'none';
+  const lblVerKai = document.getElementById('cl-verkai-label');
+  if(lblVerKai) lblVerKai.style.display = esOmni ? 'flex' : 'none';
 
   if(esOmni){ loadChatsLive(); }
   else { loadAcruxLista(); }
