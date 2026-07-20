@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.16-reintento-odoo-refresh'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.16-descripcion-imagenes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -633,7 +633,7 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
           'acrux.chat.conversation',
           'send_message',
           [[contactoId], {
-            text: '', from_me: true, ttype: 'image', res_model: 'ir.attachment', res_id: adjunto.id,
+            text: construirDescripcionImagen(imagenDirecta), from_me: true, ttype: 'image', res_model: 'ir.attachment', res_id: adjunto.id,
             id: -2, date_message: new Date().toISOString().replace('T', ' ').substring(0, 19), button_ids: []
           }],
           { context: { lang: 'es_GT', tz: 'America/Guatemala', is_acrux_chat_room: true } }
@@ -1382,6 +1382,23 @@ function completarTemaPendiente(categoria, nivelMencionado) {
   return match || null;
 }
 
+// Frases fijas y predefinidas (NUNCA generadas por la IA) que acompañan cada imagen —
+// para que no se sienta frío mandar solo la imagen a secas, sin arriesgarnos a que se
+// filtren precios/datos en texto libre. Si la imagen tiene su propio "caption" cargado
+// desde el panel, ese se usa primero; si no, se usa esta frase genérica por categoría.
+const DESCRIPCION_POR_CATEGORIA = {
+  cuotas: '¡Con gusto! Aquí tienes la información de cuotas 📋',
+  admision: '¡Claro! Aquí tienes el detalle del proceso de admisión 📋',
+  programas: '¡Con gusto! Aquí tienes la información 📋',
+  info_general: '¡Aquí tienes el detalle! 📋',
+  academia_aha: '¡Con gusto! Aquí tienes la información de Academia AHA 📋'
+};
+
+function construirDescripcionImagen(imagenDirecta) {
+  if (imagenDirecta.caption && imagenDirecta.caption.trim()) return imagenDirecta.caption.trim();
+  return DESCRIPCION_POR_CATEGORIA[imagenDirecta.categoria] || '¡Aquí tienes la información! 📋';
+}
+
 // Detecta si un texto menciona un nivel educativo reconocible — se usa para "recordar"
 // el nivel dentro de la sesión actual una vez que el padre/madre lo menciona.
 function detectarNivelEnTexto(texto) {
@@ -1518,7 +1535,7 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
     const imagenDirecta = await ImagenMarketing.findOne(filtroImg).sort({ prioridad: -1, creado: -1 });
 
     if (imagenDirecta) {
-      await enviarImagenDesdeDB(imagenDirecta, numeroOrigen, '');
+      await enviarImagenDesdeDB(imagenDirecta, numeroOrigen, construirDescripcionImagen(imagenDirecta));
       console.log(`🖼️ Imagen directa enviada (sin texto): "${imagenDirecta.nombre}" → ${numeroOrigen}`);
       ctxSesion.historial.push({ role: 'user', content: mensajeUsuario });
       ctxSesion.historial.push({ role: 'assistant', content: `[NOTA DE SISTEMA — esto NO es algo que tú dijiste ni debes imitar este formato de frase: el sistema envió automáticamente la imagen "${imagenDirecta.nombre}" con el detalle completo de ESTE tema específico. No repitas estos datos en texto. Recuerda: tú NUNCA controlas ni sabes con certeza si se manda una imagen en otros mensajes — eso lo decide el sistema por separado según palabras clave. Jamás afirmes "te mandé la imagen" o "aquí tienes las imágenes" a menos que este mensaje de sistema aparezca de verdad para ESE turno.]` });
@@ -3152,15 +3169,16 @@ app.post('/api/imagenes', authMiddleware, async (req, res) => {
 app.put('/api/imagenes/:id', authMiddleware, async (req, res) => {
   try {
     if (!['admin', 'vendedor'].includes(req.user.role)) return res.status(403).json({ ok: false, error: 'Sin permisos' });
-    const { nombre, categoria, nivel_educativo, prioridad } = req.body;
+    const { nombre, categoria, nivel_educativo, prioridad, caption } = req.body;
     const update = {};
     if (nombre !== undefined) update.nombre = nombre;
     if (categoria !== undefined) update.categoria = categoria;
     if (nivel_educativo !== undefined) update.nivel_educativo = nivel_educativo;
     if (prioridad !== undefined) update.prioridad = parseInt(prioridad) || 0;
+    if (caption !== undefined) update.caption = caption;
     const img = await ImagenMarketing.findOneAndUpdate({ _id: req.params.id, tenant_id: req.user.tenant_id }, update, { new: true });
     if (!img) return res.status(404).json({ ok: false, error: 'Imagen no encontrada' });
-    res.json({ ok: true, imagen: { _id: img._id, nombre: img.nombre, categoria: img.categoria, nivel_educativo: img.nivel_educativo, prioridad: img.prioridad } });
+    res.json({ ok: true, imagen: { _id: img._id, nombre: img.nombre, categoria: img.categoria, nivel_educativo: img.nivel_educativo, prioridad: img.prioridad, caption: img.caption } });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
