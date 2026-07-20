@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-prueba-envio-libre'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-motor-proactivo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -986,6 +986,116 @@ async function procesarNuevosMensajesAcruxLab() {
 // sin saturar la API de Odoo con consultas constantes.
 setInterval(procesarNuevosMensajesAcruxLab, 45000);
 setTimeout(procesarNuevosMensajesAcruxLab, 8000); // primera corrida poco después de iniciar el servidor
+
+// ===== MOTOR PROACTIVO — KAI contacta primero a los leads sin asignar =====
+// Los leads del Formulario de Admisiones llegan a Odoo sin vendedor asignado y ahí se
+// quedan hasta que alguien los llama a mano. Este motor los contacta por WhatsApp,
+// KAI conversa con ellos (pide datos, manda imágenes, resuelve dudas) y, cuando el
+// padre muestra interés real, el flujo normal de traspaso ya se encarga de crear el
+// lead calificado y pasárselo a un vendedor.
+//
+// ⚠️ INTERRUPTOR: apagado por defecto. Se escribe a familias REALES, así que conviene
+// probarlo primero con el botón "Contactar ahora (prueba)" antes de dejarlo automático.
+const MOTOR_PROACTIVO_ACTIVO = false;
+const MAX_LEADS_POR_CORRIDA = 5;   // de cuántos en cuántos, para no mandar una avalancha
+const MENSAJE_PRIMER_CONTACTO = (primerNombre) =>
+  `${primerNombre ? 'Hola ' + primerNombre : 'Hola'} 👋 Te escribimos del *Colegio Capouilliez*.\n\n` +
+  `Recibimos tu solicitud de información y con gusto te ayudamos con el proceso de admisiones 🏫\n\n` +
+  `¿Para qué nivel educativo estás buscando información?\n\n` +
+  `1️⃣ Preprimaria\n2️⃣ Primaria\n3️⃣ Secundaria (Básico y Bachillerato)`;
+
+// Contacta un lead concreto. Devuelve { ok, motivo } — se reutiliza tanto por el motor
+// automático como por el botón manual del panel, para que ambos hagan exactamente lo mismo.
+async function contactarLeadPorWhatsApp(tenant, lead) {
+  const telCrudo = (lead.mobile && String(lead.mobile) !== 'false') ? lead.mobile
+                 : ((lead.phone && String(lead.phone) !== 'false') ? lead.phone : null);
+  if (!telCrudo) return { ok: false, motivo: 'sin_telefono' };
+
+  let tel = String(telCrudo).replace(/\D/g, '');
+  if (tel.length === 8) tel = '502' + tel;
+  if (tel.length < 11) return { ok: false, motivo: 'telefono_invalido' };
+
+  const nombre = lead.partner_name || lead.contact_name || null;
+  const primerNombre = nombre ? nombre.split(' ')[0] : null;
+
+  const resultado = await enviarWhatsAppMeta(tel, MENSAJE_PRIMER_CONTACTO(primerNombre));
+
+  if (resultado?.messages?.length) {
+    const tagContactadoId = await getOdooTagId(TAG_KAI_CONTACTADO);
+    await odooCallLocal('crm.lead', 'write', [[lead.id], { tag_ids: [[4, tagContactadoId]] }]).catch(() => {});
+    await odooCallLocal('crm.lead', 'message_post', [[lead.id]], {
+      body: `📱 KAI contactó por WhatsApp (${tel}) automáticamente. Queda a la espera de respuesta del padre/madre.`
+    }).catch(() => {});
+
+    // Vincular el contacto para que, cuando conteste, KAI ya sepa de qué lead viene
+    // y no cree uno duplicado en Odoo.
+    await Contacto.findOneAndUpdate(
+      { tenant_id: tenant._id, numero: tel },
+      {
+        $set: { nombre: nombre || undefined, odoo_lead_id: lead.id, canal_origen: 'formulario_admisiones', ultimo_contacto: new Date() },
+        $setOnInsert: { primer_contacto: new Date() }
+      },
+      { upsert: true }
+    ).catch(() => {});
+
+    console.log(`📤 [Motor proactivo] KAI contactó a ${nombre || tel} (lead #${lead.id})`);
+    return { ok: true, telefono: tel, nombre };
+  }
+
+  // No se pudo enviar — lo marcamos para que el equipo lo llame a mano
+  const tagSinWAId = await getOdooTagId(TAG_KAI_SIN_WHATSAPP);
+  await odooCallLocal('crm.lead', 'write', [[lead.id], { tag_ids: [[4, tagSinWAId]] }]).catch(() => {});
+  const detalleError = resultado?.error?.message || 'sin respuesta de Meta';
+  console.error(`❌ [Motor proactivo] No se pudo contactar el lead #${lead.id} (${tel}): ${detalleError}`);
+  return { ok: false, motivo: 'envio_rechazado', detalle: detalleError };
+}
+
+// Busca en Odoo los leads sin asignar que todavía no ha contactado KAI.
+async function buscarLeadsPendientesDeContactar(limite) {
+  const tagContactadoId = await getOdooTagId(TAG_KAI_CONTACTADO);
+  const tagSinWAId = await getOdooTagId(TAG_KAI_SIN_WHATSAPP);
+  const hace30d = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString().replace('T', ' ').substring(0, 19);
+
+  return await odooCallLocal('crm.lead', 'search_read',
+    [[
+      ['active', '=', true],
+      ['user_id', '=', false],                 // sin vendedor asignado
+      ['create_date', '>=', hace30d],
+      ['tag_ids', 'not in', [tagContactadoId, tagSinWAId]] // que KAI no haya tocado ya
+    ]],
+    { fields: ['id', 'name', 'phone', 'mobile', 'partner_name', 'contact_name', 'email_from', 'create_date'], limit: limite, order: 'create_date desc' }
+  ) || [];
+}
+
+let _procesandoMotorProactivo = false;
+async function motorProactivoContactarLeads() {
+  if (!MOTOR_PROACTIVO_ACTIVO) return;
+  if (_procesandoMotorProactivo) return;
+  // Solo dentro del horario laboral: escribirle a una familia a las 11 de la noche
+  // se ve mal, aunque KAI pueda atender 24/7 cuando ellos escriben primero.
+  if (!estaDentroDeHorarioLaboral()) return;
+
+  _procesandoMotorProactivo = true;
+  try {
+    const tenant = await Tenant.findOne({ activo: true });
+    if (!tenant) return;
+
+    const leads = await buscarLeadsPendientesDeContactar(MAX_LEADS_POR_CORRIDA);
+    if (!leads.length) return;
+
+    console.log(`🎯 [Motor proactivo] ${leads.length} lead(s) por contactar en esta corrida`);
+    for (const lead of leads) {
+      await contactarLeadPorWhatsApp(tenant, lead);
+      await new Promise(r => setTimeout(r, 3000)); // pausa entre envíos, para no saturar
+    }
+  } catch (e) {
+    console.error('❌ Error en motorProactivoContactarLeads:', e.message);
+  } finally {
+    _procesandoMotorProactivo = false;
+  }
+}
+
+setInterval(motorProactivoContactarLeads, 10 * 60000); // cada 10 minutos
 
 // Pasa una conversación a estado "esperando_agente" y le asigna uno si hay disponible
 // Genera un resumen breve usando IA del historial de conversación con KAI
@@ -4962,6 +5072,57 @@ app.get('/api/debug/contacto/:numero', authMiddleware, async (req, res) => {
 // cualquier caso donde no coincidan — por ejemplo, chats que Vanessa o Sylvia
 // atendieron de verdad pero quedaron mal guardados como "Cindy Godoy" por el bug
 // anterior del reparto automático.
+// MOTOR PROACTIVO — ejecución manual y controlada, para probar antes de automatizar.
+// GET  /api/motor/proactivo/vista-previa      → muestra a quién contactaría, SIN enviar nada
+// POST /api/motor/proactivo/ejecutar {limite} → contacta de verdad, máximo "limite" leads
+app.get('/api/motor/proactivo/vista-previa', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const limite = Math.min(parseInt(req.query.limite) || 20, 100);
+    const leads = await buscarLeadsPendientesDeContactar(limite);
+    res.json({
+      ok: true,
+      motor_automatico_activo: MOTOR_PROACTIVO_ACTIVO,
+      dentro_de_horario: estaDentroDeHorarioLaboral(),
+      total_por_contactar: leads.length,
+      leads: leads.map(l => {
+        const tel = (l.mobile && String(l.mobile) !== 'false') ? l.mobile : ((l.phone && String(l.phone) !== 'false') ? l.phone : null);
+        return {
+          lead_id: l.id,
+          nombre: l.partner_name || l.contact_name || l.name,
+          telefono: tel,
+          correo: l.email_from || null,
+          creado: l.create_date?.substring(0, 16),
+          se_puede_contactar: !!tel
+        };
+      })
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+app.post('/api/motor/proactivo/ejecutar', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const limite = Math.min(parseInt(req.body?.limite) || 1, 25); // por defecto SOLO 1, a propósito
+    const tenant = await Tenant.findOne({ _id: req.user.tenant_id });
+    const leads = await buscarLeadsPendientesDeContactar(limite);
+
+    const resultados = [];
+    for (const lead of leads) {
+      const r = await contactarLeadPorWhatsApp(tenant, lead);
+      resultados.push({ lead_id: lead.id, nombre: lead.partner_name || lead.contact_name || lead.name, ...r });
+      await new Promise(x => setTimeout(x, 3000));
+    }
+
+    res.json({
+      ok: true,
+      contactados: resultados.filter(r => r.ok).length,
+      fallidos: resultados.filter(r => !r.ok).length,
+      detalle: resultados
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 // PRUEBA DE VENTANA DE 24 HORAS — manda un mensaje libre a un número y devuelve la
 // respuesta EXACTA de Meta. Sirve para confirmar si de verdad se puede escribir primero
 // a alguien que nunca nos ha escrito (o que escribió hace más de 24h), antes de construir
