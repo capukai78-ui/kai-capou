@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-ver-chats-de-kai'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-prueba-envio-libre'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1823,7 +1823,18 @@ function enviarWhatsAppMeta(numeroDestino, texto) {
     }, (r) => {
       const chunks = [];
       r.on('data', c => chunks.push(c));
-      r.on('end', () => { const texto = Buffer.concat(chunks).toString('utf8'); try { resolve(JSON.parse(texto)); } catch(e) { resolve({ raw: texto }); } });
+      r.on('end', () => {
+        const respuestaTexto = Buffer.concat(chunks).toString('utf8');
+        let json;
+        try { json = JSON.parse(respuestaTexto); } catch(e) { json = { raw: respuestaTexto }; }
+        // Antes los errores de Meta se descartaban en silencio: si un envío fallaba
+        // (ventana de 24h cerrada, token vencido, número inválido...), nadie se enteraba
+        // y parecía que se había mandado bien. Ahora queda registrado en los logs.
+        if (json && json.error) {
+          console.error(`❌ [META] Envío a ${numeroDestino} RECHAZADO — código ${json.error.code}: ${json.error.message}${json.error.error_data && json.error.error_data.details ? ' | ' + json.error.error_data.details : ''}`);
+        }
+        resolve(json);
+      });
     });
     req2.on('error', (e) => { console.error('❌ Error enviando WhatsApp:', e.message); resolve(null); });
     req2.write(body);
@@ -4951,6 +4962,36 @@ app.get('/api/debug/contacto/:numero', authMiddleware, async (req, res) => {
 // cualquier caso donde no coincidan — por ejemplo, chats que Vanessa o Sylvia
 // atendieron de verdad pero quedaron mal guardados como "Cindy Godoy" por el bug
 // anterior del reparto automático.
+// PRUEBA DE VENTANA DE 24 HORAS — manda un mensaje libre a un número y devuelve la
+// respuesta EXACTA de Meta. Sirve para confirmar si de verdad se puede escribir primero
+// a alguien que nunca nos ha escrito (o que escribió hace más de 24h), antes de construir
+// el motor de contacto proactivo sobre una suposición.
+// Uso: POST /api/debug/probar-envio-libre  { "numero": "50252060423" }
+app.post('/api/debug/probar-envio-libre', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const { numero } = req.body;
+    if (!numero) return res.json({ ok: false, error: 'Falta el número' });
+
+    const contacto = await Contacto.findOne({ tenant_id: req.user.tenant_id, numero: numero.replace(/\D/g, '') });
+    const horasDesdeUltimoContacto = contacto?.ultimo_contacto
+      ? Math.round((Date.now() - new Date(contacto.ultimo_contacto).getTime()) / 3600000)
+      : null;
+
+    const respuestaMeta = await enviarWhatsAppMeta(numero, 'Mensaje de prueba del sistema KAI. Puede ignorarlo.');
+
+    res.json({
+      ok: true,
+      horas_desde_que_el_padre_escribio: horasDesdeUltimoContacto,
+      fuera_de_ventana_24h: horasDesdeUltimoContacto === null || horasDesdeUltimoContacto >= 24,
+      meta_acepto: !!(respuestaMeta && respuestaMeta.messages),
+      respuesta_cruda_de_meta: respuestaMeta
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // DIAGNÓSTICO GLOBAL — todos los chats recientes de AMBOS canales, quién los atiende,
 // y cuáles están PENDIENTES (último mensaje del padre sin respuesta). Uso:
 // /api/debug/estado-chats            → últimas 48 horas
