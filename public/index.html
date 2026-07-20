@@ -471,9 +471,8 @@ tr:hover td{background:var(--g4)}
           <!-- Panel de clasificación estilo vista de Sylvia (Prioridad / Etiquetas / Nota) -->
           <div style="background:var(--bg2);padding:16px;overflow-y:auto">
             <div style="font-size:11px;font-weight:700;color:var(--text2);letter-spacing:.05em;margin-bottom:12px">CLASIFICAR (Odoo)</div>
-            <div id="acrux-lead-panel">
-              <div style="font-size:11px;color:var(--text3)">Selecciona una conversación para ver su lead en Odoo.</div>
-            </div>
+            <div id="acrux-resumen-kai" style="display:none;background:var(--bg3);border-left:3px solid var(--acrux,#4a90d9);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:12px;color:var(--text2);line-height:1.5"></div>
+            <div id="acrux-lead-panel"><div style="font-size:11px;color:var(--text3)">Selecciona una conversación para ver su lead en Odoo.</div></div>
           </div>
         </div>
       </div>
@@ -1647,6 +1646,14 @@ async function abrirAcruxChat(contactoId){
         modoEl.textContent = '🤖 KAI atendiendo';
         modoEl.style.background = 'var(--acrux2)'; modoEl.style.color = 'var(--acrux)';
         btnDevolver.style.display = 'none';
+      }
+
+      const resumenEl = document.getElementById('acrux-resumen-kai');
+      if(hilo.resumen_kai){
+        resumenEl.style.display = 'block';
+        resumenEl.innerHTML = `<div style="font-weight:700;margin-bottom:4px">🤖 Resumen de KAI</div>${hilo.resumen_kai}`;
+      } else {
+        resumenEl.style.display = 'none';
       }
 
       mensajesEl.innerHTML = (hilo.mensajes||[]).map(m=>{
@@ -3213,6 +3220,10 @@ async function cargarGaleriPanel(filtroCategoria='') {
           <label style="font-size:9px;color:var(--text3)" title="Más alto = se manda primero si hay varias que coinciden">Prioridad:</label>
           <input type="number" value="${img.prioridad||0}" onchange="actualizarPrioridadImagen('${img._id}', this.value)" style="width:50px;font-size:11px;padding:2px 4px;border:1px solid var(--border);border-radius:4px;background:var(--bg2);color:var(--text)">
         </div>
+        <div style="margin-bottom:8px">
+          <label style="font-size:9px;color:var(--text3);display:block;margin-bottom:3px" title="Frase fija que acompaña la imagen al mandarla. Si se deja vacío, usa una frase genérica automática.">Descripción al enviar:</label>
+          <input type="text" value="${(img.caption||'').replace(/"/g,'&quot;')}" placeholder="Ej: ¡Aquí tienes las cuotas! 📋" onchange="actualizarCaptionImagen('${img._id}', this.value)" style="width:100%;font-size:11px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg2);color:var(--text);box-sizing:border-box">
+        </div>
         <button onclick="eliminarImagenPanel('${img._id}','${img.nombre.replace(/'/g,"\\'")}')" style="width:100%;background:none;border:1px solid var(--red);color:var(--red);border-radius:6px;padding:5px;font-size:11px;cursor:pointer">🗑️ Eliminar</button>
       </div>
     </div>
@@ -3252,6 +3263,18 @@ async function actualizarPrioridadImagen(id, valor) {
       body: JSON.stringify({ prioridad: valor })
     }).then(r=>r.json());
     if(r.ok) showToast('Prioridad actualizada ✓','ok');
+    else showToast(r.error||'No se pudo actualizar','error');
+  } catch(e) { showToast('Error de conexión','error'); }
+}
+
+async function actualizarCaptionImagen(id, valor) {
+  try {
+    const r = await fetch(API+'/api/imagenes/'+id, {
+      method: 'PUT',
+      headers: { 'Authorization': 'Bearer '+TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ caption: valor })
+    }).then(r=>r.json());
+    if(r.ok) showToast('Descripción actualizada ✓','ok');
     else showToast(r.error||'No se pudo actualizar','error');
   } catch(e) { showToast('Error de conexión','error'); }
 }
