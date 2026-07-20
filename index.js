@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.16-fix-dom-race-condition'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.16-respetar-agente-real-odoo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -544,14 +544,24 @@ async function asignarAgenteLibre(tenantId) {
 async function asegurarAsignacionesAcrux(tenantId, conversaciones) {
   if (!conversaciones.length) return;
 
-  // Revisamos TODAS las conversaciones (no solo las sin agente en Odoo) — nuestra
-  // propia asignación (AsignacionAcrux) es la fuente de verdad real. El "agente" que
-  // se derive de Odoo puede ser engañoso ahora que KAI también manda mensajes por la
-  // misma cuenta de servicio compartida, así que ya no confiamos en eso para decidir dueño.
   const idsAConsultar = conversaciones.map(c => c.contacto_id);
   const yaAsignadas = await AsignacionAcrux.find({ tenant_id: tenantId, contacto_id: { $in: idsAConsultar } });
   const yaAsignadasMap = {};
   yaAsignadas.forEach(a => { yaAsignadasMap[a.contacto_id] = a; });
+
+  // Traer los vendedores una sola vez, para poder emparejar el nombre real de Odoo
+  // (ej. "Vanessa Lopez Carreto") contra nuestros usuarios (ej. "Vanessa Carreto").
+  const vendedores = await UsuarioPanel.find({ tenant_id: tenantId, role: 'vendedor' });
+  const normalizar = s => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').split(/\s+/).filter(Boolean);
+  const encontrarVendedorPorNombre = (nombreOdoo) => {
+    const palabrasOdoo = normalizar(nombreOdoo);
+    if (!palabrasOdoo.length) return null;
+    return vendedores.find(v => {
+      const palabrasV = normalizar(v.nombre);
+      const coincidencias = palabrasV.filter(p => palabrasOdoo.includes(p)).length;
+      return coincidencias >= Math.min(2, palabrasV.length);
+    }) || null;
+  };
 
   for (const conv of conversaciones) {
     const existente = yaAsignadasMap[conv.contacto_id];
@@ -562,6 +572,21 @@ async function asegurarAsignacionesAcrux(tenantId, conversaciones) {
       continue;
     }
     conv.modo = 'bot'; // por defecto, hasta que se asigne
+
+    // Si ya hay un agente humano REAL (respondió directo desde Odoo, no desde nuestro
+    // panel) para esta conversación, respetamos eso — no lo pisamos con el reparto
+    // automático. Esto evita que se "borre" el rastro de que Sylvia o Vanessa ya
+    // atendieron algo manualmente, solo porque nunca pasó por nuestro sistema.
+    const vendedorReal = conv.agente ? encontrarVendedorPorNombre(conv.agente) : null;
+    if (vendedorReal) {
+      try {
+        await AsignacionAcrux.create({ tenant_id: tenantId, contacto_id: conv.contacto_id, agente_id: vendedorReal._id, agente_nombre: vendedorReal.nombre, modo: 'humano', fecha_modo_humano: new Date() });
+        conv.agente = vendedorReal.nombre;
+        conv.modo = 'humano';
+      } catch (e) { /* condición de carrera — no pasa nada, se toma en el próximo refresh */ }
+      continue;
+    }
+
     const agente = await asignarAgenteLibre(tenantId);
     if (!agente) continue; // nadie disponible — se queda sin asignar hasta que alguien lo esté
     try {
