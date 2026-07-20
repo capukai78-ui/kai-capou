@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.16-respetar-agente-real-odoo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.16-diagnostico-completo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -4815,6 +4815,46 @@ app.get('/api/debug/contacto/:numero', authMiddleware, async (req, res) => {
     res.json({ ok: true, encontrado: !!contacto, contacto });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Diagnóstico COMPLETO — todo de una vez, sin teorías: roles reales de cada usuario,
+// asignaciones guardadas en AsignacionAcrux, y los últimos 20 registros crudos de
+// AcruxLab con el agente que cada uno tiene ANTES de cualquier filtro.
+app.get('/api/debug/diagnostico-completo-acrux', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const usuarios = await UsuarioPanel.find({ tenant_id: req.user.tenant_id })
+      .select('nombre email role activo disponible');
+
+    const asignaciones = await AsignacionAcrux.find({ tenant_id: req.user.tenant_id })
+      .sort({ fecha_asignado: -1 })
+      .limit(30);
+
+    // Traer conversaciones crudas de Odoo (mismo query que usa el endpoint real) para
+    // ver el agente derivado de Odoo ANTES de que nuestro sistema lo toque.
+    const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
+      [[]],
+      { fields: ['id', 'contact_id', 'from_me', 'user_id', 'date_message'], limit: 300, order: 'date_message desc' }
+    ) || [];
+
+    const porContacto = {};
+    mensajes.forEach(m => {
+      if (!m.contact_id) return;
+      const cid = m.contact_id[0];
+      if (!porContacto[cid]) porContacto[cid] = { contacto_id: cid, nombre: m.contact_id[1], agente_odoo: null };
+      if (m.from_me && m.user_id) porContacto[cid].agente_odoo = m.user_id[1];
+    });
+
+    res.json({
+      ok: true,
+      usuarios: usuarios.map(u => ({ nombre: u.nombre, email: u.email, role: u.role, activo: u.activo, disponible: u.disponible })),
+      total_asignaciones_guardadas: asignaciones.length,
+      asignaciones: asignaciones.map(a => ({ contacto_id: a.contacto_id, agente_nombre: a.agente_nombre, modo: a.modo, fecha_asignado: a.fecha_asignado })),
+      conversaciones_odoo_crudas: Object.values(porContacto).slice(0, 20)
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message, stack: e.stack });
   }
 });
 
