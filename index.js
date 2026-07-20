@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-semaforo-agente-odoo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-diagnostico-estado-chats'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -4898,6 +4898,97 @@ app.get('/api/debug/contacto/:numero', authMiddleware, async (req, res) => {
 // cualquier caso donde no coincidan — por ejemplo, chats que Vanessa o Sylvia
 // atendieron de verdad pero quedaron mal guardados como "Cindy Godoy" por el bug
 // anterior del reparto automático.
+// DIAGNÓSTICO GLOBAL — todos los chats recientes de AMBOS canales, quién los atiende,
+// y cuáles están PENDIENTES (último mensaje del padre sin respuesta). Uso:
+// /api/debug/estado-chats            → últimas 48 horas
+// /api/debug/estado-chats?horas=24   → rango personalizado
+app.get('/api/debug/estado-chats', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const horas = Math.min(parseInt(req.query.horas) || 48, 168);
+    const desde = new Date(Date.now() - horas * 3600 * 1000);
+
+    // ---- Canal WhatsApp de pruebas / Meta — desde nuestra base (incluye los que KAI atiende solo) ----
+    const contactosRecientes = await Contacto.find({
+      tenant_id: req.user.tenant_id,
+      ultimo_contacto: { $gte: desde }
+    }).sort({ ultimo_contacto: -1 }).limit(60).select('numero nombre canal_origen ultimo_contacto nivel_interes nivel_calor_etiqueta odoo_lead_id');
+
+    const numeros = contactosRecientes.map(c => c.numero);
+    const convsTransferidas = await Conversacion.find({ tenant_id: req.user.tenant_id, numero: { $in: numeros } })
+      .select('numero estado agente_nombre ultimaActividad');
+    const convPorNumero = {};
+    convsTransferidas.forEach(c => { convPorNumero[c.numero] = c; });
+
+    const whatsapp = contactosRecientes.map(c => {
+      const conv = convPorNumero[c.numero];
+      return {
+        numero: c.numero,
+        nombre: c.nombre || 'Sin nombre',
+        canal: c.canal_origen,
+        ultimo_contacto: c.ultimo_contacto,
+        nivel: c.nivel_interes || null,
+        clasificacion: c.nivel_calor_etiqueta || null,
+        lead_odoo: c.odoo_lead_id || null,
+        atencion: conv ? `${conv.estado}${conv.agente_nombre ? ' — ' + conv.agente_nombre : ''}` : 'KAI (sin transferir)'
+      };
+    });
+
+    // ---- Canal AcruxLab (número oficial) — desde Odoo ----
+    const desdeOdoo = desde.toISOString().replace('T', ' ').substring(0, 19);
+    const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
+      [[['date_message', '>=', desdeOdoo]]],
+      { fields: ['id', 'text', 'date_message', 'contact_id', 'from_me'], limit: 1000, order: 'date_message asc' }
+    ) || [];
+    const porContacto = {};
+    mensajes.forEach(m => {
+      if (!m.contact_id) return;
+      const cid = m.contact_id[0];
+      if (!porContacto[cid]) porContacto[cid] = { contacto_id: cid, nombre: m.contact_id[1], ultimo_de: null, ultima_fecha: null };
+      const c = porContacto[cid];
+      if (!c.ultima_fecha || m.date_message > c.ultima_fecha) {
+        c.ultima_fecha = m.date_message;
+        c.ultimo_de = m.from_me ? 'colegio' : 'padre';
+      }
+    });
+    const idsAcrux = Object.keys(porContacto).map(Number);
+    const asigns = idsAcrux.length ? await AsignacionAcrux.find({ tenant_id: req.user.tenant_id, contacto_id: { $in: idsAcrux } }) : [];
+    const asignMap = {}; asigns.forEach(a => { asignMap[a.contacto_id] = a; });
+    let agentIdMap = {};
+    if (idsAcrux.length) {
+      try {
+        const convsOdoo = await odooCallLocal('acrux.chat.conversation', 'read', [idsAcrux, ['id', 'agent_id']]) || [];
+        convsOdoo.forEach(c => { if (c.agent_id) agentIdMap[c.id] = c.agent_id[1]; });
+      } catch (e) { /* no bloqueante */ }
+    }
+    const acrux = Object.values(porContacto)
+      .sort((a, b) => (b.ultima_fecha || '').localeCompare(a.ultima_fecha || ''))
+      .map(c => ({
+        contacto_id: c.contacto_id,
+        nombre: c.nombre,
+        ultimo_mensaje_de: c.ultimo_de,
+        ultima_fecha: c.ultima_fecha,
+        PENDIENTE_DE_RESPUESTA: c.ultimo_de === 'padre',
+        tomado_en_odoo_por: agentIdMap[c.contacto_id] || null,
+        asignacion_kai: asignMap[c.contacto_id] ? `${asignMap[c.contacto_id].agente_nombre} (${asignMap[c.contacto_id].modo})` : 'sin registro'
+      }));
+
+    res.json({
+      ok: true,
+      rango_horas: horas,
+      resumen: {
+        acrux_PENDIENTES_de_respuesta: acrux.filter(c => c.PENDIENTE_DE_RESPUESTA).length,
+        acrux_total_chats_recientes: acrux.length,
+        whatsapp_contactos_recientes: whatsapp.length
+      },
+      whatsapp_y_meta: whatsapp,
+      acruxlab: acrux
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Papás A LA ESPERA de atención humana, en ambos canales — para revisar de un vistazo
 // si alguien quedó transferido sin que ningún vendedor lo haya atendido todavía.
 app.get('/api/debug/pendientes-atencion', authMiddleware, async (req, res) => {
