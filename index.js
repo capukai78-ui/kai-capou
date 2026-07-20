@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-diagnostico-estado-chats'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-indicador-unificado'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -877,6 +877,7 @@ async function enviarTextoAcruxLab(contactoId, texto, intento = 1) {
 // petición explícita después de la primera prueba en vivo, mientras se decide cuándo
 // reactivarlo. Cambiar a `true` para reactivar el motor.
 const ACRUX_AUTO_RESPUESTA_ACTIVO = true; // Activado para prueba de fin de semana — monitorear los logs de cerca
+const VENTANA_MOTOR_ACRUX_HORAS = 48; // cuánto hacia atrás revisa el motor buscando mensajes sin responder
 
 // Motor que revisa cada cierto tiempo si hay mensajes nuevos sin responder en AcruxLab,
 // y hace que KAI conteste automáticamente (a menos que ya esté en modo "humano").
@@ -889,10 +890,14 @@ async function procesarNuevosMensajesAcruxLab() {
     const tenant = await Tenant.findOne({ activo: true });
     if (!tenant) return;
 
-    const desde = new Date(Date.now() - 20 * 60000).toISOString().replace('T', ' ').substring(0, 19); // últimos 20 min
+    // Ventana amplia (48h): antes eran solo 20 minutos, y por eso un mensaje que no se
+    // alcanzara a responder dentro de esa ventana quedaba pendiente PARA SIEMPRE — KAI
+    // nunca lo volvía a ver. Las protecciones de abajo (ya respondido / tomado por un
+    // humano / modo humano) evitan que esto genere respuestas duplicadas o intrusivas.
+    const desde = new Date(Date.now() - VENTANA_MOTOR_ACRUX_HORAS * 3600 * 1000).toISOString().replace('T', ' ').substring(0, 19);
     const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
       [[['date_message', '>=', desde]]],
-      { fields: ['id', 'text', 'date_message', 'contact_id', 'msgid', 'from_me'], limit: 500, order: 'date_message asc' }
+      { fields: ['id', 'text', 'date_message', 'contact_id', 'msgid', 'from_me'], limit: 2000, order: 'date_message asc' }
     );
     if (!mensajes) return;
 
@@ -949,19 +954,13 @@ async function procesarNuevosMensajesAcruxLab() {
         continue;
       }
 
-      // ¿Ya está en modo "humano"? Entonces KAI no debe meterse — el vendedor asignado
-      // responde manual. PERO si lleva 30+ minutos sin que el humano conteste (nadie
-      // trabajando, fin de semana, etc.), KAI retoma automáticamente para no dejar a
-      // la familia sin atención — mismo mecanismo que ya existe en WhatsApp.
+      // ¿Ya está en modo "humano"? Entonces el chat es de esa vendedora y KAI NO se mete
+      // más — ni ahora ni después. Antes existía una "auto-recuperación" que se lo quitaba
+      // a los 30 minutos, pero se eliminó a propósito: si una agente ya lo atendió, el
+      // padre espera seguir hablando con ella, no que el bot se meta a media conversación.
+      // El chat queda marcado como PENDIENTE en su bandeja para que sepa que debe contestar.
       const asign = await AsignacionAcrux.findOne({ tenant_id: tenant._id, contacto_id: contactoId });
-      if (asign?.modo === 'humano') {
-        if (asign.sin_auto_recuperacion) continue; // chat fijo con humano (ej. Oportunidad de Sylvia) — KAI nunca lo retoma solo
-        const desde = asign.fecha_modo_humano || asign.fecha_asignado;
-        const minutosSinRespuestaHumana = (Date.now() - new Date(desde).getTime()) / (1000 * 60);
-        if (minutosSinRespuestaHumana < 30) continue; // todavía dentro del tiempo de espera — no meterse
-        console.log(`🔄 [AcruxLab] Auto-recuperación: KAI retoma contacto ${contactoId} tras ${Math.round(minutosSinRespuestaHumana)} min sin respuesta humana`);
-        await AsignacionAcrux.updateOne({ _id: asign._id }, { modo: 'bot' });
-      }
+      if (asign?.modo === 'humano') continue;
 
       const numero = extraerNumeroDeMsgid(ultimoInbound.msgid);
       if (!numero) continue; // sin número no podemos llevar memoria confiable — se deja para atención manual
@@ -1538,7 +1537,20 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
   if (convActiva) {
     // Calcular hace cuánto fue el último mensaje del AGENTE (no del padre) — si nunca respondió, usar la fecha de creación del handoff
     const ultimoMsgAgente = [...(convActiva.mensajes || [])].reverse().find(m => m.de === 'agente');
-    const ultimaRespuestaAgenteFecha = ultimoMsgAgente ? new Date(ultimoMsgAgente.fecha) : convActiva.creado;
+
+    // Si una agente YA respondió al menos una vez, el chat es suyo — KAI no se mete más,
+    // ni aunque tarde en contestar. El padre espera seguir con ella, no con el bot.
+    // El chat le queda marcado como pendiente en su bandeja.
+    if (ultimoMsgAgente) {
+      convActiva.mensajes.push({ de: 'padre', texto: mensajeUsuario });
+      convActiva.ultimaActividad = new Date();
+      await convActiva.save();
+      return null; // null = no responder automáticamente; contesta la agente desde el panel
+    }
+
+    // Nadie la ha atendido todavía: si lleva 30+ minutos abandonada, KAI la retoma para
+    // no dejar a la familia en silencio (aquí no hay agente "dueña" a quien respetar).
+    const ultimaRespuestaAgenteFecha = convActiva.creado;
     const minutosSinRespuestaAgente = (Date.now() - new Date(ultimaRespuestaAgenteFecha).getTime()) / (1000 * 60);
 
     const MINUTOS_AUTO_RECUPERACION = 30;
