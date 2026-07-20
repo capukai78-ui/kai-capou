@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.16-prioridad-tema-pendiente'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.16-fix-consistencia-traspaso'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -228,7 +228,8 @@ const asignacionAcruxSchema = new mongoose.Schema({
   agente_nombre: String,
   fecha_asignado:{ type: Date, default: Date.now },
   modo:          { type: String, enum: ['bot', 'humano'], default: 'bot' }, // ¿KAI responde o ya es de un humano?
-  fecha_modo_humano: { type: Date, default: null } // cuándo pasó a modo humano — para la auto-recuperación a los 30 min
+  fecha_modo_humano: { type: Date, default: null }, // cuándo pasó a modo humano — para la auto-recuperación a los 30 min
+  resumen_kai: { type: String, default: null } // resumen generado por IA de lo que ya habló KAI, para que el agente no repita preguntas
 });
 asignacionAcruxSchema.index({ tenant_id: 1, contacto_id: 1 }, { unique: true });
 const AsignacionAcrux = mongoose.model('AsignacionAcrux', asignacionAcruxSchema);
@@ -696,9 +697,10 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
       // Solo pasamos a modo "humano" (KAI deja de auto-responder) si de verdad hay
       // alguien trabajando ahorita — fuera de horario nadie va a retomarla hasta que
       // regresen, así que KAI debe seguir atendiendo en vez de quedarse callado.
+      const resumen = await generarResumenParaAgente(numero);
       const asign = await AsignacionAcrux.findOneAndUpdate(
         { tenant_id: tenant._id, contacto_id: contactoId },
-        { modo: 'humano', fecha_modo_humano: new Date() },
+        { modo: 'humano', fecha_modo_humano: new Date(), resumen_kai: resumen },
         { new: true }
       );
       nombreAgente = asign?.agente_nombre;
@@ -736,9 +738,10 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
   if (!respuestaLimpia) {
     // La IA no pudo responder — transferimos a un vendedor en vez de mostrar un error técnico.
     console.error(`⚠️ Claude no respondió (AcruxLab) — transfiriendo a humano automáticamente para ${numero}`);
+    const resumen = await generarResumenParaAgente(numero).catch(() => null);
     const asign = await AsignacionAcrux.findOneAndUpdate(
       { tenant_id: tenant._id, contacto_id: contactoId },
-      { modo: 'humano', fecha_modo_humano: new Date() },
+      { modo: 'humano', fecha_modo_humano: new Date(), resumen_kai: resumen },
       { new: true }
     );
     const nombreAgente = asign?.agente_nombre;
@@ -749,6 +752,25 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
   const respuesta = respuestaLimpia;
   historial.push({ role: 'assistant', content: respuesta });
 
+  // ===== VERIFICACIÓN DE CONSISTENCIA =====
+  // La IA puede, por su cuenta, decir algo como "te conecto con un asesor" siguiendo
+  // las instrucciones del prompt, SIN que nuestra detección determinística (esAltaIntencion/
+  // detectaSolicitudAgente) lo haya disparado — eso deja el sistema diciendo una cosa y
+  // haciendo otra (el chat se queda en "KAI atendiendo" aunque el texto prometió un asesor).
+  // Si detectamos esa promesa en el propio texto de KAI, forzamos el traspaso real ahora.
+  const PARECE_PROMESA_DE_ASESOR = /te (conecto|paso|comunico) (ahora|con)|un asesor te|con (un asesor|nuestro asesor)|le (conecto|paso|comunico)/i.test(respuesta);
+  if (PARECE_PROMESA_DE_ASESOR) {
+    const dentroDeHorarioAhora = estaDentroDeHorarioLaboral();
+    if (dentroDeHorarioAhora) {
+      const resumenConsistencia = await generarResumenParaAgente(numero).catch(() => null);
+      await AsignacionAcrux.findOneAndUpdate(
+        { tenant_id: tenant._id, contacto_id: contactoId },
+        { modo: 'humano', fecha_modo_humano: new Date(), resumen_kai: resumenConsistencia }
+      );
+      console.log(`🔧 [Consistencia] KAI prometió un asesor en texto — se forzó el traspaso real para contacto ${contactoId}`);
+    }
+  }
+
   // Extraer datos (nombre, alumno, nivel, zona, etc.), guardarlos en el Contacto persistente,
   // y crear/actualizar el lead en Odoo progresivamente según el nivel de interés — exactamente
   // igual que hace el flujo de WhatsApp. Esto es lo que faltaba: sin esto, KAI conversaba pero
@@ -756,7 +778,7 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
   actualizarContactoYDetectarInteres(tenant, numero, mensajeUsuario, respuesta, historial, contactoExistente)
     .catch(e => console.error('❌ Error actualizando contacto (AcruxLab):', e.message));
 
-  return { texto: respuesta, handoff: false };
+  return { texto: respuesta, handoff: PARECE_PROMESA_DE_ASESOR };
 }
 
 // Envía un mensaje de texto por AcruxLab — misma llamada real confirmada y usada en
@@ -1600,6 +1622,17 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
 
   const respuesta = respuestaLimpia;
   historial.push({ role: 'assistant', content: respuesta });
+
+  // ===== VERIFICACIÓN DE CONSISTENCIA (mismo principio que en AcruxLab) =====
+  // Si KAI dijo algo como "te conecto con un asesor" por su cuenta, sin que nuestra
+  // detección determinística lo haya disparado, forzamos el traspaso real para que
+  // el sistema haga lo mismo que KAI acaba de prometer.
+  const PARECE_PROMESA_DE_ASESOR = /te (conecto|paso|comunico) (ahora|con)|un asesor te|con (un asesor|nuestro asesor)|le (conecto|paso|comunico)/i.test(respuesta);
+  if (PARECE_PROMESA_DE_ASESOR && estaDentroDeHorarioLaboral()) {
+    iniciarHandoff(tenant, numeroOrigen, contacto?.nombre || null, '[Consistencia: KAI prometió un asesor en texto]')
+      .then(() => console.log(`🔧 [Consistencia] KAI prometió un asesor en texto — se forzó el traspaso real para ${numeroOrigen}`))
+      .catch(e => console.error('❌ Error forzando traspaso de consistencia:', e.message));
+  }
 
   // ===== ACTUALIZAR/CREAR CONTACTO Y DETECTAR INTERÉS REAL (async, no bloquea respuesta) =====
   actualizarContactoYDetectarInteres(tenant, numeroOrigen, mensajeUsuario, respuesta, historial, contacto)
@@ -4196,6 +4229,7 @@ app.get('/api/acrux/conversaciones/:contactoId', authMiddleware, async (req, res
       nombre: nombre || numero || 'Sin nombre',
       modo: asignacion?.modo || 'bot',
       agente_asignado: asignacion?.agente_nombre || null,
+      resumen_kai: asignacion?.resumen_kai || null,
       mensajes: mensajes.map(m => {
         const adjunto = m.ttype === 'image' ? adjuntosPorId[m.res_id] : null;
         return {
