@@ -1204,8 +1204,16 @@ function pintarListaChats(convs){
   const lista = document.getElementById('cl-lista');
   if(!convs.length){
     lista.innerHTML = '<div style="text-align:center;padding:30px 14px;color:var(--text3);font-size:12px">No hay chats activos</div>';
+    lista.dataset.firma = 'vacio';
     return;
   }
+
+  // Si nada cambió desde el último refresco, NO se redibuja. Redibujar cada 8 segundos
+  // destruía y recreaba todas las filas — si el mouse estaba encima en ese instante, la
+  // fila "desaparecía" bajo el cursor y volvía a aparecer. Ese era el parpadeo.
+  const firma = JSON.stringify(convs.map(c => [c._id, c.estado, c.agente_nombre, c.mensajes?.length, _chatActivoId]));
+  if(lista.dataset.firma === firma) return;
+  lista.dataset.firma = firma;
   const estadoColor = e => e==='esperando_agente' ? 'var(--amber)' : e==='humano' ? 'var(--g)' : e==='bot' ? 'var(--acrux)' : 'var(--text3)';
   const estadoTxt = e => e==='esperando_agente' ? 'Esperando' : e==='humano' ? 'En atención' : e==='bot' ? '🤖 KAI atendiendo' : 'Cerrado';
   const canalBadge = c => {
@@ -1591,8 +1599,15 @@ function renderListaAcrux(conversaciones){
   const lista = document.getElementById('acrux-lista');
   if(!conversaciones.length){
     lista.innerHTML = '<div style="text-align:center;padding:30px 14px;color:var(--text3);font-size:12px">No hay chats que coincidan</div>';
+    lista.dataset.firma = 'vacio';
     return;
   }
+
+  // Igual que en la otra lista: si nada cambió, no se redibuja — evita que las filas
+  // "desaparezcan" bajo el mouse con cada refresco automático.
+  const firma = JSON.stringify(conversaciones.map(c => [c.contacto_id, c.ultimo_de, c.no_leidos, c.agente, c.modo, _acruxContactoActivo]));
+  if(lista.dataset.firma === firma) return;
+  lista.dataset.firma = firma;
   lista.innerHTML = conversaciones.map(c => {
     // PENDIENTE = el último mensaje es del padre/madre y todavía nadie le ha contestado.
     // Se marca bien visible para que la vendedora sepa de un vistazo a quién le debe respuesta.
