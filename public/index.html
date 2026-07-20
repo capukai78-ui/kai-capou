@@ -1329,8 +1329,13 @@ async function abrirChat(id){
     const infoEl = document.getElementById('cl-contacto-info');
     if(infoEl) infoEl.innerHTML = infoHtml + imgsHtml;
 
-    // Refrescar lista para marcar el seleccionado
-    const rl = await fetch(API+'/api/conversaciones',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+    // Refrescar lista para marcar el seleccionado.
+    // OJO: esta consulta tenía que respetar el interruptor "Ver los que atiende KAI".
+    // Sin el parámetro, al hacer clic se recargaba la lista SIN esos chats y los de KAI
+    // desaparecían de golpe, para volver 8 segundos después con el refresco automático.
+    // Ese era exactamente el "se van y vienen".
+    const verKaiAlAbrir = document.getElementById('cl-ver-kai')?.checked ? '?incluir_kai=1' : '';
+    const rl = await fetch(API+'/api/conversaciones'+verKaiAlAbrir,{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
     if(rl.ok) pintarListaChats(rl.conversaciones);
   } catch(e) { console.error(e); }
 }
