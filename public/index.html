@@ -1158,15 +1158,26 @@ let _chatsLivePollInterval = null;
 async function loadChatsLive(){
   const lista = document.getElementById('cl-lista');
   if(!lista){ setTimeout(loadChatsLive, 300); return; }
-  lista.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text3);font-size:12px">Cargando...</div>';
+  // Solo mostramos "Cargando..." la PRIMERA vez. En los refrescos automáticos (cada 8s)
+  // no se toca la lista hasta tener los datos nuevos — si no, parpadea y da la impresión
+  // de que los chats se van y vienen.
+  if(!lista.dataset.cargadoUnaVez){
+    lista.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text3);font-size:12px">Cargando...</div>';
+  }
   try {
     const verKai = document.getElementById('cl-ver-kai')?.checked ? '?incluir_kai=1' : '';
     const r = await fetch(API+'/api/conversaciones'+verKai,{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
     const convs = r.ok ? r.conversaciones : [];
     pintarListaChats(convs);
     actualizarBadge(convs);
+    lista.dataset.cargadoUnaVez = '1';
   } catch(e) {
-    lista.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text3);font-size:12px">Error al cargar</div>';
+    // Un fallo puntual de red no debe vaciar la pantalla: si ya había chats en la lista,
+    // se dejan como estaban y el siguiente refresco (8s) los actualiza. Vaciarla era lo
+    // que hacía que los chats "desaparecieran" y volvieran solos.
+    if(!lista.dataset.cargadoUnaVez){
+      lista.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text3);font-size:12px">Error al cargar</div>';
+    }
   }
   // Polling cada 8 segundos para ver mensajes nuevos
   if(_chatsLivePollInterval) clearInterval(_chatsLivePollInterval);
@@ -1664,7 +1675,10 @@ async function loadAcruxLista(){
     lista.dataset.cargadoUnaVez = '1';
     if(scrollCont) scrollCont.scrollTop = scrollPrevio;
   } catch(e){
-    lista.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text3);font-size:12px">Error al cargar</div>';
+    // Igual que en la otra lista: un fallo puntual no debe vaciar la pantalla.
+    if(!lista.dataset.cargadoUnaVez){
+      lista.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text3);font-size:12px">Error al cargar</div>';
+    }
   }
   if(_acruxPollInterval) clearInterval(_acruxPollInterval);
   _acruxPollInterval = setInterval(()=>{
