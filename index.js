@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-oportunidad-sylvia'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-semaforo-agente-odoo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -904,6 +904,28 @@ async function procesarNuevosMensajesAcruxLab() {
       porContacto[cid].push(m);
     });
 
+    // ===== VERIFICACIÓN DE "SEMÁFORO" EN ODOO REAL =====
+    // El módulo de AcruxLab NO permite que dos usuarios escriban en la misma conversación:
+    // si un agente la tiene "tomada" en el ChatRoom real (agent_id asignado), cualquier
+    // intento nuestro de send_message truena con "no puede escribir en esta conversación,
+    // refresque la pantalla" — ese era el error real de los logs. Así que ANTES de que
+    // KAI intente responder, leemos el agent_id de cada conversación y saltamos las que
+    // ya están tomadas por un humano real (además sincronizamos nuestro registro a modo
+    // "humano" para que ni siquiera lo intente en las próximas corridas).
+    const idsContactos = Object.keys(porContacto).map(Number);
+    let agentePorContacto = {};
+    if (idsContactos.length) {
+      try {
+        const uidServicio = await getOdooUID(); // nuestro propio usuario de servicio (KAI escribe con este)
+        const convsOdoo = await odooCallLocal('acrux.chat.conversation', 'read', [idsContactos, ['id', 'agent_id']]) || [];
+        convsOdoo.forEach(c => {
+          if (c.agent_id && c.agent_id[0] !== uidServicio) {
+            agentePorContacto[c.id] = c.agent_id[1]; // nombre del agente humano que la tiene tomada
+          }
+        });
+      } catch (e) { /* si falla la lectura, seguimos sin este filtro (el reintento cubre lo transitorio) */ }
+    }
+
     for (const contactoId of Object.keys(porContacto).map(Number)) {
       const msgs = porContacto[contactoId];
       const ultimoInbound = [...msgs].reverse().find(m => !m.from_me);
@@ -912,6 +934,20 @@ async function procesarNuevosMensajesAcruxLab() {
       // ¿Ya se respondió DESPUÉS de ese mensaje? (por KAI o por un humano)
       const yaRespondido = msgs.some(m => m.from_me && m.date_message > ultimoInbound.date_message);
       if (yaRespondido) continue;
+
+      // ¿La conversación está TOMADA por un agente humano en el ChatRoom real de Odoo?
+      // KAI no puede (ni debe) escribirle — la está atendiendo esa persona. Sincronizamos
+      // nuestro registro a modo humano para reflejarlo en el panel y no reintentar.
+      const agenteHumanoEnOdoo = agentePorContacto[contactoId];
+      if (agenteHumanoEnOdoo) {
+        await AsignacionAcrux.findOneAndUpdate(
+          { tenant_id: tenant._id, contacto_id: contactoId },
+          { modo: 'humano', fecha_modo_humano: new Date() },
+          { upsert: true, setDefaultsOnInsert: true }
+        ).catch(() => {});
+        console.log(`👤 [AcruxLab] Contacto ${contactoId} tomado por "${agenteHumanoEnOdoo}" en el ChatRoom real — KAI no interviene`);
+        continue;
+      }
 
       // ¿Ya está en modo "humano"? Entonces KAI no debe meterse — el vendedor asignado
       // responde manual. PERO si lleva 30+ minutos sin que el humano conteste (nadie
