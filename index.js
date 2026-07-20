@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-motor-acrux-y-sin-parpadeo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-kai-atiende-migrados'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -5665,16 +5665,28 @@ async function migrarConversacionAAcruxLab(tenant, numero, nombre, resumen, vend
                `\n(El primer contacto salió por el número de pruebas; continuar desde este número oficial.)`;
   await odooCallLocal('acrux.chat.conversation', 'write', [[conversacion.id], { note: nota }]).catch(() => {});
 
-  if (vendedor?.odoo_user_id) {
-    await odooCallLocal('acrux.chat.conversation', 'write', [[conversacion.id], { agent_id: vendedor.odoo_user_id }]).catch(() => {});
+  // Si una migración anterior le dejó puesto el agente en Odoo, lo liberamos: mientras
+  // esté ahí, el ChatRoom bloquea a KAI y la conversación se queda muerta esperando.
+  if (conversacion.agente) {
+    await odooCallLocal('acrux.chat.conversation', 'write', [[conversacion.id], { agent_id: false }]).catch(() => {});
+    console.log(`🔓 [Migración] Se liberó el agente de la conversación ${conversacion.id} para que KAI pueda atenderla`);
   }
+
+  // OJO: aquí NO se escribe `agent_id` en Odoo a propósito. Ese campo es el "semáforo"
+  // del ChatRoom: si tiene un agente humano, KAI no puede escribir en la conversación.
+  // Como queremos que KAI la atienda primero, la dejamos libre y llevamos la asignación
+  // de la vendedora en nuestro propio registro (AsignacionAcrux), que sí se respeta en
+  // el traspaso posterior.
 
   await AsignacionAcrux.findOneAndUpdate(
     { tenant_id: tenant._id, contacto_id: conversacion.id },
     {
       $set: {
-        modo: 'humano',
-        fecha_modo_humano: new Date(),
+        // En modo 'bot': KAI los atiende cuando contesten (pide datos, manda imágenes)
+        // y se los traspasa a la vendedora cuando muestren interés real. Si se dejaran
+        // en 'humano', quedarían esperando a que la vendedora escriba a mano.
+        modo: 'bot',
+        fecha_modo_humano: null,
         resumen_kai: resumen || null,
         agente_id: vendedor?._id || null,
         agente_nombre: vendedor?.nombre || null
@@ -6551,7 +6563,15 @@ app.get('/api/debug/probar-claude', authMiddleware, async (req, res) => {
 });
 
 app.get('/api/version', (req, res) => {
-  res.json({ version: VERSION_KAI, servidor_iniciado: new Date(SERVIDOR_INICIADO).toISOString() });
+  const minutosActivo = Math.round((Date.now() - SERVIDOR_INICIADO) / 60000);
+  res.json({
+    version: VERSION_KAI,
+    servidor_iniciado: new Date(SERVIDOR_INICIADO).toISOString(),
+    minutos_activo: minutosActivo,
+    // Si este número se reinicia solo cada pocos minutos, el servidor se está cayendo
+    // y reiniciando — eso explicaría cualquier comportamiento intermitente.
+    aviso: minutosActivo < 5 ? 'El servidor arrancó hace menos de 5 minutos' : null
+  });
 });
 
 app.listen(PORT, () => {
