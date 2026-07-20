@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-indicador-unificado'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-ver-chats-de-kai'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -2305,6 +2305,47 @@ app.post('/webhook', async (req, res) => {
     }
 
     const respuesta = await responderConIA(tenant, mensajeUsuario, numeroOrigen);
+
+    // ── GUARDAR EL CHAT AUNQUE KAI LO ESTÉ ATENDIENDO SOLO ──────────────────
+    // Antes solo se guardaba cuando había traspaso a un humano; los chats que KAI
+    // atendía completos vivían únicamente en memoria y desaparecían — por eso no se
+    // veían en el panel ni se podía supervisar qué les había contestado.
+    // Se guardan con estado 'bot' para poder mostrarlos/ocultarlos aparte y no
+    // revolverlos con la bandeja de atención humana de las vendedoras.
+    try {
+      let convBot = await Conversacion.findOne({ tenant_id: tenant._id, numero: numeroOrigen, estado: { $ne: 'cerrado' } });
+      if (!convBot) {
+        convBot = await Conversacion.create({
+          tenant_id: tenant._id,
+          numero: numeroOrigen,
+          nombre: nombreCliente || null,
+          canal: canal,
+          estado: 'bot',
+          mensajes: [{ de: 'padre', texto: mensajeUsuario, fecha: new Date() }],
+          ultimaActividad: new Date()
+        });
+      } else {
+        // Si hubo traspaso a humano, esa ruta YA guardó estos mismos mensajes —
+        // aquí solo agregamos lo que falte, para no duplicar nada en el historial.
+        const ultimoPadre = [...convBot.mensajes].reverse().find(m => m.de === 'padre');
+        if (!ultimoPadre || ultimoPadre.texto !== mensajeUsuario) {
+          convBot.mensajes.push({ de: 'padre', texto: mensajeUsuario, fecha: new Date() });
+        }
+        if (!convBot.nombre && nombreCliente) convBot.nombre = nombreCliente;
+        convBot.ultimaActividad = new Date();
+      }
+      if (respuesta) {
+        const ultimoBot = [...convBot.mensajes].reverse().find(m => m.de === 'bot');
+        if (!ultimoBot || ultimoBot.texto !== respuesta) {
+          convBot.mensajes.push({ de: 'bot', texto: respuesta, fecha: new Date() });
+          convBot.ultimaActividad = new Date();
+        }
+      }
+      await convBot.save();
+    } catch (e) {
+      console.error('❌ No se pudo guardar el chat de KAI en el panel:', e.message);
+    }
+
     if (respuesta === null) {
       console.log(`⏸️  KAI pausado para ${numeroOrigen} — agente humano activo`);
       return;
@@ -5294,7 +5335,13 @@ app.get('/api/conversaciones', authMiddleware, async (req, res) => {
     const usuarioActual = await UsuarioPanel.findById(req.user.id).select('role');
     const rolReal = usuarioActual?.role || req.user.role;
 
+    // Por defecto la bandeja sigue mostrando SOLO lo que requiere atención humana —
+    // igual que siempre, para no confundir a las vendedoras. Los chats que KAI atiende
+    // solo (estado 'bot') aparecen únicamente si se piden con ?incluir_kai=1 desde el
+    // interruptor del panel.
+    const incluirKai = req.query.incluir_kai === '1' || req.query.incluir_kai === 'true';
     const filtro = { tenant_id: req.user.tenant_id, estado: { $ne: 'cerrado' } };
+    if (!incluirKai) filtro.estado = { $nin: ['cerrado', 'bot'] };
     // El vendedor ve lo suyo + lo que nadie ha tomado todavía (para poder reclamarlo).
     // Antes solo filtraba por agente_id = su ID, lo que ocultaba por completo los chats
     // sin asignar — un vendedor nuevo o sin chats asignados veía la bandeja vacía.
