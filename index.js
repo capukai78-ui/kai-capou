@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-diagnostico-conversacion-acrux'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-repetidos-a-perdido'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -886,13 +886,12 @@ async function enviarTextoAcruxLab(contactoId, texto, intento = 1) {
       { context: { lang: 'es_GT', tz: 'America/Guatemala', is_acrux_chat_room: true } }
     );
   } catch (e) {
-    // Este error NO es transitorio: el módulo de AcruxLab lo lanza cuando un agente
-    // humano tiene tomada la conversación en el ChatRoom. Reintentar no sirve de nada
-    // (mientras la tenga tomada, siempre va a fallar) — hay que dejársela a esa persona.
-    // Lo marcamos como tal para que el motor sincronice la conversación a modo humano.
+    // Odoo rechaza el envío. Puede ser porque un agente tiene tomada la conversación,
+    // o porque quedó en un estado que no permite escribir (status 'new'). El mensaje
+    // del módulo es el mismo en ambos casos, así que no se puede distinguir aquí.
     const esConversacionTomada = /refresque la pantalla|can't write in this conversation/i.test(e.message || '');
     if (esConversacionTomada) {
-      const err = new Error('CONVERSACION_TOMADA_POR_AGENTE');
+      const err = new Error('ODOO_RECHAZO_ESCRITURA (agente tomó la conversación, o quedó en estado no editable)');
       err.conversacionTomada = true;
       throw err;
     }
@@ -1093,6 +1092,12 @@ async function obtenerOCrearConversacionAcrux(numero, nombre) {
   ) || [];
   if (existentes.length) {
     const c = existentes[0];
+    // Si quedó atascada en 'new' (creada antes de la corrección, o creada desde fuera
+    // del ChatRoom), la pasamos a 'current' — si no, el envío sería rechazado.
+    if (c.status === 'new') {
+      await odooCallLocal('acrux.chat.conversation', 'write', [[c.id], { status: 'current' }]).catch(() => {});
+      console.log(`🔧 [AcruxLab] Conversación #${c.id} estaba en 'new' — se pasó a 'current' para poder escribir`);
+    }
     return { id: c.id, creada: false, agente: c.agent_id?.[1] || null, status: c.status, valid_number: c.valid_number };
   }
 
@@ -1103,13 +1108,18 @@ async function obtenerOCrearConversacionAcrux(numero, nombre) {
   }]);
   if (!nuevoId) throw new Error('Odoo no devolvió el ID de la conversación creada');
 
-  // Al crearla desde fuera del ChatRoom puede quedar en un estado que no permite
-  // escribir. Leemos cómo quedó para saberlo con certeza (y poder corregirlo).
+  // Las conversaciones creadas desde fuera del ChatRoom nacen con status 'new', y en ese
+  // estado el módulo NO permite escribir (ese era el error "no puede escribir en esta
+  // conversación"). Las que funcionan están en 'current', así que la pasamos a ese estado.
+  await odooCallLocal('acrux.chat.conversation', 'write', [[nuevoId], { status: 'current' }]).catch(e => {
+    console.error(`⚠️ [AcruxLab] No se pudo poner en 'current' la conversación #${nuevoId}: ${e.message}`);
+  });
+
   const reciencreada = await odooCallLocal('acrux.chat.conversation', 'read',
     [[nuevoId], ['id', 'status', 'agent_id', 'valid_number', 'connector_id']]
   ).catch(() => null);
   const info = reciencreada?.[0] || {};
-  console.log(`🆕 [AcruxLab] Conversación creada #${nuevoId} para ${numero} — status: ${info.status || '?'}, valid_number: ${info.valid_number || '?'}, agente: ${info.agent_id?.[1] || 'ninguno'}`);
+  console.log(`🆕 [AcruxLab] Conversación creada #${nuevoId} para ${numero} — status: ${info.status || '?'}, agente: ${info.agent_id?.[1] || 'ninguno'}`);
 
   return { id: nuevoId, creada: true, agente: info.agent_id?.[1] || null, status: info.status, valid_number: info.valid_number };
 }
@@ -1171,6 +1181,30 @@ async function anotarOrigenEnLead(leadId, estabaArchivado, textoOrigen) {
   }).catch(() => {});
 }
 
+// Marca un lead como PERDIDO en Odoo. Es lo que hace el equipo con los repetidos:
+// si ese papá ya existe como contacto, el registro nuevo no se trabaja, se da por
+// perdido. Se intenta con el método propio de Odoo y, si no está disponible, se
+// archiva a mano.
+async function marcarLeadComoPerdido(leadId, motivo) {
+  await odooCallLocal('crm.lead', 'message_post', [[leadId]], { body: motivo }).catch(() => {});
+  try {
+    await odooCallLocal('crm.lead', 'action_set_lost', [[leadId]]);
+    console.log(`🔴 [Odoo] Lead #${leadId} marcado como PERDIDO`);
+    return { ok: true, metodo: 'action_set_lost' };
+  } catch (e) {
+    // Algunas versiones piden razón de pérdida o no exponen el método por RPC:
+    // en ese caso lo archivamos, que también lo saca de las vistas activas.
+    try {
+      await odooCallLocal('crm.lead', 'write', [[leadId], { active: false, probability: 0 }]);
+      console.log(`🔴 [Odoo] Lead #${leadId} archivado (no se pudo usar action_set_lost: ${e.message})`);
+      return { ok: true, metodo: 'archivado' };
+    } catch (e2) {
+      console.error(`❌ [Odoo] No se pudo marcar como perdido el lead #${leadId}: ${e2.message}`);
+      return { ok: false, error: e2.message };
+    }
+  }
+}
+
 async function contactarLeadPorAcruxLab(tenant, lead) {
   const marcarSinWhatsApp = async (nota) => {
     const tagSinWAId = await getOdooTagId(TAG_KAI_SIN_WHATSAPP);
@@ -1229,15 +1263,12 @@ async function contactarLeadPorAcruxLab(tenant, lead) {
   if (yaContactado?.ultimo_contacto) {
     const horasDesde = (Date.now() - new Date(yaContactado.ultimo_contacto).getTime()) / 3600000;
     if (horasDesde < 72) {
-      const tagContactadoDup = await getOdooTagId(TAG_KAI_CONTACTADO);
-      await odooCallLocal('crm.lead', 'write', [[lead.id], { tag_ids: [[4, tagContactadoDup]] }]).catch(() => {});
-      await odooCallLocal('crm.lead', 'message_post', [[lead.id]], {
-        body: `♻️ No se envió mensaje: al número ${tel} ya se le escribió hace ${Math.round(horasDesde)} h` +
-              (yaContactado.odoo_lead_id && yaContactado.odoo_lead_id !== lead.id ? ` (lead #${yaContactado.odoo_lead_id})` : '') +
-              `. Este registro parece duplicado — conviene fusionarlo en Odoo.`
-      }).catch(() => {});
-      console.log(`♻️ [Motor proactivo] ${tel} ya fue contactado hace ${Math.round(horasDesde)}h — se omite el lead #${lead.id} (duplicado)`);
-      return { ok: false, motivo: 'duplicado_ya_contactado', lead_original: yaContactado.odoo_lead_id || null, horas_desde: Math.round(horasDesde) };
+      await marcarLeadComoPerdido(lead.id,
+        `♻️ <b>Registro repetido</b>: al número ${tel} ya se le escribió hace ${Math.round(horasDesde)} h` +
+        (yaContactado.odoo_lead_id && yaContactado.odoo_lead_id !== lead.id ? ` (lead #${yaContactado.odoo_lead_id})` : '') +
+        `.<br>Este papá ya existe como contacto, así que no se le vuelve a escribir.<br><i>Se marca como perdido por duplicado.</i>`);
+      console.log(`♻️ [Motor proactivo] ${tel} ya contactado hace ${Math.round(horasDesde)}h — lead #${lead.id} marcado como perdido (duplicado)`);
+      return { ok: false, motivo: 'duplicado_marcado_perdido', lead_original: yaContactado.odoo_lead_id || null, horas_desde: Math.round(horasDesde) };
     }
   }
 
@@ -1472,7 +1503,7 @@ async function motorProactivoContactarLeads() {
     const aProcesar = [...conTelefono.slice(0, MAX_LEADS_POR_CORRIDA), ...sinTelefono];
 
     console.log(`🎯 [Motor proactivo] ${conTelefono.length} con teléfono, ${sinTelefono.length} sin teléfono (se leerá el correo de cada uno)`);
-    const numerosYaVistos = new Set();
+    const numerosYaVistos = new Map(); // número → id del lead que sí se contactó
     for (const lead of aProcesar) {
       // Si dos leads de esta misma corrida traen el mismo teléfono (duplicados en Odoo),
       // solo se contacta el primero — la familia no debe recibir el mensaje dos veces.
@@ -1483,10 +1514,14 @@ async function motorProactivoContactarLeads() {
       if (telLead && telLead.length >= 8) {
         const clave = telLead.slice(-8);
         if (numerosYaVistos.has(clave)) {
-          console.log(`♻️ [Motor proactivo] Lead #${lead.id} omitido: el número ...${clave} ya se procesó en esta corrida`);
+          // Se salta, pero hay que MARCARLO: si no, vuelve a aparecer como pendiente
+          // en cada corrida (cada 10 minutos) y nunca sale de la lista.
+          const idPrincipal = numerosYaVistos.get(clave);
+          await marcarLeadComoPerdido(lead.id,
+            `♻️ <b>Registro repetido</b>: este papá ya existe como contacto y se está atendiendo en el lead #${idPrincipal} (número ...${clave}).<br>No se le escribió, para no mandarle dos mensajes a la misma familia.<br><i>Se marca como perdido por duplicado.</i>`);
           continue;
         }
-        numerosYaVistos.add(clave);
+        numerosYaVistos.set(clave, lead.id);
       }
       const contactar = CANAL_CONTACTO_PROACTIVO === 'acrux' ? contactarLeadPorAcruxLab : contactarLeadPorWhatsApp;
       await contactar(tenant, lead);
@@ -5806,7 +5841,7 @@ app.post('/api/motor/proactivo/ejecutar', authMiddleware, async (req, res) => {
     const leads = incluirSinTelefono ? todos.slice(0, limite) : conTelefono.slice(0, limite);
 
     const resultados = [];
-    const numerosVistos = new Set();
+    const numerosVistos = new Map();
     for (const lead of leads) {
       const telLead = String(
         (lead.mobile && String(lead.mobile) !== 'false') ? lead.mobile
@@ -5815,10 +5850,13 @@ app.post('/api/motor/proactivo/ejecutar', authMiddleware, async (req, res) => {
       if (telLead && telLead.length >= 8) {
         const clave = telLead.slice(-8);
         if (numerosVistos.has(clave)) {
-          resultados.push({ lead_id: lead.id, nombre: lead.partner_name || lead.contact_name || lead.name, ok: false, motivo: 'duplicado_en_esta_corrida' });
+          const idPrincipal = numerosVistos.get(clave);
+          const rPerdido = await marcarLeadComoPerdido(lead.id,
+            `♻️ <b>Registro repetido</b>: este papá ya existe como contacto y se está atendiendo en el lead #${idPrincipal} (número ...${clave}).<br>No se le escribió, para no duplicar mensajes.<br><i>Se marca como perdido por duplicado.</i>`);
+          resultados.push({ lead_id: lead.id, nombre: lead.partner_name || lead.contact_name || lead.name, ok: false, motivo: 'repetido_marcado_perdido', se_atiende_en_lead: idPrincipal, marcado: rPerdido.metodo || rPerdido.error });
           continue;
         }
-        numerosVistos.add(clave);
+        numerosVistos.set(clave, lead.id);
       }
       const contactar = CANAL_CONTACTO_PROACTIVO === 'acrux' ? contactarLeadPorAcruxLab : contactarLeadPorWhatsApp;
       const r = await contactar(tenant, lead);
