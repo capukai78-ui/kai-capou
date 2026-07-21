@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-apagar-seed-imagenes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-no-imagenes-en-agradecimientos'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -676,12 +676,15 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
 
   // Si había una pregunta pendiente y este mensaje trae grado, completarla tiene
   // prioridad sobre cualquier coincidencia nueva no relacionada (ver misma lógica en WhatsApp).
+  // Si el papá solo está agradeciendo o despidiéndose, NO se le manda ninguna imagen.
+  const soloAgradece = esAgradecimientoOCierre(mensajeUsuario);
+
   let matchImagen = null;
-  if (nivelMencionadoAhora && conv.temaPendienteCategoria) {
+  if (!soloAgradece && nivelMencionadoAhora && conv.temaPendienteCategoria) {
     const reglaCompletada = completarTemaPendiente(conv.temaPendienteCategoria, nivelMencionadoAhora);
     if (reglaCompletada) matchImagen = { regla: reglaCompletada, ambigua: false };
   }
-  if (!matchImagen) {
+  if (!matchImagen && !soloAgradece) {
     matchImagen = buscarReglaImagenCoincidente(mensajeUsuario, conv.nivelSesion);
   }
   const PALABRAS_MODO_VISUAL = ['muéstrame', 'muestrame', 'quiero ver', 'envía imágenes', 'envia imagenes', 'fotografías', 'fotografias', 'necesito las imágenes', 'necesito las imagenes', 'mándame las imágenes', 'mandame las imagenes'];
@@ -2158,7 +2161,7 @@ const REGLAS_IMAGEN = [
   { keywords: ['edad','años tiene','cuántos años','cuantos años','a qué edad','a que edad','qué edad','que edad','tiene que tener'], nivel: [], categoria: 'admision', nombre_contiene: 'Edades' },
 
   // ── HORARIOS ──
-  { keywords: ['horario','hora','a qué hora','a que hora','cuándo entra','cuando entra','cuándo sale','cuando sale','qué hora'], nivel: [], categoria: 'info_general', nombre_contiene: 'Horario' },
+  { keywords: ['horario','horarios','a qué hora','a que hora','cuándo entra','cuando entra','cuándo sale','cuando sale','qué hora entran','que hora entran','hora de entrada','hora de salida'], nivel: [], categoria: 'info_general', nombre_contiene: 'Horario' },
 
   // ── PROGRAMAS ACADÉMICOS ──
   { keywords: ['cómo es la','como es la','qué enseñan','que enseñan','metodología','metodologia','programa','plan de estudios','cómo trabajan','como trabajan'], nivel: ['preprimaria','jardín','jardin','infantil','kínder','kinder','párvulos','parvulos'], categoria: 'programas', nombre_contiene: 'Preprimaria' },
@@ -2188,6 +2191,20 @@ function contieneKeyword(texto, keyword) {
 // Cuando el papá pide VARIAS cosas en un mismo mensaje ("cuotas, requisitos, horarios y
 // el proceso de admisión"), no basta con encontrar un tema: hay que mandarle todo lo que
 // pidió. Esta función devuelve una regla por cada tema distinto que aparezca.
+// ¿El mensaje es solo un agradecimiento o una despedida? En esos casos el padre NO está
+// pidiendo nada — mandarle una imagen queda muy mal ("mil gracias por atenderme a pesar
+// de la hora" → y KAI le manda otra vez los horarios). Merece una respuesta cálida y ya.
+function esAgradecimientoOCierre(texto) {
+  const t = (texto || '').toLowerCase().trim();
+  if (!t || t.length > 200) return false; // los mensajes largos suelen traer preguntas
+  // Si trae signo de pregunta o pide algo, NO es un cierre
+  if (/\?|¿/.test(t)) return false;
+  if (/(me pued|podr[ií]a|quisiera saber|necesito saber|me manda|env[ií]eme|mandeme|m[aá]ndame)/.test(t)) return false;
+
+  const esCortesia = /(gracias|muchas gracias|mil gracias|te lo agradezco|se lo agradezco|agradecid[oa]|los felicito|felicidades|excelente|muy amable|qu[eé] amable|bendiciones|buen d[ií]a|buenas noches|feliz (d[ií]a|tarde|noche)|hasta luego|nos vemos|estar[eé] pendiente|quedo pendiente|lo revisar[eé]|le confirmo|les confirmo)/.test(t);
+  return esCortesia;
+}
+
 function buscarTodasLasReglasCoincidentes(mensajeUsuario, nivelSesion) {
   const t = (mensajeUsuario || '').toLowerCase();
   const nivelSesionLower = (nivelSesion || '').toLowerCase();
@@ -2467,7 +2484,7 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
     const reglaCompletada = completarTemaPendiente(ctxSesion.temaPendienteCategoria, nivelMencionadoAhora);
     if (reglaCompletada) matchImagen = { regla: reglaCompletada, ambigua: false };
   }
-  if (!matchImagen) {
+  if (!matchImagen && !esAgradecimientoOCierre(mensajeUsuario)) {
     matchImagen = buscarReglaImagenCoincidente(mensajeUsuario, ctxSesion.nivelSesion);
   }
 
