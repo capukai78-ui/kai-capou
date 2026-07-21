@@ -9,7 +9,26 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-no-imagenes-en-agradecimientos'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+// ===== NÚMEROS DE PRUEBA =====
+// Son los del equipo que prueban el sistema. KAI SIEMPRE los atiende (aunque figuren
+// como oportunidad o tengan vendedor), y NUNCA se les crea lead en Odoo ni se cuentan
+// como candidatos. Así se puede probar cuantas veces se quiera sin ensuciar el CRM
+// ni quedar bloqueado por las reglas de negocio.
+const NUMEROS_DE_PRUEBA = [
+  '50252060423', // Luvy — IT / pruebas
+  '50230066358', // Sylvia Flores — admisiones / pruebas
+];
+
+function esNumeroDePrueba(numero) {
+  const limpio = String(numero || '').replace(/\D/g, '');
+  if (!limpio) return false;
+  return NUMEROS_DE_PRUEBA.some(n => {
+    const nl = String(n).replace(/\D/g, '');
+    return nl.length >= 8 && limpio.slice(-8) === nl.slice(-8);
+  });
+}
+
+const VERSION_KAI = 'v2026.07.20-pruebas-luvy-y-sylvia'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1071,7 +1090,8 @@ async function procesarNuevosMensajesAcruxLab() {
       // asignado, entonces ya lo está trabajando una persona: KAI no debe meterse.
       // KAI solo atiende a los NUEVOS, los que todavía no ha tomado nadie.
       try {
-        const leadDelContacto = await buscarLeadExistente({ telefono: numero });
+        // Los números de prueba del equipo se saltan esta regla: siempre se les atiende.
+        const leadDelContacto = esNumeroDePrueba(numero) ? null : await buscarLeadExistente({ telefono: numero });
         // Solo las OPORTUNIDADES bloquean a KAI. Ojo: NO se bloquea por tener vendedor
         // asignado, porque el propio KAI asigna vendedora desde el primer contacto y
         // sigue atendiendo hasta que muestre interés real. Si se bloqueara por eso, KAI
@@ -1928,6 +1948,13 @@ async function getOdooTagId(nombreTag) {
 async function crearCandidatoEnOdoo(tenant, contacto, numero, resultadoNivel) {
   if (contacto.odoo_lead_id) return contacto.odoo_lead_id; // ya existe en memoria
 
+  // Los números de prueba del equipo NO generan leads: si no, cada prueba ensucia el CRM
+  // con candidatos falsos que luego hay que depurar a mano.
+  if (esNumeroDePrueba(numero)) {
+    console.log(`🧪 [Prueba] ${numero} es número de pruebas — no se crea lead en Odoo`);
+    return null;
+  }
+
   // Verificación antes de crear — busca por teléfono (fijo y móvil) y por correo, para
   // no duplicar cuando el papá ya existe en Odoo por otro canal o por otro formulario.
   try {
@@ -2071,6 +2098,11 @@ function enviarMensajeMessenger(recipientId, texto) {
 
 // Procesa un mensaje de cualquier canal — crea/actualiza Contacto y lead en Odoo con canal_origen
 async function procesarMensajeOmnichannel(numero, nombre, mensaje, canal, tenant) {
+  // Los números de prueba del equipo no generan nada en Odoo.
+  if (esNumeroDePrueba(numero)) {
+    console.log(`🧪 [Prueba] ${numero} (${canal}) es número de pruebas — no se crea lead ni candidato`);
+    return;
+  }
   try {
     const teamId = tenant?.odoo_team_id || 1;
 
@@ -2360,7 +2392,8 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
   // tiene un vendedor asignado, ya lo está trabajando una persona y KAI no debe meterse.
   // KAI solo atiende a los NUEVOS. Se revisa antes que nada, para no responder por error.
   try {
-    const leadDueño = await buscarLeadExistente({ telefono: numeroOrigen });
+    // Los números de prueba del equipo se saltan esta regla: siempre se les atiende.
+    const leadDueño = esNumeroDePrueba(numeroOrigen) ? null : await buscarLeadExistente({ telefono: numeroOrigen });
     // Igual que en AcruxLab: solo las OPORTUNIDADES bloquean. Tener vendedor asignado
     // no basta, porque KAI mismo asigna vendedora y sigue atendiendo hasta el traspaso.
     if (leadDueño && leadDueño.active !== false && leadDueño.type === 'opportunity') {
@@ -6608,6 +6641,76 @@ app.post('/api/conversaciones/:id/soltar', authMiddleware, async (req, res) => {
     );
     if (!conv) return res.status(404).json({ ok: false, error: 'No encontrada' });
     res.json({ ok: true, mensaje: 'Conversación soltada' });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Limpia lo que se generó con los números de prueba: conversaciones del panel,
+// asignaciones y el vínculo al lead de Odoo. Sin ?limpiar=1 solo muestra qué hay.
+// NOTA: no borra el lead en Odoo (eso lo decide el equipo), solo desvincula.
+app.get('/api/debug/limpiar-numeros-prueba', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const hacer = req.query.limpiar === '1';
+    const resumen = [];
+
+    for (const num of NUMEROS_DE_PRUEBA) {
+      const limpio = String(num).replace(/\D/g, '');
+      const contacto = await Contacto.findOne({ tenant_id: req.user.tenant_id, numero: limpio });
+      const convs = await Conversacion.find({ tenant_id: req.user.tenant_id, numero: limpio }).select('_id estado agente_nombre');
+
+      // Conversaciones de AcruxLab con ese número
+      let convsAcrux = [];
+      try {
+        convsAcrux = await odooCallLocal('acrux.chat.conversation', 'search_read',
+          [[['number', '=', limpio]]], { fields: ['id', 'name'], limit: 5 }) || [];
+      } catch (e) { /* no bloqueante */ }
+      const asigns = convsAcrux.length
+        ? await AsignacionAcrux.find({ tenant_id: req.user.tenant_id, contacto_id: { $in: convsAcrux.map(c => c.id) } })
+        : [];
+
+      const item = {
+        numero: limpio,
+        lead_odoo_vinculado: contacto?.odoo_lead_id || null,
+        conversaciones_en_panel: convs.length,
+        asignaciones_acrux: asigns.map(a => ({ conversacion: a.contacto_id, modo: a.modo, agente: a.agente_nombre })),
+        acciones: []
+      };
+
+      if (hacer) {
+        // Desvincular el lead y limpiar la clasificación, para que no cuente como candidato
+        if (contacto) {
+          contacto.odoo_lead_id = null;
+          contacto.nivel_calor_etiqueta = null;
+          await contacto.save();
+          item.acciones.push('contacto desvinculado del lead de Odoo');
+        }
+        // Devolver a KAI todas las asignaciones de AcruxLab
+        for (const a of asigns) {
+          await AsignacionAcrux.updateOne(
+            { _id: a._id },
+            { modo: 'bot', fecha_modo_humano: null, sin_auto_recuperacion: false, agente_id: null, agente_nombre: null }
+          );
+        }
+        if (asigns.length) item.acciones.push(`${asigns.length} conversación(es) de AcruxLab devueltas a KAI`);
+        // Cerrar las conversaciones del panel para que no estorben
+        if (convs.length) {
+          await Conversacion.updateMany(
+            { tenant_id: req.user.tenant_id, numero: limpio },
+            { $set: { estado: 'cerrado', motivo: 'Número de pruebas — limpiado' } }
+          );
+          item.acciones.push(`${convs.length} conversación(es) del panel cerradas`);
+        }
+      }
+
+      resumen.push(item);
+    }
+
+    res.json({
+      ok: true,
+      modo: hacer ? 'LIMPIADO' : 'solo consulta — agrega ?limpiar=1 para ejecutar',
+      numeros_de_prueba: NUMEROS_DE_PRUEBA,
+      detalle: resumen
+    });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
