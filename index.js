@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-simulador'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-fix-bloqueo-por-vendedor'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1069,7 +1069,13 @@ async function procesarNuevosMensajesAcruxLab() {
       // KAI solo atiende a los NUEVOS, los que todavía no ha tomado nadie.
       try {
         const leadDelContacto = await buscarLeadExistente({ telefono: numero });
-        if (leadDelContacto && leadDelContacto.active !== false && (leadDelContacto.type === 'opportunity' || leadDelContacto.user_id)) {
+        // Solo las OPORTUNIDADES bloquean a KAI. Ojo: NO se bloquea por tener vendedor
+        // asignado, porque el propio KAI asigna vendedora desde el primer contacto y
+        // sigue atendiendo hasta que muestre interés real. Si se bloqueara por eso, KAI
+        // le diría al papá "yo te puedo apoyar" y luego se quedaría callado — que es
+        // justo lo que pasó. Cuando una vendedora de verdad toma el chat, eso se detecta
+        // por el agente del ChatRoom o por el modo humano, más abajo.
+        if (leadDelContacto && leadDelContacto.active !== false && leadDelContacto.type === 'opportunity') {
           // Las OPORTUNIDADES son de Sylvia por regla del colegio, sin importar qué
           // vendedor tengan puesto en Odoo. Los leads normales ya asignados se quedan
           // con quien los tenga.
@@ -1416,7 +1422,9 @@ async function contactarLeadPorAcruxLab(tenant, lead) {
   // tiene vendedor asignado, ya lo está trabajando una persona — KAI no lo contacta.
   try {
     const yaEsDeAlguien = await buscarLeadExistente({ telefono: tel });
-    if (yaEsDeAlguien && yaEsDeAlguien.id !== lead.id && yaEsDeAlguien.active !== false && (yaEsDeAlguien.type === 'opportunity' || yaEsDeAlguien.user_id)) {
+    // Solo las OPORTUNIDADES lo excluyen. Un lead con vendedor asignado puede seguir
+    // siendo trabajado por KAI, que es justamente lo que se busca.
+    if (yaEsDeAlguien && yaEsDeAlguien.id !== lead.id && yaEsDeAlguien.active !== false && yaEsDeAlguien.type === 'opportunity') {
       const duenio = yaEsDeAlguien.user_id?.[1] || 'Sylvia (oportunidad)';
       await marcarLeadComoPerdido(lead.id,
         `🔒 <b>Ya lo está trabajando ${duenio}</b>: este papá ya existe como ${yaEsDeAlguien.type === 'opportunity' ? 'OPORTUNIDAD' : 'lead asignado'} (#${yaEsDeAlguien.id}).<br>KAI no lo contactó para no interferir con el seguimiento que ya lleva esa persona.`);
@@ -2336,7 +2344,9 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
   // KAI solo atiende a los NUEVOS. Se revisa antes que nada, para no responder por error.
   try {
     const leadDueño = await buscarLeadExistente({ telefono: numeroOrigen });
-    if (leadDueño && leadDueño.active !== false && (leadDueño.type === 'opportunity' || leadDueño.user_id)) {
+    // Igual que en AcruxLab: solo las OPORTUNIDADES bloquean. Tener vendedor asignado
+    // no basta, porque KAI mismo asigna vendedora y sigue atendiendo hasta el traspaso.
+    if (leadDueño && leadDueño.active !== false && leadDueño.type === 'opportunity') {
       // Las OPORTUNIDADES son de Sylvia por regla del colegio.
       const esOportunidad = leadDueño.type === 'opportunity';
       let duenio = leadDueño.user_id?.[1] || null;
