@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-diagnostico-sin-enviar'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-agente-servicio-para-escribir'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1092,25 +1092,36 @@ async function obtenerOCrearConversacionAcrux(numero, nombre) {
   ) || [];
   if (existentes.length) {
     const c = existentes[0];
-    // Si quedó atascada en 'new' (creada antes de la corrección, o creada desde fuera
-    // del ChatRoom), la pasamos a 'current' — si no, el envío sería rechazado.
+    const uidServicioActual = await getOdooUID();
+    // ¿El agente es una persona real, o somos nosotros mismos? Es una diferencia clave:
+    // si es una vendedora, no nos metemos; si es nuestro usuario de servicio, KAI puede
+    // escribir con normalidad.
+    const agenteEsHumano = !!(c.agent_id && c.agent_id[0] !== uidServicioActual);
+
     if (c.status === 'new') {
-      await odooCallLocal('acrux.chat.conversation', 'write', [[c.id], { status: 'current' }]).catch(() => {});
-      console.log(`🔧 [AcruxLab] Conversación #${c.id} estaba en 'new' — se pasó a 'current' para poder escribir`);
+      try {
+        const cambios = { status: 'current' };
+        if (!c.agent_id) cambios.agent_id = uidServicioActual;
+        await odooCallLocal('acrux.chat.conversation', 'write', [[c.id], cambios]);
+        console.log(`🔧 [AcruxLab] Conversación #${c.id} pasada de 'new' a 'current' (agente de servicio asignado)`);
+      } catch (e) {
+        console.error(`⚠️ [AcruxLab] No se pudo activar la conversación #${c.id}: ${e.message}`);
+      }
     }
-    return { id: c.id, creada: false, agente: c.agent_id?.[1] || null, status: c.status, valid_number: c.valid_number };
+    return { id: c.id, creada: false, agente: agenteEsHumano ? c.agent_id[1] : null, status: c.status, valid_number: c.valid_number };
   }
 
+  // Al crear: el agente va desde el inicio, porque sin él Odoo no deja activarla.
+  const uidServicio = await getOdooUID();
   const nuevoId = await odooCallLocal('acrux.chat.conversation', 'create', [{
     name: nombre || numero,
     number: numero,
-    connector_id: ACRUX_CONNECTOR_ID
+    connector_id: ACRUX_CONNECTOR_ID,
+    agent_id: uidServicio
   }]);
   if (!nuevoId) throw new Error('Odoo no devolvió el ID de la conversación creada');
 
-  // Las conversaciones creadas desde fuera del ChatRoom nacen con status 'new', y en ese
-  // estado el módulo NO permite escribir (ese era el error "no puede escribir en esta
-  // conversación"). Las que funcionan están en 'current', así que la pasamos a ese estado.
+  // Ya con agente, sí acepta el cambio a 'current', que es lo que permite escribir.
   await odooCallLocal('acrux.chat.conversation', 'write', [[nuevoId], { status: 'current' }]).catch(e => {
     console.error(`⚠️ [AcruxLab] No se pudo poner en 'current' la conversación #${nuevoId}: ${e.message}`);
   });
@@ -1121,7 +1132,10 @@ async function obtenerOCrearConversacionAcrux(numero, nombre) {
   const info = reciencreada?.[0] || {};
   console.log(`🆕 [AcruxLab] Conversación creada #${nuevoId} para ${numero} — status: ${info.status || '?'}, agente: ${info.agent_id?.[1] || 'ninguno'}`);
 
-  return { id: nuevoId, creada: true, agente: info.agent_id?.[1] || null, status: info.status, valid_number: info.valid_number };
+  // El agente somos nosotros (usuario de servicio), así que NO se reporta como "tomada
+  // por un humano" — si se reportara, el motor se saltaría el envío que acaba de habilitar.
+  const agenteHumano = !!(info.agent_id && info.agent_id[0] !== uidServicio);
+  return { id: nuevoId, creada: true, agente: agenteHumano ? info.agent_id[1] : null, status: info.status, valid_number: info.valid_number };
 }
 
 // ===== REGLA: ANTES DE CREAR UN LEAD EN ODOO, VERIFICAR QUE NO EXISTA =====
