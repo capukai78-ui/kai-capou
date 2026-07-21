@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-solo-anotar-origen'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-diagnostico-conversacion-acrux'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1089,9 +1089,12 @@ const ACRUX_CONNECTOR_ID = 2; // "Whatsapp conector" (apichat.io) — el número
 async function obtenerOCrearConversacionAcrux(numero, nombre) {
   const existentes = await odooCallLocal('acrux.chat.conversation', 'search_read',
     [[['number', '=', numero]]],
-    { fields: ['id', 'name', 'number', 'agent_id'], limit: 1 }
+    { fields: ['id', 'name', 'number', 'agent_id', 'status', 'connector_id', 'valid_number'], limit: 1 }
   ) || [];
-  if (existentes.length) return { id: existentes[0].id, creada: false, agente: existentes[0].agent_id?.[1] || null };
+  if (existentes.length) {
+    const c = existentes[0];
+    return { id: c.id, creada: false, agente: c.agent_id?.[1] || null, status: c.status, valid_number: c.valid_number };
+  }
 
   const nuevoId = await odooCallLocal('acrux.chat.conversation', 'create', [{
     name: nombre || numero,
@@ -1099,7 +1102,16 @@ async function obtenerOCrearConversacionAcrux(numero, nombre) {
     connector_id: ACRUX_CONNECTOR_ID
   }]);
   if (!nuevoId) throw new Error('Odoo no devolvió el ID de la conversación creada');
-  return { id: nuevoId, creada: true, agente: null };
+
+  // Al crearla desde fuera del ChatRoom puede quedar en un estado que no permite
+  // escribir. Leemos cómo quedó para saberlo con certeza (y poder corregirlo).
+  const reciencreada = await odooCallLocal('acrux.chat.conversation', 'read',
+    [[nuevoId], ['id', 'status', 'agent_id', 'valid_number', 'connector_id']]
+  ).catch(() => null);
+  const info = reciencreada?.[0] || {};
+  console.log(`🆕 [AcruxLab] Conversación creada #${nuevoId} para ${numero} — status: ${info.status || '?'}, valid_number: ${info.valid_number || '?'}, agente: ${info.agent_id?.[1] || 'ninguno'}`);
+
+  return { id: nuevoId, creada: true, agente: info.agent_id?.[1] || null, status: info.status, valid_number: info.valid_number };
 }
 
 // ===== REGLA: ANTES DE CREAR UN LEAD EN ODOO, VERIFICAR QUE NO EXISTA =====
@@ -6254,6 +6266,47 @@ app.post('/api/conversaciones/:id/soltar', authMiddleware, async (req, res) => {
     );
     if (!conv) return res.status(404).json({ ok: false, error: 'No encontrada' });
     res.json({ ok: true, mensaje: 'Conversación soltada' });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Compara una conversación de AcruxLab que SÍ funciona contra la de un número que
+// falla, para ver qué campo las diferencia y por qué Odoo rechaza el envío.
+// GET /api/debug/comparar-conversacion-acrux?numero=50254649218
+app.get('/api/debug/comparar-conversacion-acrux', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const numero = String(req.query.numero || '').replace(/\D/g, '');
+    if (!numero) return res.json({ ok: false, error: 'Falta ?numero=' });
+
+    const laQueFalla = await odooCallLocal('acrux.chat.conversation', 'search_read',
+      [[['number', '=', numero]]], { limit: 1 }
+    ) || [];
+
+    // Una que sí funciona: la más reciente con mensajes de verdad
+    const queSiFunciona = await odooCallLocal('acrux.chat.conversation', 'search_read',
+      [[['number', '!=', numero], ['status', '=', 'current']]],
+      { limit: 1, order: 'last_received desc' }
+    ) || [];
+
+    // Mostrar solo los campos donde se diferencian, para no llenar de ruido
+    const a = laQueFalla[0] || {};
+    const b = queSiFunciona[0] || {};
+    const diferencias = {};
+    const todasLasClaves = new Set([...Object.keys(a), ...Object.keys(b)]);
+    for (const k of todasLasClaves) {
+      const va = JSON.stringify(a[k]);
+      const vb = JSON.stringify(b[k]);
+      if (va !== vb) diferencias[k] = { la_que_falla: a[k], la_que_funciona: b[k] };
+    }
+
+    res.json({
+      ok: true,
+      numero_consultado: numero,
+      encontrada: !!laQueFalla.length,
+      resumen_la_que_falla: a.id ? { id: a.id, status: a.status, agent_id: a.agent_id, valid_number: a.valid_number, is_waba_opt_in: a.is_waba_opt_in, sent_opt_in: a.sent_opt_in, conv_type: a.conv_type, chat_id: a.chat_id } : null,
+      resumen_la_que_funciona: b.id ? { id: b.id, status: b.status, agent_id: b.agent_id, valid_number: b.valid_number, is_waba_opt_in: b.is_waba_opt_in, sent_opt_in: b.sent_opt_in, conv_type: b.conv_type, chat_id: b.chat_id } : null,
+      diferencias
+    });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
