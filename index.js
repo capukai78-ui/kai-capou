@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-antiduplicados-redes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-kai-24x7-sin-cortes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -503,7 +503,12 @@ function estaDentroDeHorarioLaboral() {
 // ningún vendedor va a contestar hasta que reinicien labores.
 function construirMensajeTraspaso(nombreAgente, mostroInteresReal) {
   if (!estaDentroDeHorarioLaboral()) {
-    return 'En este momento estamos fuera de nuestro horario de atención (Lunes a Jueves 7:00 a 16:00, Viernes 7:00 a 15:00). Un asesor te contactará personalmente tan pronto reiniciemos labores. 🙏';
+    // Fuera de horario NO se transfiere (nadie contestaría), pero KAI tampoco se
+    // despide: sigue atendiendo y resolviendo todo lo que pueda. El lead ya queda
+    // asignado, así que la vendedora lo retoma cuando entre a trabajar.
+    return 'Nuestros asesores no se encuentran disponibles en este momento (atienden de Lunes a Jueves de 7:00 a 16:00 y Viernes de 7:00 a 15:00), ' +
+           (nombreAgente ? `pero ya dejé tu caso asignado a ${nombreAgente.split(' ')[0]}, quien te buscará apenas inicie labores. ` : 'pero ya dejé tu caso registrado para que te contacten apenas inicien labores. ') +
+           'Mientras tanto yo te puedo apoyar con todo: cuotas, requisitos, horarios, proceso de admisión o lo que necesites saber 😊\n\n¿Con qué te ayudo?';
   }
   if (nombreAgente) {
     const primerNombre = nombreAgente.split(' ')[0];
@@ -777,7 +782,16 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
       nombreAgente = asign?.agente_nombre;
       historial.push({ role: 'assistant', content: '(Se transfirió la conversación a un asesor humano.)' });
     } else {
-      historial.push({ role: 'assistant', content: '(Se avisó el horario de atención — KAI sigue atendiendo mientras tanto, no se transfirió a nadie porque no hay agentes trabajando ahorita.)' });
+      // Fuera de horario NO se transfiere (KAI sigue atendiendo), pero el caso SÍ queda
+      // asignado y con el resumen listo, para que la vendedora lo retome apenas entre.
+      const resumenFuera = await generarResumenParaAgente(numero).catch(() => null);
+      const asignFuera = await AsignacionAcrux.findOneAndUpdate(
+        { tenant_id: tenant._id, contacto_id: contactoId },
+        { $set: { resumen_kai: resumenFuera } },
+        { new: true }
+      );
+      nombreAgente = asignFuera?.agente_nombre; // para poder decirle quién lo va a buscar
+      historial.push({ role: 'assistant', content: '(Fuera de horario: se avisó que los asesores no están disponibles, el caso quedó asignado, y KAI sigue atendiendo mientras tanto.)' });
     }
 
     const msg = construirMensajeTraspaso(nombreAgente, mostroInteresReal);
@@ -1099,15 +1113,48 @@ async function contactarLeadPorAcruxLab(tenant, lead) {
 
   const telCrudo = (lead.mobile && String(lead.mobile) !== 'false') ? lead.mobile
                  : ((lead.phone && String(lead.phone) !== 'false') ? lead.phone : null);
-  if (!telCrudo) { await marcarSinWhatsApp('el registro no trae número de teléfono'); return { ok: false, motivo: 'sin_telefono' }; }
 
-  let tel = String(telCrudo).replace(/\D/g, '');
+  // Sin teléfono en los campos, pero el dato puede venir DENTRO del correo del
+  // formulario (llega así cuando Odoo no lo separa en campos). Antes de descartarlo,
+  // KAI lee ese correo y saca los datos. Si de verdad no hay nada, ahí sí se marca.
+  let telFinal = telCrudo;
+  let datosDelCorreo = null;
+  if (!telFinal) {
+    try {
+      const extraccion = await extraerDatosDelFormulario(lead.id);
+      if (extraccion.ok && extraccion.datos) {
+        datosDelCorreo = extraccion.datos;
+        if (!datosDelCorreo.es_formulario_admisiones) {
+          await marcarSinWhatsApp(`no es una solicitud de admisión (${datosDelCorreo.tema || 'otro tema'}): ${datosDelCorreo.motivo_descarte || ''}`);
+          return { ok: false, motivo: 'no_es_admision', tema: datosDelCorreo.tema };
+        }
+        if (datosDelCorreo.telefono) {
+          telFinal = datosDelCorreo.telefono;
+          // Guardarlo en Odoo, para que el equipo también lo vea en la ficha del lead
+          const actualiza = { phone: datosDelCorreo.telefono };
+          if (datosDelCorreo.nombre_padre) { actualiza.contact_name = datosDelCorreo.nombre_padre; actualiza.partner_name = datosDelCorreo.nombre_padre; }
+          if (datosDelCorreo.correo) actualiza.email_from = datosDelCorreo.correo;
+          await odooCallLocal('crm.lead', 'write', [[lead.id], actualiza]).catch(() => {});
+          await odooCallLocal('crm.lead', 'message_post', [[lead.id]], {
+            body: `🤖 KAI leyó el correo del formulario y completó los datos: ${datosDelCorreo.nombre_padre || '—'} · ${datosDelCorreo.telefono} · ${datosDelCorreo.nivel || 'sin nivel'}`
+          }).catch(() => {});
+          console.log(`📄 [Motor proactivo] Datos extraídos del correo del lead #${lead.id}: ${datosDelCorreo.telefono}`);
+        }
+      }
+    } catch (e) {
+      console.error(`⚠️ No se pudo leer el correo del lead #${lead.id}: ${e.message}`);
+    }
+  }
+
+  if (!telFinal) { await marcarSinWhatsApp('el registro no trae número de teléfono ni se encontró en el correo'); return { ok: false, motivo: 'sin_telefono' }; }
+
+  let tel = String(telFinal).replace(/\D/g, '');
   if (tel.length === 8) tel = '502' + tel;
-  if (tel.length < 11) { await marcarSinWhatsApp(`el número "${telCrudo}" no parece válido`); return { ok: false, motivo: 'telefono_invalido' }; }
+  if (tel.length < 11) { await marcarSinWhatsApp(`el número "${telFinal}" no parece válido`); return { ok: false, motivo: 'telefono_invalido' }; }
 
-  const nombre = lead.partner_name || lead.contact_name || null;
+  const nombre = lead.partner_name || lead.contact_name || datosDelCorreo?.nombre_padre || null;
   const primerNombre = nombre ? nombre.split(' ')[0] : null;
-  const nivel = normalizarNivelParaMensaje(lead.x_studio_comentarios);
+  const nivel = normalizarNivelParaMensaje(lead.x_studio_comentarios) || normalizarNivelParaMensaje(datosDelCorreo?.nivel);
   const texto = MENSAJE_PRIMER_CONTACTO(primerNombre, nivel);
 
   let conversacion;
@@ -1163,7 +1210,7 @@ async function contactarLeadPorAcruxLab(tenant, lead) {
   ).catch(() => {});
 
   const zona = (lead.x_studio_notas_1 && String(lead.x_studio_notas_1) !== 'false' && !String(lead.x_studio_notas_1).startsWith('http'))
-    ? String(lead.x_studio_notas_1) : null;
+    ? String(lead.x_studio_notas_1) : (datosDelCorreo?.zona || null);
 
   await Contacto.findOneAndUpdate(
     { tenant_id: tenant._id, numero: tel },
@@ -1321,10 +1368,6 @@ let _procesandoMotorProactivo = false;
 async function motorProactivoContactarLeads() {
   if (!MOTOR_PROACTIVO_ACTIVO) return;
   if (_procesandoMotorProactivo) return;
-  // Solo dentro del horario laboral: escribirle a una familia a las 11 de la noche
-  // se ve mal, aunque KAI pueda atender 24/7 cuando ellos escriben primero.
-  if (!estaDentroDeHorarioLaboral()) return;
-
   _procesandoMotorProactivo = true;
   try {
     const tenant = await Tenant.findOne({ activo: true });
