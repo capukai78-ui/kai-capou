@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-verificar-antes-de-crear'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-solo-anotar-origen'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1106,7 +1106,7 @@ async function obtenerOCrearConversacionAcrux(numero, nombre) {
 // Busca por teléfono (últimos 8 dígitos, para que dé igual el formato) y por correo.
 // Devuelve el lead existente o null. Usarla SIEMPRE antes de crear, para no ensuciar
 // el CRM con registros repetidos del mismo papá.
-async function buscarLeadExistente({ telefono, correo, incluirCerrados = false } = {}) {
+async function buscarLeadExistente({ telefono, correo } = {}) {
   const condiciones = [];
   if (telefono) {
     const ultimos8 = String(telefono).replace(/\D/g, '').slice(-8);
@@ -1123,17 +1123,40 @@ async function buscarLeadExistente({ telefono, correo, incluirCerrados = false }
   for (let i = 0; i < condiciones.length - 1; i++) dominio.push('|');
   condiciones.forEach(c => dominio.push(c));
 
-  const base = incluirCerrados ? [] : [['active', '=', true]];
   try {
+    // Se buscan TAMBIÉN los perdidos/archivados (active_test: false). Cuando el equipo
+    // marca un lead como perdido por estar repetido y ese papá vuelve a escribir, hay
+    // que traer ESE contacto, no abrir uno nuevo — solo se anota por dónde volvió.
     const encontrados = await odooCallLocal('crm.lead', 'search_read',
-      [[...base, ...dominio]],
-      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'mobile', 'email_from', 'user_id', 'create_date', 'type', 'stage_id'], limit: 5, order: 'create_date desc' }
+      [dominio],
+      {
+        fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'mobile', 'email_from', 'user_id', 'create_date', 'type', 'stage_id', 'active'],
+        limit: 10, order: 'create_date desc',
+        context: { active_test: false }
+      }
     ) || [];
-    return encontrados.length ? encontrados[0] : null;
+    if (!encontrados.length) return null;
+
+    // Si hay activos, se prefiere el activo más reciente. Si todos están archivados,
+    // se toma el más reciente de esos.
+    const activos = encontrados.filter(l => l.active !== false);
+    return activos.length ? activos[0] : encontrados[0];
   } catch (e) {
     console.error(`⚠️ No se pudo verificar si el lead ya existe: ${e.message}`);
     return null; // ante la duda no bloqueamos, pero queda registrado en los logs
   }
+}
+
+// Cuando un papá vuelve a escribir por cualquier canal y ya existe como contacto, NO se
+// crea otro lead ni se reactiva nada: el registro repetido se queda como perdido, tal
+// como lo maneja el equipo. Lo único que hacemos es dejar anotado por dónde volvió,
+// para que el historial del contacto quede completo.
+async function anotarOrigenEnLead(leadId, estabaArchivado, textoOrigen) {
+  await odooCallLocal('crm.lead', 'message_post', [[leadId]], {
+    body: textoOrigen +
+      `<br><i>No se creó lead nuevo: ya existía este contacto.</i>` +
+      (estabaArchivado ? `<br><i>Nota: este lead está archivado/perdido. Se dejó tal cual.</i>` : '')
+  }).catch(() => {});
 }
 
 async function contactarLeadPorAcruxLab(tenant, lead) {
@@ -1678,7 +1701,8 @@ async function crearCandidatoEnOdoo(tenant, contacto, numero, resultadoNivel) {
     if (existente) {
       contacto.odoo_lead_id = existente.id;
       await contacto.save();
-      console.log(`🔗 Lead existente en Odoo vinculado — #${existente.id} para ${numero} (no se creó uno nuevo)`);
+      await anotarOrigenEnLead(existente.id, existente.active === false, `💬 Volvió a escribir por <b>WhatsApp</b> (${numero}).`);
+      console.log(`🔗 Lead existente en Odoo vinculado — #${existente.id} para ${numero}${existente.active === false ? ' (estaba archivado, se reactivó)' : ''}`);
       return existente.id;
     }
   } catch (e) {
@@ -1855,10 +1879,8 @@ async function procesarMensajeOmnichannel(numero, nombre, mensaje, canal, tenant
       if (yaExiste) {
         contacto.odoo_lead_id = yaExiste.id;
         await contacto.save();
-        await odooCallLocal('crm.lead', 'message_post', [[yaExiste.id]], {
-          body: `📲 Este contacto también escribió por ${canal}. No se creó lead nuevo para no duplicar.`
-        }).catch(() => {});
-        console.log(`🔗 [${canal}] Lead existente vinculado — #${yaExiste.id} (no se creó uno nuevo)`);
+        await anotarOrigenEnLead(yaExiste.id, yaExiste.active === false, `📲 Volvió a escribir por <b>${canal}</b>.`);
+        console.log(`🔗 [${canal}] Lead existente vinculado — #${yaExiste.id}${yaExiste.active === false ? ' (estaba archivado, se reactivó)' : ''}`);
         return;
       }
 
@@ -4033,10 +4055,8 @@ app.post('/api/lead-ads', async (req, res) => {
       if (yaExiste) {
         contacto.odoo_lead_id = yaExiste.id;
         await contacto.save();
-        await odooCallLocal('crm.lead', 'message_post', [[yaExiste.id]], {
-          body: `📋 Este contacto también llenó un formulario de Lead Ads de Facebook. No se creó lead nuevo para no duplicar.`
-        }).catch(() => {});
-        console.log(`🔗 [Lead Ads] Lead existente vinculado — #${yaExiste.id} para ${nombre}`);
+        await anotarOrigenEnLead(yaExiste.id, yaExiste.active === false, `📋 Volvió a escribir por <b>Lead Ads de Facebook</b>.`);
+        console.log(`🔗 [Lead Ads] Lead existente vinculado — #${yaExiste.id}${yaExiste.active === false ? ' (reactivado)' : ''}`);
       } else {
         const tagId = await getOdooTagId('Canal — Lead Ads Facebook');
         const leadId = await odooCallLocal('crm.lead', 'create', [{
@@ -4084,10 +4104,8 @@ app.post('/api/lead-web', async (req, res) => {
       if (yaExiste) {
         contacto.odoo_lead_id = yaExiste.id;
         await contacto.save();
-        await odooCallLocal('crm.lead', 'message_post', [[yaExiste.id]], {
-          body: `📋 Este contacto llenó de nuevo el formulario web.${mensaje ? '<br>Mensaje: ' + mensaje : ''} No se creó lead nuevo para no duplicar.`
-        }).catch(() => {});
-        console.log(`🔗 [Formulario web] Lead existente vinculado — #${yaExiste.id}`);
+        await anotarOrigenEnLead(yaExiste.id, yaExiste.active === false, `📋 Volvió a escribir por el <b>formulario web</b>.${mensaje ? '<br>Mensaje: ' + mensaje : ''}`);
+        console.log(`🔗 [Formulario web] Lead existente vinculado — #${yaExiste.id}${yaExiste.active === false ? ' (reactivado)' : ''}`);
       } else {
         const tagId = await getOdooTagId('Canal — Formulario Web');
         const leadId = await odooCallLocal('crm.lead', 'create', [{
@@ -6149,9 +6167,8 @@ app.post('/api/motor/procesar-social-calientes', authMiddleware, async (req, res
           if (tagRedesExistente) {
             await odooCallLocal('crm.lead', 'write', [[leadExistente.id], { tag_ids: [[4, tagRedesExistente]] }]).catch(() => {});
           }
-          await odooCallLocal('crm.lead', 'message_post', [[leadExistente.id]], {
-            body: `📲 Este contacto también escribió por ${item.canal === 'instagram' ? 'Instagram' : 'Messenger'}: "${(item.mensaje || '').substring(0, 200)}"<br>KAI lo clasificó como CALIENTE. No se creó lead nuevo para no duplicar.`
-          }).catch(() => {});
+          await anotarOrigenEnLead(leadExistente.id, leadExistente.active === false,
+            `📲 Volvió a escribir por <b>${item.canal === 'instagram' ? 'Instagram' : 'Messenger'}</b>: "${(item.mensaje || '').substring(0, 200)}"<br>KAI lo clasificó como CALIENTE.`);
 
           if (item.id) {
             await Conversacion.findOneAndUpdate(
@@ -6240,6 +6257,65 @@ app.post('/api/conversaciones/:id/soltar', authMiddleware, async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
+// REPORTE DE DUPLICADOS — agrupa los leads por teléfono para ver de un vistazo cuáles
+// son de la misma persona. Incluye los archivados/perdidos, porque los repetidos suelen
+// marcarse así y hay que poder verlos igual.
+// GET /api/debug/leads-duplicados?dias=60
+app.get('/api/debug/leads-duplicados', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const dias = Math.min(parseInt(req.query.dias) || 60, 365);
+    const desde = new Date(Date.now() - dias * 24 * 3600 * 1000).toISOString().replace('T', ' ').substring(0, 19);
+
+    const leads = await odooCallLocal('crm.lead', 'search_read',
+      [[['create_date', '>=', desde]]],
+      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'mobile', 'email_from', 'user_id', 'create_date', 'active', 'stage_id', 'probability'], limit: 500, order: 'create_date desc', context: { active_test: false } }
+    ) || [];
+
+    // Agrupar por los últimos 8 dígitos del teléfono (así no importa el formato)
+    const grupos = {};
+    leads.forEach(l => {
+      const tel = String((l.mobile && String(l.mobile) !== 'false') ? l.mobile : (l.phone || '')).replace(/\D/g, '');
+      if (tel.length < 8) return;
+      const clave = tel.slice(-8);
+      if (!grupos[clave]) grupos[clave] = [];
+      grupos[clave].push({
+        id: l.id,
+        nombre: l.partner_name || l.contact_name || l.name,
+        correo: l.email_from || null,
+        vendedor: l.user_id?.[1] || 'SIN ASIGNAR',
+        etapa: l.stage_id?.[1] || null,
+        creado: l.create_date?.substring(0, 16),
+        archivado_o_perdido: l.active === false || l.probability === 0
+      });
+    });
+
+    const duplicados = Object.entries(grupos)
+      .filter(([, arr]) => arr.length > 1)
+      .map(([tel, arr]) => ({
+        telefono: tel,
+        nombre: arr[0].nombre,
+        veces_repetido: arr.length,
+        activos: arr.filter(a => !a.archivado_o_perdido).length,
+        perdidos_o_archivados: arr.filter(a => a.archivado_o_perdido).length,
+        // El más antiguo suele ser el "bueno"; los demás son los repetidos
+        lead_principal: arr[arr.length - 1].id,
+        leads: arr
+      }))
+      .sort((a, b) => b.veces_repetido - a.veces_repetido);
+
+    res.json({
+      ok: true,
+      dias_revisados: dias,
+      total_leads_revisados: leads.length,
+      contactos_con_duplicados: duplicados.length,
+      total_leads_repetidos: duplicados.reduce((s, d) => s + d.veces_repetido - 1, 0),
+      duplicados
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// REPORTE DE DUPLICADOS termina aquí
 // ===== ESCÁNER DE INSTAGRAM Y MESSENGER =====
 // Por estos canales llega de todo: felicitaciones a alumnos, comentarios sueltos, gente
 // bromeando... y en medio, padres que SÍ quieren inscribir. Esto lee cada conversación
