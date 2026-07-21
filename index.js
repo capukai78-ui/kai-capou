@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-no-contactar-duplicados'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-verificar-antes-de-crear'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1102,6 +1102,40 @@ async function obtenerOCrearConversacionAcrux(numero, nombre) {
   return { id: nuevoId, creada: true, agente: null };
 }
 
+// ===== REGLA: ANTES DE CREAR UN LEAD EN ODOO, VERIFICAR QUE NO EXISTA =====
+// Busca por teléfono (últimos 8 dígitos, para que dé igual el formato) y por correo.
+// Devuelve el lead existente o null. Usarla SIEMPRE antes de crear, para no ensuciar
+// el CRM con registros repetidos del mismo papá.
+async function buscarLeadExistente({ telefono, correo, incluirCerrados = false } = {}) {
+  const condiciones = [];
+  if (telefono) {
+    const ultimos8 = String(telefono).replace(/\D/g, '').slice(-8);
+    if (ultimos8.length === 8) {
+      condiciones.push(['phone', 'like', ultimos8]);
+      condiciones.push(['mobile', 'like', ultimos8]);
+    }
+  }
+  if (correo && String(correo).includes('@')) condiciones.push(['email_from', 'ilike', String(correo).trim()]);
+  if (!condiciones.length) return null;
+
+  // Odoo espera los OR (|) ANTES de las condiciones que unen
+  const dominio = [];
+  for (let i = 0; i < condiciones.length - 1; i++) dominio.push('|');
+  condiciones.forEach(c => dominio.push(c));
+
+  const base = incluirCerrados ? [] : [['active', '=', true]];
+  try {
+    const encontrados = await odooCallLocal('crm.lead', 'search_read',
+      [[...base, ...dominio]],
+      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'mobile', 'email_from', 'user_id', 'create_date', 'type', 'stage_id'], limit: 5, order: 'create_date desc' }
+    ) || [];
+    return encontrados.length ? encontrados[0] : null;
+  } catch (e) {
+    console.error(`⚠️ No se pudo verificar si el lead ya existe: ${e.message}`);
+    return null; // ante la duda no bloqueamos, pero queda registrado en los logs
+  }
+}
+
 async function contactarLeadPorAcruxLab(tenant, lead) {
   const marcarSinWhatsApp = async (nota) => {
     const tagSinWAId = await getOdooTagId(TAG_KAI_SIN_WHATSAPP);
@@ -1637,20 +1671,15 @@ async function getOdooTagId(nombreTag) {
 async function crearCandidatoEnOdoo(tenant, contacto, numero, resultadoNivel) {
   if (contacto.odoo_lead_id) return contacto.odoo_lead_id; // ya existe en memoria
 
-  // Verificación adicional — buscar directamente en Odoo por teléfono antes de crear
-  // Esto evita duplicados cuando dos mensajes llegan casi simultáneamente
+  // Verificación antes de crear — busca por teléfono (fijo y móvil) y por correo, para
+  // no duplicar cuando el papá ya existe en Odoo por otro canal o por otro formulario.
   try {
-    const telefonoLimpio = numero.replace(/\D/g,'');
-    const existentes = await odooCallLocal('crm.lead', 'search_read',
-      [[['phone', 'like', telefonoLimpio.slice(-8)], ['active', '=', true]]],
-      { fields: ['id', 'name', 'phone'], limit: 1 }
-    );
-    if (existentes && existentes.length) {
-      // Ya existe un lead con ese teléfono — vincularlo al Contacto sin crear otro
-      contacto.odoo_lead_id = existentes[0].id;
+    const existente = await buscarLeadExistente({ telefono: numero, correo: contacto.correo });
+    if (existente) {
+      contacto.odoo_lead_id = existente.id;
       await contacto.save();
-      console.log(`🔗 Lead existente en Odoo vinculado — #${existentes[0].id} para ${numero}`);
-      return existentes[0].id;
+      console.log(`🔗 Lead existente en Odoo vinculado — #${existente.id} para ${numero} (no se creó uno nuevo)`);
+      return existente.id;
     }
   } catch (e) {
     console.warn('⚠️ No se pudo verificar duplicados en Odoo:', e.message);
@@ -1818,9 +1847,24 @@ async function procesarMensajeOmnichannel(numero, nombre, mensaje, canal, tenant
       }[canal] || 'Canal — Otro';
 
       const tagId = await getOdooTagId(etiquetaCanal);
+
+      // Antes de crear: si este papá ya existe en Odoo (escribió antes por otro canal),
+      // se vincula al lead que ya está en vez de abrir uno nuevo.
+      const telParaBuscar = (numero.startsWith('ig_') || numero.startsWith('fb_')) ? null : numero;
+      const yaExiste = await buscarLeadExistente({ telefono: telParaBuscar, correo: contacto.correo });
+      if (yaExiste) {
+        contacto.odoo_lead_id = yaExiste.id;
+        await contacto.save();
+        await odooCallLocal('crm.lead', 'message_post', [[yaExiste.id]], {
+          body: `📲 Este contacto también escribió por ${canal}. No se creó lead nuevo para no duplicar.`
+        }).catch(() => {});
+        console.log(`🔗 [${canal}] Lead existente vinculado — #${yaExiste.id} (no se creó uno nuevo)`);
+        return;
+      }
+
       const leadId = await odooCallLocal('crm.lead', 'create', [{
         name: `Lead KAI — ${nombre || 'Sin nombre'} (${etiquetaCanal})`,
-        phone: numero.startsWith('ig_') || numero.startsWith('fb_') ? null : numero,
+        phone: telParaBuscar,
         partner_name: nombre || null,
         description: `Canal de origen: ${canal}\nCapturado automáticamente por KAI.`,
         team_id: teamId,
@@ -3983,18 +4027,30 @@ app.post('/api/lead-ads', async (req, res) => {
 
     // Crear lead en Odoo directamente con los datos del formulario
     if (!contacto.odoo_lead_id) {
-      const tagId = await getOdooTagId('Canal — Lead Ads Facebook');
-      const leadId = await odooCallLocal('crm.lead', 'create', [{
-        name: `Lead Ads — ${nombre}`,
-        phone: telefono || null,
-        email_from: correo || null,
-        partner_name: nombre,
-        description: `Formulario de Lead Ad completado.\nNivel de interés: ${nivel || 'No especificado'}\nCapturado automáticamente por KAI.`,
-        team_id: tenant?.odoo_team_id || 1,
-        type: 'lead', // entra como Lead, no directo como Oportunidad
-        tag_ids: tagId ? [[6, 0, [tagId]]] : undefined
-      }]);
-      if (leadId) { contacto.odoo_lead_id = leadId; await contacto.save(); }
+      // Verificar antes de crear: este papá pudo haber llenado otro formulario o
+      // escrito por WhatsApp antes. Si ya está, se vincula en vez de duplicar.
+      const yaExiste = await buscarLeadExistente({ telefono, correo });
+      if (yaExiste) {
+        contacto.odoo_lead_id = yaExiste.id;
+        await contacto.save();
+        await odooCallLocal('crm.lead', 'message_post', [[yaExiste.id]], {
+          body: `📋 Este contacto también llenó un formulario de Lead Ads de Facebook. No se creó lead nuevo para no duplicar.`
+        }).catch(() => {});
+        console.log(`🔗 [Lead Ads] Lead existente vinculado — #${yaExiste.id} para ${nombre}`);
+      } else {
+        const tagId = await getOdooTagId('Canal — Lead Ads Facebook');
+        const leadId = await odooCallLocal('crm.lead', 'create', [{
+          name: `Lead Ads — ${nombre}`,
+          phone: telefono || null,
+          email_from: correo || null,
+          partner_name: nombre,
+          description: `Formulario de Lead Ad completado.\nNivel de interés: ${nivel || 'No especificado'}\nCapturado automáticamente por KAI.`,
+          team_id: tenant?.odoo_team_id || 1,
+          type: 'lead', // entra como Lead, no directo como Oportunidad
+          tag_ids: tagId ? [[6, 0, [tagId]]] : undefined
+        }]);
+        if (leadId) { contacto.odoo_lead_id = leadId; await contacto.save(); }
+      }
     }
     console.log(`✅ Lead Ads procesado — ${nombre} (${telefono})`);
   } catch (e) { console.error('❌ Lead Ads webhook:', e.message); }
@@ -4022,18 +4078,30 @@ app.post('/api/lead-web', async (req, res) => {
     }
 
     if (!contacto.odoo_lead_id) {
-      const tagId = await getOdooTagId('Canal — Formulario Web');
-      const leadId = await odooCallLocal('crm.lead', 'create', [{
-        name: `Formulario Web — ${nombre || correo || telefono}`,
-        phone: telefono || null,
-        email_from: correo || null,
-        partner_name: nombre || null,
-        description: `Formulario web completado.\n${mensaje ? 'Mensaje: ' + mensaje : ''}\nNivel de interés: ${nivel_interes || 'No especificado'}\nCapturado automáticamente por KAI.`,
-        team_id: tenant?.odoo_team_id || 1,
-        type: 'lead', // entra como Lead, no directo como Oportunidad
-        tag_ids: tagId ? [[6, 0, [tagId]]] : undefined
-      }]);
-      if (leadId) { contacto.odoo_lead_id = leadId; await contacto.save(); }
+      // Verificar antes de crear — el mismo papá puede llenar el formulario varias veces
+      // o ya haber escrito por otro canal.
+      const yaExiste = await buscarLeadExistente({ telefono, correo });
+      if (yaExiste) {
+        contacto.odoo_lead_id = yaExiste.id;
+        await contacto.save();
+        await odooCallLocal('crm.lead', 'message_post', [[yaExiste.id]], {
+          body: `📋 Este contacto llenó de nuevo el formulario web.${mensaje ? '<br>Mensaje: ' + mensaje : ''} No se creó lead nuevo para no duplicar.`
+        }).catch(() => {});
+        console.log(`🔗 [Formulario web] Lead existente vinculado — #${yaExiste.id}`);
+      } else {
+        const tagId = await getOdooTagId('Canal — Formulario Web');
+        const leadId = await odooCallLocal('crm.lead', 'create', [{
+          name: `Formulario Web — ${nombre || correo || telefono}`,
+          phone: telefono || null,
+          email_from: correo || null,
+          partner_name: nombre || null,
+          description: `Formulario web completado.\n${mensaje ? 'Mensaje: ' + mensaje : ''}\nNivel de interés: ${nivel_interes || 'No especificado'}\nCapturado automáticamente por KAI.`,
+          team_id: tenant?.odoo_team_id || 1,
+          type: 'lead', // entra como Lead, no directo como Oportunidad
+          tag_ids: tagId ? [[6, 0, [tagId]]] : undefined
+        }]);
+        if (leadId) { contacto.odoo_lead_id = leadId; await contacto.save(); }
+      }
     }
 
     res.json({ ok: true, mensaje: 'Contacto registrado correctamente' });
@@ -6073,26 +6141,7 @@ app.post('/api/motor/procesar-social-calientes', authMiddleware, async (req, res
         // ===== REVISAR DUPLICADOS ANTES DE CREAR =====
         // Estos papás pudieron haber escrito antes por otro canal, o alguien pudo
         // haberlos metido a mano en Odoo. Crear otro lead ensuciaría el CRM.
-        let leadExistente = null;
-        const condiciones = [];
-        if (tel) {
-          const ultimos8 = tel.slice(-8);
-          condiciones.push(['phone', 'like', ultimos8]);
-          condiciones.push(['mobile', 'like', ultimos8]);
-        }
-        if (item.correo_detectado) condiciones.push(['email_from', 'ilike', item.correo_detectado]);
-
-        if (condiciones.length) {
-          // OR entre todas las condiciones, en el formato que espera Odoo
-          const dominio = [];
-          for (let i = 0; i < condiciones.length - 1; i++) dominio.push('|');
-          condiciones.forEach(c => dominio.push(c));
-          const encontrados = await odooCallLocal('crm.lead', 'search_read',
-            [[['active', '=', true], ...dominio]],
-            { fields: ['id', 'name', 'partner_name', 'phone', 'email_from', 'user_id', 'create_date', 'type'], limit: 5, order: 'create_date desc' }
-          ) || [];
-          if (encontrados.length) leadExistente = encontrados[0];
-        }
+        const leadExistente = await buscarLeadExistente({ telefono: tel, correo: item.correo_detectado });
 
         if (leadExistente) {
           // Ya existe: solo le agregamos la etiqueta y dejamos nota — NO creamos otro.
