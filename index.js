@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-detectar-intencion-formal'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-respetar-leads-de-agentes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -908,6 +908,11 @@ const VENTANA_MOTOR_ACRUX_HORAS = 48; // cuánto hacia atrás revisa el motor bu
 // Motor que revisa cada cierto tiempo si hay mensajes nuevos sin responder en AcruxLab,
 // y hace que KAI conteste automáticamente (a menos que ya esté en modo "humano").
 let _procesandoAcruxLab = false; // evita que se encimen dos corridas si una tarda mucho
+// Recuerda a quién acabamos de responder. El mensaje que KAI envía tarda unos segundos
+// en aparecer en Odoo; sin esto, la siguiente corrida (45 seg) lo ve como "sin responder"
+// y CONTESTA DE NUEVO — por eso a algunos papás les llegaba el saludo dos veces.
+const _respondidosRecientes = new Map(); // contactoId → cuándo se le respondió
+const MINUTOS_ANTI_DUPLICADO = 3;
 async function procesarNuevosMensajesAcruxLab() {
   if (!ACRUX_AUTO_RESPUESTA_ACTIVO) return;
   if (_procesandoAcruxLab) return;
@@ -945,10 +950,12 @@ async function procesarNuevosMensajesAcruxLab() {
     // "humano" para que ni siquiera lo intente en las próximas corridas).
     const idsContactos = Object.keys(porContacto).map(Number);
     let agentePorContacto = {};
+    const odooPorContactoNombre = {};
     if (idsContactos.length) {
       try {
         const uidServicio = await getOdooUID(); // nuestro propio usuario de servicio (KAI escribe con este)
-        const convsOdoo = await odooCallLocal('acrux.chat.conversation', 'read', [idsContactos, ['id', 'agent_id', 'status']]) || [];
+        const convsOdoo = await odooCallLocal('acrux.chat.conversation', 'read', [idsContactos, ['id', 'agent_id', 'status', 'name']]) || [];
+        convsOdoo.forEach(c => { if (c.name) odooPorContactoNombre[c.id] = c.name; });
 
         // Las conversaciones en estado 'new' NO aceptan escritura. Hay que activarlas
         // antes de intentar responder, o KAI falla en silencio y la familia se queda
@@ -988,6 +995,27 @@ async function procesarNuevosMensajesAcruxLab() {
       const yaRespondido = msgs.some(m => m.from_me && m.date_message > ultimoInbound.date_message);
       if (yaRespondido) continue;
 
+      // ¿Le acabamos de responder nosotros? El mensaje puede no haber llegado todavía a
+      // Odoo, y sin esta revisión le contestaríamos por segunda vez.
+      const cuandoRespondimos = _respondidosRecientes.get(contactoId);
+      if (cuandoRespondimos && (Date.now() - cuandoRespondimos) < MINUTOS_ANTI_DUPLICADO * 60000) {
+        continue;
+      }
+
+      // ===== LEER TODO LO QUE EL PADRE ESCRIBIÓ SIN RESPUESTA =====
+      // Los papás mandan varios mensajes seguidos: "mi hijo estudia en Huehuetenango",
+      // "es para noveno grado", "en el 2027", "estaré pendiente". Antes KAI solo leía el
+      // ÚLTIMO ("estaré pendiente") y contestaba una cortesía vacía, ignorando todo el
+      // contexto. Ahora se juntan todos los que quedaron sin responder.
+      const fechaUltimaRespuesta = [...msgs].reverse().find(m => m.from_me)?.date_message || null;
+      const sinResponder = msgs
+        .filter(m => !m.from_me && (!fechaUltimaRespuesta || m.date_message > fechaUltimaRespuesta))
+        .map(m => String(m.text || '').trim())
+        .filter(Boolean);
+      const textoCompletoDelPadre = sinResponder.length > 1
+        ? sinResponder.join('\n')
+        : (ultimoInbound.text || '');
+
       // ¿La conversación está TOMADA por un agente humano en el ChatRoom real de Odoo?
       // KAI no puede (ni debe) escribirle — la está atendiendo esa persona. Sincronizamos
       // nuestro registro a modo humano para reflejarlo en el panel y no reintentar.
@@ -1025,8 +1053,43 @@ async function procesarNuevosMensajesAcruxLab() {
       const numero = extraerNumeroDeMsgid(ultimoInbound.msgid);
       if (!numero) continue; // sin número no podemos llevar memoria confiable — se deja para atención manual
 
+      // ===== ¿ESTE PAPÁ YA ES DE ALGUIEN? =====
+      // Si en Odoo ya está como OPORTUNIDAD (esas son de Sylvia) o ya tiene un vendedor
+      // asignado, entonces ya lo está trabajando una persona: KAI no debe meterse.
+      // KAI solo atiende a los NUEVOS, los que todavía no ha tomado nadie.
       try {
-        const resultado = await atenderAcruxConIA(tenant, ultimoInbound.text || '', numero, contactoId);
+        const leadDelContacto = await buscarLeadExistente({ telefono: numero });
+        // Solo bloquea si el lead está ACTIVO: si ya fue dado por perdido, nadie lo
+        // está trabajando y KAI sí debe atender a ese papá si vuelve a escribir.
+        if (leadDelContacto && leadDelContacto.active !== false && (leadDelContacto.type === 'opportunity' || leadDelContacto.user_id)) {
+          const duenio = leadDelContacto.user_id?.[1] || 'Sylvia (oportunidad)';
+          await AsignacionAcrux.findOneAndUpdate(
+            { tenant_id: tenant._id, contacto_id: contactoId },
+            { modo: 'humano', fecha_modo_humano: new Date(), agente_nombre: duenio, sin_auto_recuperacion: true },
+            { upsert: true, setDefaultsOnInsert: true }
+          ).catch(() => {});
+          console.log(`🔒 [AcruxLab] ${numero} ya es ${leadDelContacto.type === 'opportunity' ? 'OPORTUNIDAD' : 'lead asignado'} de ${duenio} (lead #${leadDelContacto.id}) — KAI no interviene`);
+          continue;
+        }
+      } catch (e) {
+        console.error(`⚠️ [AcruxLab] No se pudo verificar si ${numero} ya tiene dueño en Odoo: ${e.message}`);
+      }
+
+      // El nombre del papá suele venir en la conversación de AcruxLab (del perfil de
+      // WhatsApp). Si aún no lo tenemos guardado, lo tomamos de ahí — así KAI no le
+      // pregunta "¿con quién tengo el gusto?" a alguien que ya se identificó.
+      const nombreEnOdoo = odooPorContactoNombre[contactoId];
+      if (nombreEnOdoo && !/^\+?\d+$/.test(nombreEnOdoo.trim())) {
+        await Contacto.findOneAndUpdate(
+          { tenant_id: tenant._id, numero },
+          { $setOnInsert: { primer_contacto: new Date() }, $set: { nombre: nombreEnOdoo } },
+          { upsert: true }
+        ).catch(() => {});
+      }
+
+      try {
+        const resultado = await atenderAcruxConIA(tenant, textoCompletoDelPadre, numero, contactoId);
+        _respondidosRecientes.set(contactoId, Date.now()); // marcar ANTES de enviar, por si el envío tarda
         if (resultado.texto) {
           await enviarTextoAcruxLab(contactoId, resultado.texto);
         }
@@ -1323,6 +1386,19 @@ async function contactarLeadPorAcruxLab(tenant, lead) {
     }
   }
 
+  // ¿Este papá ya es de alguien? Si en Odoo ya está como OPORTUNIDAD (de Sylvia) o ya
+  // tiene vendedor asignado, ya lo está trabajando una persona — KAI no lo contacta.
+  try {
+    const yaEsDeAlguien = await buscarLeadExistente({ telefono: tel });
+    if (yaEsDeAlguien && yaEsDeAlguien.id !== lead.id && yaEsDeAlguien.active !== false && (yaEsDeAlguien.type === 'opportunity' || yaEsDeAlguien.user_id)) {
+      const duenio = yaEsDeAlguien.user_id?.[1] || 'Sylvia (oportunidad)';
+      await marcarLeadComoPerdido(lead.id,
+        `🔒 <b>Ya lo está trabajando ${duenio}</b>: este papá ya existe como ${yaEsDeAlguien.type === 'opportunity' ? 'OPORTUNIDAD' : 'lead asignado'} (#${yaEsDeAlguien.id}).<br>KAI no lo contactó para no interferir con el seguimiento que ya lleva esa persona.`);
+      console.log(`🔒 [Motor proactivo] ${tel} ya es de ${duenio} (lead #${yaEsDeAlguien.id}) — no se contacta`);
+      return { ok: false, motivo: 'ya_es_de_un_agente', duenio, lead_existente: yaEsDeAlguien.id };
+    }
+  } catch (e) { /* si falla la revisión, seguimos con el flujo normal */ }
+
   const nombre = lead.partner_name || lead.contact_name || datosDelCorreo?.nombre_padre || null;
   const primerNombre = nombre ? nombre.split(' ')[0] : null;
   const nivel = normalizarNivelParaMensaje(lead.x_studio_comentarios) || normalizarNivelParaMensaje(datosDelCorreo?.nivel);
@@ -1341,6 +1417,25 @@ async function contactarLeadPorAcruxLab(tenant, lead) {
     console.log(`👤 [Motor proactivo] ${tel} ya lo atiende ${conversacion.agente} en el ChatRoom — KAI no interviene`);
     return { ok: false, motivo: 'ya_atendido_por_agente', agente: conversacion.agente };
   }
+
+  // ¿Este papá YA nos escribió por su cuenta? Entonces NO corresponde mandarle el mensaje
+  // de primer contacto ("te escribimos porque recibimos tu solicitud"): él inició la
+  // conversación, y ese texto lo confunde. El motor normal ya lo está atendiendo.
+  try {
+    const mensajesPrevios = await odooCallLocal('acrux.chat.message', 'search_read',
+      [[['contact_id', '=', conversacion.id], ['from_me', '=', false]]],
+      { fields: ['id'], limit: 1 }
+    ) || [];
+    if (mensajesPrevios.length) {
+      const tagYaEscribio = await getOdooTagId(TAG_KAI_CONTACTADO);
+      await odooCallLocal('crm.lead', 'write', [[lead.id], { tag_ids: [[4, tagYaEscribio]] }]).catch(() => {});
+      await odooCallLocal('crm.lead', 'message_post', [[lead.id]], {
+        body: `💬 No se envió el mensaje de primer contacto: este papá YA había escrito por su cuenta al número oficial. KAI lo está atendiendo en esa conversación.`
+      }).catch(() => {});
+      console.log(`💬 [Motor proactivo] ${tel} ya había escrito por su cuenta — no se le manda el mensaje de primer contacto`);
+      return { ok: false, motivo: 'ya_escribio_por_su_cuenta', conversacion_acrux: conversacion.id };
+    }
+  } catch (e) { /* si falla la revisión, seguimos con el flujo normal */ }
 
   try {
     await enviarTextoAcruxLab(conversacion.id, texto);
