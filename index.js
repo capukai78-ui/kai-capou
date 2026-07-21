@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-sin-avisos-de-prueba'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-fix-nivel-y-tierra-de-nadie'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -976,9 +976,11 @@ async function procesarNuevosMensajesAcruxLab() {
       // nuestro registro a modo humano para reflejarlo en el panel y no reintentar.
       const agenteHumanoEnOdoo = agentePorContacto[contactoId];
       if (agenteHumanoEnOdoo) {
+        // Se guarda TAMBIÉN el nombre de quien la tomó. Sin eso quedaba "modo humano
+        // sin agente": ni la vendedora sabía que era suya ni KAI podía atenderla.
         await AsignacionAcrux.findOneAndUpdate(
           { tenant_id: tenant._id, contacto_id: contactoId },
-          { modo: 'humano', fecha_modo_humano: new Date() },
+          { modo: 'humano', fecha_modo_humano: new Date(), agente_nombre: agenteHumanoEnOdoo },
           { upsert: true, setDefaultsOnInsert: true }
         ).catch(() => {});
         console.log(`👤 [AcruxLab] Contacto ${contactoId} tomado por "${agenteHumanoEnOdoo}" en el ChatRoom real — KAI no interviene`);
@@ -991,7 +993,17 @@ async function procesarNuevosMensajesAcruxLab() {
       // padre espera seguir hablando con ella, no que el bot se meta a media conversación.
       // El chat queda marcado como PENDIENTE en su bandeja para que sepa que debe contestar.
       const asign = await AsignacionAcrux.findOne({ tenant_id: tenant._id, contacto_id: contactoId });
-      if (asign?.modo === 'humano') continue;
+      if (asign?.modo === 'humano') {
+        // Caso "tierra de nadie": está marcada como humana pero SIN agente asignado.
+        // Así nadie la atiende: ni la vendedora (no sabe que es suya) ni KAI (cree que
+        // hay alguien). Se corrige devolviéndola a KAI.
+        if (!asign.agente_id && !asign.agente_nombre) {
+          await AsignacionAcrux.updateOne({ _id: asign._id }, { modo: 'bot' });
+          console.log(`🔧 [AcruxLab] Contacto ${contactoId} estaba en modo humano SIN agente — KAI lo retoma`);
+        } else {
+          continue; // sí tiene dueña, KAI no se mete
+        }
+      }
 
       const numero = extraerNumeroDeMsgid(ultimoInbound.msgid);
       if (!numero) continue; // sin número no podemos llevar memoria confiable — se deja para atención manual
@@ -1007,12 +1019,20 @@ async function procesarNuevosMensajesAcruxLab() {
           // Un agente tomó la conversación justo antes de que KAI escribiera. No es un
           // fallo del sistema: se la dejamos a esa persona y la marcamos como suya, para
           // no volver a intentarlo cada 45 segundos ni llenar los logs de errores rojos.
-          await AsignacionAcrux.findOneAndUpdate(
-            { tenant_id: tenant._id, contacto_id: contactoId },
-            { modo: 'humano', fecha_modo_humano: new Date() },
-            { upsert: true, setDefaultsOnInsert: true }
-          ).catch(() => {});
-          console.log(`👤 [AcruxLab] Contacto ${contactoId} lo tomó un agente — KAI se retira y se lo deja a esa persona`);
+          // Solo se marca como humana si de verdad hay un agente detrás. Si el rechazo
+          // fue por otra causa (ej. la conversación en estado no editable), marcarla
+          // humana la dejaría en tierra de nadie: sin vendedora y sin KAI.
+          const agenteReal = agentePorContacto[contactoId] || null;
+          if (agenteReal) {
+            await AsignacionAcrux.findOneAndUpdate(
+              { tenant_id: tenant._id, contacto_id: contactoId },
+              { modo: 'humano', fecha_modo_humano: new Date(), agente_nombre: agenteReal },
+              { upsert: true, setDefaultsOnInsert: true }
+            ).catch(() => {});
+            console.log(`👤 [AcruxLab] Contacto ${contactoId} lo tomó ${agenteReal} — KAI se retira`);
+          } else {
+            console.error(`⚠️ [AcruxLab] Odoo rechazó escribir en el contacto ${contactoId} pero NO hay agente asignado — se deja en modo bot para reintentar`);
+          }
         } else {
           console.error(`❌ Error al procesar/responder AcruxLab contacto ${contactoId}:`, e.message);
         }
@@ -2026,11 +2046,21 @@ function buscarReglaImagenCoincidente(mensajeUsuario, nivelSesion) {
   const candidatas = REGLAS_IMAGEN.filter(regla => regla.keywords.some(k => contieneKeyword(t, k)));
   if (!candidatas.length) return null; // no tiene nada que ver con ningún tema de imagen
 
-  // PRIORIDAD 1: una candidata con grado específico que SÍ coincide con ESTE mensaje —
-  // esto es lo más específico posible, va primero para que un grado (ej. "bachillerato")
-  // no termine "secuestrando" la coincidencia hacia un tema distinto sin querer.
-  const matchEnMensaje = candidatas.find(r => r.nivel && r.nivel.length > 0 && r.nivel.some(n => contieneKeyword(t, n)));
-  if (matchEnMensaje) return { regla: matchEnMensaje, ambigua: false, categoria: matchEnMensaje.categoria };
+  // PRIORIDAD 1: candidatas con grado específico que SÍ coincide con ESTE mensaje.
+  // Ojo: un mensaje puede mencionar VARIOS niveles ("mi hijo está en kinder, pero
+  // quiero información para 1ro primaria"). En ese caso hay que quedarse con el que el
+  // padre ya estableció antes (el que eligió en el menú), no con el primero que aparezca
+  // en la lista de reglas — si no, se le manda la información del grado equivocado.
+  const matchesEnMensaje = candidatas.filter(r => r.nivel && r.nivel.length > 0 && r.nivel.some(n => contieneKeyword(t, n)));
+  if (matchesEnMensaje.length) {
+    if (matchesEnMensaje.length > 1 && nivelSesionLower) {
+      const coincideConSesion = matchesEnMensaje.find(r => r.nivel.some(n => nivelSesionLower.includes(n)));
+      if (coincideConSesion) {
+        return { regla: coincideConSesion, ambigua: false, categoria: coincideConSesion.categoria };
+      }
+    }
+    return { regla: matchesEnMensaje[0], ambigua: false, categoria: matchesEnMensaje[0].categoria };
+  }
 
   // PRIORIDAD 2: una candidata que no requiere grado/nivel (coincidencia directa)
   const sinNivelRequerido = candidatas.find(r => !r.nivel || r.nivel.length === 0);
@@ -2081,10 +2111,19 @@ function construirDescripcionImagen(imagenDirecta) {
 // el nivel dentro de la sesión actual una vez que el padre/madre lo menciona.
 function detectarNivelEnTexto(texto) {
   const t = (texto || '').toLowerCase();
-  if (/preprimaria|jard[ií]n|infantil|k[ií]nder|p[aá]rvulos|preparatoria/.test(t)) return 'preprimaria';
-  if (/secundaria|b[aá]sico|bachillerato|s[eé]ptimo|octavo|noveno|d[eé]cimo|7°|8°|9°|10°/.test(t)) return 'secundaria';
-  if (/primaria|primero|segundo|tercero|cuarto|quinto|sexto|1°|2°|3°|4°|5°|6°/.test(t)) return 'primaria';
-  return null;
+  const detectados = [];
+  if (/preprimaria|jard[ií]n|infantil|k[ií]nder|p[aá]rvulos|preparatoria/.test(t)) detectados.push('preprimaria');
+  if (/secundaria|b[aá]sico|bachillerato|s[eé]ptimo|octavo|noveno|d[eé]cimo|7°|8°|9°|10°/.test(t)) detectados.push('secundaria');
+  if (/primaria|primero|segundo|tercero|cuarto|quinto|sexto|1°|2°|3°|4°|5°|6°/.test(t)) detectados.push('primaria');
+
+  // Si el mensaje menciona VARIOS niveles no se puede saber cuál es el que interesa.
+  // Pasa seguido: "mi hijo está en kinder, pero quiero información para 1ro primaria".
+  // Antes se devolvía el primero de la lista (preprimaria) y eso PISABA el nivel que el
+  // padre ya había elegido en el menú, mandándole la información del grado equivocado.
+  // Ante la duda, no se cambia nada: se respeta el nivel que ya estaba establecido.
+  if (detectados.length > 1) return null;
+
+  return detectados[0] || null;
 }
 
 async function detectarYEnviarImagen(tenant, mensajeUsuario, contacto, canal, numeroOrigen, idExterno) {
