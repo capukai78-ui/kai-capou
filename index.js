@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-corregir-envio'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-pendientes-y-por-que'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -6357,6 +6357,88 @@ app.post('/api/conversaciones/:id/soltar', authMiddleware, async (req, res) => {
     );
     if (!conv) return res.status(404).json({ ok: false, error: 'No encontrada' });
     res.json({ ok: true, mensaje: 'Conversación soltada' });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Revisa TODOS los chats pendientes de respuesta y dice por qué está frenado cada uno.
+// Con ?arreglar=1 corrige los que quedaron en "tierra de nadie" (modo humano sin agente).
+// GET /api/debug/pendientes-y-por-que
+app.get('/api/debug/pendientes-y-por-que', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const desde = new Date(Date.now() - VENTANA_MOTOR_ACRUX_HORAS * 3600 * 1000).toISOString().replace('T', ' ').substring(0, 19);
+    const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
+      [[['date_message', '>=', desde]]],
+      { fields: ['id', 'text', 'date_message', 'contact_id', 'from_me'], limit: 2000, order: 'date_message asc' }
+    ) || [];
+
+    // Agrupar por conversación y quedarnos con quién habló de último
+    const porConv = {};
+    mensajes.forEach(m => {
+      if (!m.contact_id) return;
+      const cid = m.contact_id[0];
+      if (!porConv[cid]) porConv[cid] = { id: cid, nombre: m.contact_id[1], ultimo: null };
+      const c = porConv[cid];
+      if (!c.ultimo || m.date_message > c.ultimo.date_message) c.ultimo = m;
+    });
+
+    // Solo los que esperan respuesta (habló el padre de último)
+    const pendientes = Object.values(porConv).filter(c => c.ultimo && !c.ultimo.from_me);
+    if (!pendientes.length) return res.json({ ok: true, total_pendientes: 0, mensaje: 'No hay chats esperando respuesta' });
+
+    const ids = pendientes.map(c => c.id);
+    const uidServicio = await getOdooUID();
+    const convsOdoo = await odooCallLocal('acrux.chat.conversation', 'read', [ids, ['id', 'number', 'name', 'status', 'agent_id']]) || [];
+    const odooPorId = {}; convsOdoo.forEach(c => { odooPorId[c.id] = c; });
+    const asigns = await AsignacionAcrux.find({ tenant_id: req.user.tenant_id, contacto_id: { $in: ids } });
+    const asignPorId = {}; asigns.forEach(a => { asignPorId[a.contacto_id] = a; });
+
+    let arreglados = 0;
+    const resultado = [];
+
+    for (const p of pendientes) {
+      const o = odooPorId[p.id] || {};
+      const a = asignPorId[p.id];
+      const agenteHumano = o.agent_id && o.agent_id[0] !== uidServicio ? o.agent_id[1] : null;
+
+      let motivo, accion = null;
+      if (agenteHumano) {
+        motivo = `Lo tiene ${agenteHumano} en el ChatRoom — le toca a esa persona responder`;
+      } else if (a?.modo === 'humano' && !a.agente_id && !a.agente_nombre) {
+        motivo = '⚠️ TIERRA DE NADIE: marcado como humano pero sin agente asignado — nadie lo atiende';
+        if (req.query.arreglar === '1') {
+          await AsignacionAcrux.updateOne({ _id: a._id }, { modo: 'bot' });
+          accion = 'corregido: devuelto a KAI';
+          arreglados++;
+        }
+      } else if (a?.modo === 'humano') {
+        motivo = `Asignado a ${a.agente_nombre || 'una vendedora'} — le toca a ella responder`;
+      } else if (o.status === 'new') {
+        motivo = 'La conversación está en estado "new" — KAI la activa al intentar responder';
+      } else {
+        motivo = 'Sin bloqueo aparente — KAI debería responder en la próxima corrida (45 seg)';
+      }
+
+      resultado.push({
+        numero: o.number || null,
+        nombre: o.name || p.nombre,
+        conversacion: p.id,
+        ultimo_mensaje: String(p.ultimo.text || '').substring(0, 100),
+        fecha: p.ultimo.date_message,
+        horas_esperando: Math.round((Date.now() - new Date(p.ultimo.date_message + 'Z').getTime()) / 3600000),
+        motivo,
+        accion
+      });
+    }
+
+    resultado.sort((a, b) => b.horas_esperando - a.horas_esperando);
+    res.json({
+      ok: true,
+      total_pendientes: resultado.length,
+      tierra_de_nadie: resultado.filter(r => r.motivo.includes('TIERRA DE NADIE')).length,
+      arreglados,
+      pendientes: resultado
+    });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
