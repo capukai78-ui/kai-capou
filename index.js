@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-kai-24x7-sin-cortes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-no-contactar-duplicados'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1152,6 +1152,26 @@ async function contactarLeadPorAcruxLab(tenant, lead) {
   if (tel.length === 8) tel = '502' + tel;
   if (tel.length < 11) { await marcarSinWhatsApp(`el número "${telFinal}" no parece válido`); return { ok: false, motivo: 'telefono_invalido' }; }
 
+  // ===== NO CONTACTAR DOS VECES AL MISMO NÚMERO =====
+  // Un mismo papá puede tener varios leads en Odoo (llenó el formulario dos veces, o
+  // el correo entró duplicado). Sin esta revisión, recibiría un mensaje por cada lead,
+  // que es justo lo que no queremos que le pase a una familia.
+  const yaContactado = await Contacto.findOne({ tenant_id: tenant._id, numero: tel });
+  if (yaContactado?.ultimo_contacto) {
+    const horasDesde = (Date.now() - new Date(yaContactado.ultimo_contacto).getTime()) / 3600000;
+    if (horasDesde < 72) {
+      const tagContactadoDup = await getOdooTagId(TAG_KAI_CONTACTADO);
+      await odooCallLocal('crm.lead', 'write', [[lead.id], { tag_ids: [[4, tagContactadoDup]] }]).catch(() => {});
+      await odooCallLocal('crm.lead', 'message_post', [[lead.id]], {
+        body: `♻️ No se envió mensaje: al número ${tel} ya se le escribió hace ${Math.round(horasDesde)} h` +
+              (yaContactado.odoo_lead_id && yaContactado.odoo_lead_id !== lead.id ? ` (lead #${yaContactado.odoo_lead_id})` : '') +
+              `. Este registro parece duplicado — conviene fusionarlo en Odoo.`
+      }).catch(() => {});
+      console.log(`♻️ [Motor proactivo] ${tel} ya fue contactado hace ${Math.round(horasDesde)}h — se omite el lead #${lead.id} (duplicado)`);
+      return { ok: false, motivo: 'duplicado_ya_contactado', lead_original: yaContactado.odoo_lead_id || null, horas_desde: Math.round(horasDesde) };
+    }
+  }
+
   const nombre = lead.partner_name || lead.contact_name || datosDelCorreo?.nombre_padre || null;
   const primerNombre = nombre ? nombre.split(' ')[0] : null;
   const nivel = normalizarNivelParaMensaje(lead.x_studio_comentarios) || normalizarNivelParaMensaje(datosDelCorreo?.nivel);
@@ -1382,8 +1402,23 @@ async function motorProactivoContactarLeads() {
     const sinTelefono = leads.filter(l => !conTelefono.includes(l));
     const aProcesar = [...conTelefono.slice(0, MAX_LEADS_POR_CORRIDA), ...sinTelefono];
 
-    console.log(`🎯 [Motor proactivo] ${conTelefono.length} con teléfono, ${sinTelefono.length} sin teléfono (se marcan para seguimiento manual)`);
+    console.log(`🎯 [Motor proactivo] ${conTelefono.length} con teléfono, ${sinTelefono.length} sin teléfono (se leerá el correo de cada uno)`);
+    const numerosYaVistos = new Set();
     for (const lead of aProcesar) {
+      // Si dos leads de esta misma corrida traen el mismo teléfono (duplicados en Odoo),
+      // solo se contacta el primero — la familia no debe recibir el mensaje dos veces.
+      const telLead = String(
+        (lead.mobile && String(lead.mobile) !== 'false') ? lead.mobile
+        : ((lead.phone && String(lead.phone) !== 'false') ? lead.phone : '')
+      ).replace(/\D/g, '');
+      if (telLead && telLead.length >= 8) {
+        const clave = telLead.slice(-8);
+        if (numerosYaVistos.has(clave)) {
+          console.log(`♻️ [Motor proactivo] Lead #${lead.id} omitido: el número ...${clave} ya se procesó en esta corrida`);
+          continue;
+        }
+        numerosYaVistos.add(clave);
+      }
       const contactar = CANAL_CONTACTO_PROACTIVO === 'acrux' ? contactarLeadPorAcruxLab : contactarLeadPorWhatsApp;
       await contactar(tenant, lead);
       await new Promise(r => setTimeout(r, 3000)); // pausa entre envíos, para no saturar
@@ -5673,7 +5708,20 @@ app.post('/api/motor/proactivo/ejecutar', authMiddleware, async (req, res) => {
     const leads = incluirSinTelefono ? todos.slice(0, limite) : conTelefono.slice(0, limite);
 
     const resultados = [];
+    const numerosVistos = new Set();
     for (const lead of leads) {
+      const telLead = String(
+        (lead.mobile && String(lead.mobile) !== 'false') ? lead.mobile
+        : ((lead.phone && String(lead.phone) !== 'false') ? lead.phone : '')
+      ).replace(/\D/g, '');
+      if (telLead && telLead.length >= 8) {
+        const clave = telLead.slice(-8);
+        if (numerosVistos.has(clave)) {
+          resultados.push({ lead_id: lead.id, nombre: lead.partner_name || lead.contact_name || lead.name, ok: false, motivo: 'duplicado_en_esta_corrida' });
+          continue;
+        }
+        numerosVistos.add(clave);
+      }
       const contactar = CANAL_CONTACTO_PROACTIVO === 'acrux' ? contactarLeadPorAcruxLab : contactarLeadPorWhatsApp;
       const r = await contactar(tenant, lead);
       resultados.push({ lead_id: lead.id, nombre: lead.partner_name || lead.contact_name || lead.name, ...r });
