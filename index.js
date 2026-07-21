@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-fix-bloqueo-por-vendedor'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-apagar-seed-imagenes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -6594,6 +6594,50 @@ app.post('/api/conversaciones/:id/soltar', authMiddleware, async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
+// Limpia las imágenes duplicadas que fue creando el seed en cada reinicio — las que
+// tienen nombres tipo "(versión 2)", "(versión 3)", etc. Sin ?eliminar=1 solo las lista.
+app.get('/api/debug/limpiar-imagenes-duplicadas', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const todas = await ImagenMarketing.find({ tenant_id: req.user.tenant_id })
+      .select('nombre categoria nivel_educativo creado subida_por_nombre veces_enviada');
+
+    // Las duplicadas son las que traen "(versión N)" o "(vN)" en el nombre
+    const patronVersion = /\s*\((?:versi[oó]n\s*\d+|v\d+)\)\s*$/i;
+    const duplicadas = todas.filter(i => patronVersion.test(i.nombre));
+    const originales = todas.filter(i => !patronVersion.test(i.nombre));
+
+    let eliminadas = 0;
+    if (req.query.eliminar === '1') {
+      // Solo se borra la copia si el original con el mismo nombre base sigue existiendo,
+      // para no dejar al Banco sin esa imagen.
+      for (const dup of duplicadas) {
+        const nombreBase = dup.nombre.replace(patronVersion, '').trim();
+        const existeOriginal = originales.some(o => o.nombre.trim() === nombreBase);
+        if (existeOriginal) {
+          await ImagenMarketing.deleteOne({ _id: dup._id, tenant_id: req.user.tenant_id });
+          eliminadas++;
+        }
+      }
+    }
+
+    res.json({
+      ok: true,
+      total_en_banco: todas.length,
+      duplicadas_detectadas: duplicadas.length,
+      eliminadas,
+      nota: req.query.eliminar === '1' ? 'Se eliminaron las copias que tenían original' : 'Solo lista — agrega ?eliminar=1 para borrarlas',
+      duplicadas: duplicadas.map(d => ({
+        nombre: d.nombre,
+        original_existe: originales.some(o => o.nombre.trim() === d.nombre.replace(patronVersion, '').trim()),
+        categoria: d.categoria,
+        nivel: d.nivel_educativo,
+        veces_enviada: d.veces_enviada || 0
+      }))
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 // SIMULADOR — muestra qué imágenes y textos enviaría KAI ante un mensaje, SIN enviar
 // nada a nadie. Sirve para probar cambios sin arriesgar conversaciones reales.
 // GET /api/debug/simular?mensaje=cuotas y horarios de primaria&nivel=Primaria
@@ -7939,6 +7983,16 @@ app.get('/', (req, res) => res.sendFile('index.html', { root: 'public' }));
 // ===== SEED DE IMÁGENES AL INICIAR =====
 // Carga las imágenes del colegio en MongoDB si no existen todavía.
 // Los admin/vendedores pueden agregar, modificar o eliminar imágenes desde el panel.
+// ⚠️ SEED DE IMÁGENES — APAGADO A PROPÓSITO.
+// Corría en CADA arranque del servidor y solo buscaba imágenes con activo:true. Cuando
+// el equipo desactivaba o depuraba una imagen del Banco, el seed no la encontraba y la
+// VOLVÍA A CREAR en el siguiente reinicio, deshaciendo el trabajo de depuración (de ahí
+// los nombres "(versión 2)", "(versión 3)"...). El Banco de Imágenes ya está cargado y
+// curado por el equipo, así que no debe volver a sembrarse solo.
+// Si algún día hace falta recargarlo, se puede usar el endpoint /api/imagenes/reset,
+// que es una acción manual y consciente.
+const SEED_IMAGENES_ACTIVO = false;
+
 async function seedImagenes() {
   // Envuelto en try/catch total — nunca debe crashear el servidor
   try {
@@ -8026,5 +8080,9 @@ app.listen(PORT, () => {
   console.log(`✅ KAI — Colegio Capouilliez corriendo en puerto ${PORT} | ${VERSION_KAI}`);
   console.log(`📊 Planes: Básico(${PLANES.basico.mensajes_mes}msg/${PLANES.basico.max_usuarios}usr) | Profesional(${PLANES.profesional.mensajes_mes}msg/${PLANES.profesional.max_usuarios}usr) | Empresarial(${PLANES.empresarial.mensajes_mes}msg/${PLANES.empresarial.max_usuarios}usr)`);
   // Cargar imágenes del colegio en MongoDB al iniciar (si no existen)
-  setTimeout(seedImagenes, 5000); // esperar 5s a que MongoDB esté listo
+  if (SEED_IMAGENES_ACTIVO) {
+    setTimeout(seedImagenes, 5000); // esperar 5s a que MongoDB esté listo
+  } else {
+    console.log('🖼️ Seed de imágenes DESACTIVADO — el Banco de Imágenes lo administra el equipo desde el panel');
+  }
 });
