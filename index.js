@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-repetidos-a-perdido'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-diagnostico-sin-enviar'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -6305,6 +6305,74 @@ app.post('/api/conversaciones/:id/soltar', authMiddleware, async (req, res) => {
     if (!conv) return res.status(404).json({ ok: false, error: 'No encontrada' });
     res.json({ ok: true, mensaje: 'Conversación soltada' });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Prueba PASO A PASO el envío por AcruxLab a un número, mostrando el estado antes y
+// después de cada intento y el error EXACTO de Odoo. Sirve para dejar de suponer por
+// qué rechaza la escritura.
+// GET /api/debug/probar-envio-acrux?numero=50254649218
+app.get('/api/debug/probar-envio-acrux', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  const pasos = [];
+  const registrar = (paso, detalle) => { pasos.push({ paso, ...detalle }); };
+  try {
+    const numero = String(req.query.numero || '').replace(/\D/g, '');
+    if (!numero) return res.json({ ok: false, error: 'Falta ?numero=' });
+
+    // 1) Estado actual
+    const convs = await odooCallLocal('acrux.chat.conversation', 'search_read',
+      [[['number', '=', numero]]],
+      { fields: ['id', 'name', 'number', 'status', 'agent_id', 'valid_number', 'connector_id', 'chat_message_ids', 'is_waba_opt_in', 'sent_opt_in'], limit: 1 }
+    ) || [];
+    if (!convs.length) return res.json({ ok: false, error: 'No existe conversación para ese número' });
+    const conv = convs[0];
+    registrar('1. Estado inicial', { id: conv.id, status: conv.status, agente: conv.agent_id?.[1] || null, mensajes: (conv.chat_message_ids || []).length, valid_number: conv.valid_number });
+
+    // 2) Intentar poner status en 'current' y verificar si se guardó de verdad
+    try {
+      await odooCallLocal('acrux.chat.conversation', 'write', [[conv.id], { status: 'current' }]);
+      registrar('2. Escribir status=current', { resultado: 'la escritura no dio error' });
+    } catch (e) {
+      registrar('2. Escribir status=current', { error: e.message });
+    }
+    const relectura = await odooCallLocal('acrux.chat.conversation', 'read', [[conv.id], ['status', 'agent_id', 'valid_number']]).catch(() => null);
+    registrar('3. Releer después de escribir', { status: relectura?.[0]?.status, se_guardo: relectura?.[0]?.status === 'current', agente: relectura?.[0]?.agent_id?.[1] || null });
+
+    // 4) NO se envía nada. Solo inspeccionamos el modelo para entender qué condición
+    // exige el módulo para permitir escribir — sin molestar a ninguna familia.
+    try {
+      const campos = await odooCallLocal('acrux.chat.conversation', 'fields_get', [['status', 'agent_id', 'valid_number', 'is_waba_opt_in', 'sent_opt_in', 'conv_type', 'chat_id']], { attributes: ['string', 'type', 'selection', 'readonly', 'store'] });
+      registrar('4. Opciones válidas de cada campo', {
+        status: campos?.status?.selection || null,
+        status_es_de_solo_lectura: campos?.status?.readonly || false,
+        valid_number: campos?.valid_number?.selection || null,
+        conv_type: campos?.conv_type?.selection || null
+      });
+    } catch (e) {
+      registrar('4. Opciones válidas de cada campo', { error: e.message });
+    }
+
+    // 5) Comparar contra una conversación que SÍ recibe mensajes de KAI hoy, para ver
+    // qué tienen ellas que a esta le falta.
+    try {
+      const queFuncionan = await odooCallLocal('acrux.chat.conversation', 'search_read',
+        [[['chat_message_ids', '!=', false], ['status', '=', 'current']]],
+        { fields: ['id', 'number', 'status', 'agent_id', 'valid_number', 'chat_id', 'conv_type', 'is_waba_opt_in', 'sent_opt_in', 'last_sent'], limit: 3, order: 'last_sent desc' }
+      ) || [];
+      registrar('5. Conversaciones que sí funcionan', {
+        ejemplos: queFuncionan.map(q => ({
+          id: q.id, status: q.status, chat_id: q.chat_id, valid_number: q.valid_number,
+          conv_type: q.conv_type, agente: q.agent_id?.[1] || null, ultimo_envio: q.last_sent
+        }))
+      });
+    } catch (e) {
+      registrar('5. Conversaciones que sí funcionan', { error: e.message });
+    }
+
+    res.json({ ok: true, numero, nota: 'Este diagnóstico NO envía ningún mensaje.', pasos });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message, pasos });
+  }
 });
 
 // Compara una conversación de AcruxLab que SÍ funciona contra la de un número que
