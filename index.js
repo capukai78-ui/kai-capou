@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-respetar-leads-de-agentes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-simulador'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -692,48 +692,58 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
   }
   if (matchImagen && matchImagen.ambigua) conv.temaPendienteCategoria = matchImagen.categoria;
 
-  // ===== IMAGEN DIRECTA — sin pasar por la IA, igual que en WhatsApp =====
+  // ===== IMÁGENES DIRECTAS — sin pasar por la IA, igual que en WhatsApp =====
   if (matchImagen && !matchImagen.ambigua && matchImagen.regla) {
     conv.temaPendienteCategoria = null;
-    const regla = matchImagen.regla;
-    const filtroImg = { tenant_id: tenant._id, activo: true, categoria: regla.categoria };
-    if (regla.nivel_educativo) filtroImg.nivel_educativo = { $in: [regla.nivel_educativo, 'Todos'] };
-    if (regla.nombre_contiene) filtroImg.nombre = new RegExp(regla.nombre_contiene, 'i');
-    const imagenDirecta = await ImagenMarketing.findOne(filtroImg).sort({ prioridad: -1, creado: -1 });
 
-    if (imagenDirecta) {
-      let imagenEnviada = false;
+    // El papá puede pedir VARIAS cosas en un solo mensaje ("cuotas, requisitos, horarios
+    // y el proceso de admisión"). Antes solo se le mandaba la primera y las demás se
+    // ignoraban. Ahora se le manda todo lo que pidió.
+    const nivelParaBuscar = nivelMencionadoAhora || conv.nivelSesion;
+    let reglasAEnviar = buscarTodasLasReglasCoincidentes(mensajeUsuario, nivelParaBuscar);
+    if (!reglasAEnviar.length || !reglasAEnviar.some(r => r.categoria === matchImagen.regla.categoria)) {
+      reglasAEnviar = [matchImagen.regla];
+    }
+
+    const enviadas = [];
+    for (const regla of reglasAEnviar) {
+      const filtroImg = { tenant_id: tenant._id, activo: true, categoria: regla.categoria };
+      if (regla.nivel_educativo) filtroImg.nivel_educativo = { $in: [regla.nivel_educativo, 'Todos'] };
+      if (regla.nombre_contiene) filtroImg.nombre = new RegExp(regla.nombre_contiene, 'i');
+      const img = await ImagenMarketing.findOne(filtroImg).sort({ prioridad: -1, creado: -1 });
+      if (!img) continue;
+
       try {
-        const adjunto = await subirImagenNuevaAcrux(imagenDirecta.imagen_base64, `${imagenDirecta.nombre}.jpg`, imagenDirecta.mime_type || 'image/jpeg', contactoId);
+        const adjunto = await subirImagenNuevaAcrux(img.imagen_base64, `${img.nombre}.jpg`, img.mime_type || 'image/jpeg', contactoId);
         await odooCallLocal(
           'acrux.chat.conversation',
           'send_message',
           [[contactoId], {
-            text: construirDescripcionImagen(imagenDirecta), from_me: true, ttype: 'image', res_model: 'ir.attachment', res_id: adjunto.id,
+            text: construirDescripcionImagen(img), from_me: true, ttype: 'image', res_model: 'ir.attachment', res_id: adjunto.id,
             id: -2, date_message: new Date().toISOString().replace('T', ' ').substring(0, 19), button_ids: []
           }],
           { context: { lang: 'es_GT', tz: 'America/Guatemala', is_acrux_chat_room: true } }
         );
-        console.log(`🖼️ [AcruxLab] Imagen directa enviada: "${imagenDirecta.nombre}" → contacto ${contactoId}`);
-        imagenEnviada = true;
+        enviadas.push(img.nombre);
+        console.log(`🖼️ [AcruxLab] Imagen enviada: "${img.nombre}" → contacto ${contactoId}`);
+        if (reglasAEnviar.length > 1) await new Promise(r => setTimeout(r, 1800)); // respiro entre imágenes
       } catch (e) {
-        console.error(`❌ [AcruxLab] Error enviando imagen directa a contacto ${contactoId}:`, e.message);
+        console.error(`❌ [AcruxLab] Error enviando imagen "${img.nombre}" a contacto ${contactoId}:`, e.message);
       }
+    }
+
+    if (enviadas.length) {
       historial.push({ role: 'user', content: mensajeUsuario });
-
-      if (!imagenEnviada) {
-        // Si la imagen falló (ej. sesión/CSRF vencida), no dejamos a la familia sin
-        // respuesta — mandamos un texto breve avisando que en un momento le llega,
-        // y transferimos a un vendedor para que lo resuelva manual si hace falta.
-        historial.push({ role: 'assistant', content: '(La imagen automática falló al enviarse — se avisó al padre y se dejó pendiente para el vendedor.)' });
-        conv.ultimaActividad = Date.now();
-        return { texto: 'Con gusto te comparto esa información — dame un momento para enviártela correctamente. 🙏', handoff: false };
-      }
-
-      historial.push({ role: 'assistant', content: `[NOTA DE SISTEMA — esto NO es algo que tú dijiste ni debes imitar este formato de frase: el sistema envió automáticamente la imagen "${imagenDirecta.nombre}" con el detalle completo de ESTE tema específico. No repitas estos datos en texto. Jamás afirmes "te mandé la imagen" a menos que este mensaje de sistema aparezca de verdad para ESE turno.]` });
+      historial.push({ role: 'assistant', content: `[NOTA DE SISTEMA — esto NO es algo que tú dijiste ni debes imitar este formato de frase: el sistema envió automáticamente ${enviadas.length === 1 ? 'la imagen' : 'las imágenes'} "${enviadas.join('", "')}" con el detalle completo de ${enviadas.length === 1 ? 'ESE tema' : 'ESOS temas'}. No repitas estos datos en texto. Jamás afirmes "te mandé la imagen" a menos que este mensaje de sistema aparezca de verdad para ESE turno.]` });
       conv.ultimaActividad = Date.now();
       return { texto: '', handoff: false };
     }
+
+    // Ninguna imagen se pudo enviar — no dejamos a la familia sin respuesta.
+    historial.push({ role: 'user', content: mensajeUsuario });
+    historial.push({ role: 'assistant', content: '(Las imágenes automáticas fallaron al enviarse — se avisó al padre.)' });
+    conv.ultimaActividad = Date.now();
+    return { texto: 'Con gusto te comparto esa información — dame un momento para enviártela correctamente. 🙏', handoff: false };
   }
 
   // Recuperar memoria persistente si existe (igual que en WhatsApp) — para saludar por
@@ -1059,16 +1069,32 @@ async function procesarNuevosMensajesAcruxLab() {
       // KAI solo atiende a los NUEVOS, los que todavía no ha tomado nadie.
       try {
         const leadDelContacto = await buscarLeadExistente({ telefono: numero });
-        // Solo bloquea si el lead está ACTIVO: si ya fue dado por perdido, nadie lo
-        // está trabajando y KAI sí debe atender a ese papá si vuelve a escribir.
         if (leadDelContacto && leadDelContacto.active !== false && (leadDelContacto.type === 'opportunity' || leadDelContacto.user_id)) {
-          const duenio = leadDelContacto.user_id?.[1] || 'Sylvia (oportunidad)';
+          // Las OPORTUNIDADES son de Sylvia por regla del colegio, sin importar qué
+          // vendedor tengan puesto en Odoo. Los leads normales ya asignados se quedan
+          // con quien los tenga.
+          const esOportunidad = leadDelContacto.type === 'opportunity';
+          let duenio = leadDelContacto.user_id?.[1] || null;
+          let duenioId = null;
+          if (esOportunidad) {
+            const sylvia = await UsuarioPanel.findOne({
+              tenant_id: tenant._id, activo: true,
+              nombre: new RegExp('sylvia', 'i')
+            });
+            if (sylvia) { duenio = sylvia.nombre; duenioId = sylvia._id; }
+            else duenio = duenio || 'Sylvia';
+          }
           await AsignacionAcrux.findOneAndUpdate(
             { tenant_id: tenant._id, contacto_id: contactoId },
-            { modo: 'humano', fecha_modo_humano: new Date(), agente_nombre: duenio, sin_auto_recuperacion: true },
+            {
+              modo: 'humano', fecha_modo_humano: new Date(),
+              agente_nombre: duenio || 'Sin asignar',
+              ...(duenioId ? { agente_id: duenioId } : {}),
+              sin_auto_recuperacion: true
+            },
             { upsert: true, setDefaultsOnInsert: true }
           ).catch(() => {});
-          console.log(`🔒 [AcruxLab] ${numero} ya es ${leadDelContacto.type === 'opportunity' ? 'OPORTUNIDAD' : 'lead asignado'} de ${duenio} (lead #${leadDelContacto.id}) — KAI no interviene`);
+          console.log(`🔒 [AcruxLab] ${numero} es ${esOportunidad ? 'OPORTUNIDAD → ' + duenio : 'lead de ' + duenio} (#${leadDelContacto.id}) — KAI no interviene`);
           continue;
         }
       } catch (e) {
@@ -2151,6 +2177,40 @@ function contieneKeyword(texto, keyword) {
   return texto.includes(keyword);
 }
 
+// Cuando el papá pide VARIAS cosas en un mismo mensaje ("cuotas, requisitos, horarios y
+// el proceso de admisión"), no basta con encontrar un tema: hay que mandarle todo lo que
+// pidió. Esta función devuelve una regla por cada tema distinto que aparezca.
+function buscarTodasLasReglasCoincidentes(mensajeUsuario, nivelSesion) {
+  const t = (mensajeUsuario || '').toLowerCase();
+  const nivelSesionLower = (nivelSesion || '').toLowerCase();
+
+  const candidatas = REGLAS_IMAGEN.filter(r => r.keywords.some(k => contieneKeyword(t, k)));
+  if (!candidatas.length) return [];
+
+  // Agrupar por tema (categoría + nombre de la imagen), para no repetir la misma
+  const porTema = new Map();
+  for (const r of candidatas) {
+    const clave = `${r.categoria}|${r.nombre_contiene || r.nivel_educativo || ''}`;
+    if (!porTema.has(clave)) porTema.set(clave, r);
+  }
+
+  // Quedarnos con las que corresponden al nivel del padre. Se agrupan por IMAGEN, no por
+  // categoría: "requisitos" y "proceso de admisión" son dos imágenes distintas aunque
+  // ambas sean de admisión, y el papá que pide las dos debe recibir las dos.
+  const seleccionadas = new Map();
+  for (const r of porTema.values()) {
+    const requiereNivel = r.nivel && r.nivel.length > 0;
+    const coincideNivel = !requiereNivel
+      || r.nivel.some(n => contieneKeyword(t, n))
+      || (nivelSesionLower && r.nivel.some(n => nivelSesionLower.includes(n)));
+    if (!coincideNivel) continue;
+    const claveImagen = `${r.categoria}|${r.nombre_contiene || r.nivel_educativo || 'general'}`;
+    if (!seleccionadas.has(claveImagen)) seleccionadas.set(claveImagen, r);
+  }
+
+  return [...seleccionadas.values()];
+}
+
 function buscarReglaImagenCoincidente(mensajeUsuario, nivelSesion) {
   const t = (mensajeUsuario || '').toLowerCase();
   const nivelSesionLower = (nivelSesion || '').toLowerCase();
@@ -2270,6 +2330,47 @@ async function detectarYEnviarImagen(tenant, mensajeUsuario, contacto, canal, nu
 }
 
 async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
+  // ===== ¿ESTE PAPÁ YA ES DE ALGUIEN EN ODOO? =====
+  // Misma regla que en AcruxLab: si ya está como OPORTUNIDAD (esas son de Sylvia) o ya
+  // tiene un vendedor asignado, ya lo está trabajando una persona y KAI no debe meterse.
+  // KAI solo atiende a los NUEVOS. Se revisa antes que nada, para no responder por error.
+  try {
+    const leadDueño = await buscarLeadExistente({ telefono: numeroOrigen });
+    if (leadDueño && leadDueño.active !== false && (leadDueño.type === 'opportunity' || leadDueño.user_id)) {
+      // Las OPORTUNIDADES son de Sylvia por regla del colegio.
+      const esOportunidad = leadDueño.type === 'opportunity';
+      let duenio = leadDueño.user_id?.[1] || null;
+      let duenioId = null;
+      if (esOportunidad) {
+        const sylvia = await UsuarioPanel.findOne({ tenant_id: tenant._id, activo: true, nombre: new RegExp('sylvia', 'i') });
+        if (sylvia) { duenio = sylvia.nombre; duenioId = sylvia._id; }
+        else duenio = duenio || 'Sylvia';
+      }
+      let conv = await Conversacion.findOne({ tenant_id: tenant._id, numero: numeroOrigen, estado: { $ne: 'cerrado' } });
+      if (!conv) {
+        conv = await Conversacion.create({
+          tenant_id: tenant._id, numero: numeroOrigen, canal: 'whatsapp', estado: 'humano',
+          agente_nombre: duenio || 'Sin asignar',
+          ...(duenioId ? { agente_id: duenioId } : {}),
+          motivo: `Ya es ${esOportunidad ? 'OPORTUNIDAD' : 'lead asignado'} de ${duenio} (#${leadDueño.id})`,
+          mensajes: [{ de: 'padre', texto: mensajeUsuario, fecha: new Date() }],
+          ultimaActividad: new Date()
+        });
+      } else {
+        conv.estado = 'humano';
+        conv.agente_nombre = duenio || conv.agente_nombre;
+        if (duenioId) conv.agente_id = duenioId;
+        conv.mensajes.push({ de: 'padre', texto: mensajeUsuario, fecha: new Date() });
+        conv.ultimaActividad = new Date();
+        await conv.save();
+      }
+      console.log(`🔒 [WhatsApp] ${numeroOrigen} es ${esOportunidad ? 'OPORTUNIDAD → ' + duenio : 'lead de ' + duenio} (#${leadDueño.id}) — KAI no responde`);
+      return null; // null = KAI no contesta; el chat le queda pendiente a esa persona
+    }
+  } catch (e) {
+    console.error(`⚠️ [WhatsApp] No se pudo verificar si ${numeroOrigen} ya tiene dueño en Odoo: ${e.message}`);
+  }
+
   // ===== VERIFICAR SI YA HAY HANDOFF ACTIVO =====
   const convActiva = await Conversacion.findOne({ tenant_id: tenant._id, numero: numeroOrigen, estado: { $in: ['humano', 'esperando_agente'] } });
   if (convActiva) {
@@ -6480,6 +6581,51 @@ app.post('/api/conversaciones/:id/soltar', authMiddleware, async (req, res) => {
     );
     if (!conv) return res.status(404).json({ ok: false, error: 'No encontrada' });
     res.json({ ok: true, mensaje: 'Conversación soltada' });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// SIMULADOR — muestra qué imágenes y textos enviaría KAI ante un mensaje, SIN enviar
+// nada a nadie. Sirve para probar cambios sin arriesgar conversaciones reales.
+// GET /api/debug/simular?mensaje=cuotas y horarios de primaria&nivel=Primaria
+app.get('/api/debug/simular', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const mensaje = String(req.query.mensaje || '').trim();
+    const nivelSesion = String(req.query.nivel || '').trim() || null;
+    if (!mensaje) return res.json({ ok: false, error: 'Falta ?mensaje=' });
+
+    const nivelDetectado = detectarNivelEnTexto(mensaje);
+    const nivelUsado = nivelDetectado || nivelSesion;
+    const match = buscarReglaImagenCoincidente(mensaje, nivelUsado);
+    const todas = buscarTodasLasReglasCoincidentes(mensaje, nivelUsado);
+
+    // Buscar las imágenes reales que se enviarían
+    const imagenes = [];
+    for (const regla of (todas.length ? todas : (match?.regla ? [match.regla] : []))) {
+      const filtro = { tenant_id: req.user.tenant_id, activo: true, categoria: regla.categoria };
+      if (regla.nivel_educativo) filtro.nivel_educativo = { $in: [regla.nivel_educativo, 'Todos'] };
+      if (regla.nombre_contiene) filtro.nombre = new RegExp(regla.nombre_contiene, 'i');
+      const img = await ImagenMarketing.findOne(filtro).sort({ prioridad: -1, creado: -1 });
+      imagenes.push({
+        tema: regla.categoria,
+        imagen: img ? img.nombre : '⚠️ NO HAY IMAGEN CARGADA para este tema y nivel',
+        nivel_de_la_imagen: img?.nivel_educativo || null,
+        texto_que_la_acompaña: img ? construirDescripcionImagen(img) : null
+      });
+    }
+
+    res.json({
+      ok: true,
+      nota: 'SIMULACIÓN — no se envió ningún mensaje',
+      mensaje_probado: mensaje,
+      nivel_detectado_en_el_mensaje: nivelDetectado,
+      nivel_usado: nivelUsado,
+      pide_agente: detectaSolicitudAgente(mensaje),
+      es_alta_intencion: esAltaIntencion(mensaje, ''),
+      falta_preguntar_el_grado: !!match?.ambigua,
+      total_imagenes_que_enviaria: imagenes.length,
+      imagenes
+    });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
