@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-agente-servicio-para-escribir'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-sin-avisos-de-prueba'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -6318,6 +6318,85 @@ app.post('/api/conversaciones/:id/soltar', authMiddleware, async (req, res) => {
     );
     if (!conv) return res.status(404).json({ ok: false, error: 'No encontrada' });
     res.json({ ok: true, mensaje: 'Conversación soltada' });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// ¿Por qué KAI no está atendiendo a este número? Recorre TODOS los filtros que aplica
+// el motor y dice exactamente cuál lo está frenando.
+// GET /api/debug/por-que-no-atiende?numero=50244109412
+app.get('/api/debug/por-que-no-atiende', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const numero = String(req.query.numero || '').replace(/\D/g, '');
+    if (!numero) return res.json({ ok: false, error: 'Falta ?numero=' });
+
+    const revisiones = [];
+    let bloqueo = null;
+
+    // 1) ¿Existe la conversación en AcruxLab?
+    const convs = await odooCallLocal('acrux.chat.conversation', 'search_read',
+      [[['number', '=', numero]]],
+      { fields: ['id', 'name', 'number', 'status', 'agent_id', 'last_received', 'last_sent'], limit: 1 }
+    ) || [];
+    if (!convs.length) {
+      revisiones.push({ revision: 'Conversación en AcruxLab', resultado: '❌ NO EXISTE — este número nunca ha escrito al número oficial' });
+      return res.json({ ok: true, numero, bloqueo: 'No hay conversación en AcruxLab', revisiones });
+    }
+    const conv = convs[0];
+    const uidServicio = await getOdooUID();
+    revisiones.push({ revision: 'Conversación en AcruxLab', resultado: `✅ existe (#${conv.id})`, status: conv.status, agente: conv.agent_id?.[1] || 'ninguno', ultimo_recibido: conv.last_received, ultimo_enviado: conv.last_sent });
+
+    // 2) ¿Está tomada por una persona real?
+    if (conv.agent_id && conv.agent_id[0] !== uidServicio) {
+      bloqueo = bloqueo || `La conversación la tiene tomada ${conv.agent_id[1]} en el ChatRoom — KAI no interviene por diseño`;
+      revisiones.push({ revision: 'Agente humano', resultado: `⛔ tomada por ${conv.agent_id[1]}` });
+    } else {
+      revisiones.push({ revision: 'Agente humano', resultado: '✅ libre (o es nuestro usuario de servicio)' });
+    }
+
+    // 3) ¿En qué modo la tenemos nosotros?
+    const asign = await AsignacionAcrux.findOne({ tenant_id: req.user.tenant_id, contacto_id: conv.id });
+    if (asign?.modo === 'humano') {
+      bloqueo = bloqueo || `Está en modo humano en KAI, asignada a ${asign.agente_nombre || 'alguien'} — KAI no responde por diseño`;
+      revisiones.push({ revision: 'Modo en KAI', resultado: `⛔ humano (${asign.agente_nombre || 'sin nombre'})` });
+    } else {
+      revisiones.push({ revision: 'Modo en KAI', resultado: asign ? '✅ bot (KAI atiende)' : 'ℹ️ sin registro todavía (KAI atiende)' });
+    }
+
+    // 4) ¿Hay mensajes recientes, y quién habló de último?
+    const desde = new Date(Date.now() - VENTANA_MOTOR_ACRUX_HORAS * 3600 * 1000).toISOString().replace('T', ' ').substring(0, 19);
+    const msgs = await odooCallLocal('acrux.chat.message', 'search_read',
+      [[['contact_id', '=', conv.id], ['date_message', '>=', desde]]],
+      { fields: ['id', 'text', 'from_me', 'date_message'], limit: 20, order: 'date_message desc' }
+    ) || [];
+    if (!msgs.length) {
+      bloqueo = bloqueo || `No hay mensajes en las últimas ${VENTANA_MOTOR_ACRUX_HORAS} horas — el motor solo mira esa ventana`;
+      revisiones.push({ revision: 'Mensajes recientes', resultado: `⛔ ninguno en ${VENTANA_MOTOR_ACRUX_HORAS} h` });
+    } else {
+      const ultimo = msgs[0];
+      const ultimoDelPadre = msgs.find(m => !m.from_me);
+      const yaRespondido = ultimoDelPadre ? msgs.some(m => m.from_me && m.date_message > ultimoDelPadre.date_message) : true;
+      revisiones.push({
+        revision: 'Mensajes recientes',
+        resultado: `✅ ${msgs.length} mensaje(s)`,
+        ultimo_de: ultimo.from_me ? 'colegio' : 'padre',
+        ultimo_texto: String(ultimo.text || '').substring(0, 120),
+        fecha: ultimo.date_message,
+        ya_se_respondio_despues: yaRespondido
+      });
+      if (yaRespondido) bloqueo = bloqueo || 'El último mensaje del padre YA fue respondido — por eso el motor no vuelve a escribir';
+    }
+
+    // 5) ¿El motor está encendido?
+    revisiones.push({ revision: 'Motor de AcruxLab', resultado: ACRUX_AUTO_RESPUESTA_ACTIVO ? '✅ encendido' : '⛔ APAGADO' });
+    if (!ACRUX_AUTO_RESPUESTA_ACTIVO) bloqueo = bloqueo || 'El motor de auto-respuesta de AcruxLab está apagado';
+
+    res.json({
+      ok: true,
+      numero,
+      bloqueo: bloqueo || 'Ningún filtro lo está frenando — debería estar atendiéndolo',
+      revisiones
+    });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
