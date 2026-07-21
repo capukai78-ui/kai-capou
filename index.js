@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-fix-nivel-y-tierra-de-nadie'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-corregir-envio'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -6357,6 +6357,66 @@ app.post('/api/conversaciones/:id/soltar', authMiddleware, async (req, res) => {
     );
     if (!conv) return res.status(404).json({ ok: false, error: 'No encontrada' });
     res.json({ ok: true, mensaje: 'Conversación soltada' });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Corregir un envío equivocado: se le pide disculpas al padre y se le manda la imagen
+// del grado que sí corresponde. Sin ?enviar=1 solo muestra qué se le diría.
+// GET /api/motor/corregir-envio?numero=502XXXXXXXX&nivel=Primaria&categoria=admision
+app.get('/api/motor/corregir-envio', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const numero = String(req.query.numero || '').replace(/\D/g, '');
+    const nivel = String(req.query.nivel || '').trim();
+    const categoria = String(req.query.categoria || 'admision').trim();
+    if (!numero || !nivel) return res.json({ ok: false, error: 'Faltan ?numero= y ?nivel= (Preprimaria, Primaria o Secundaria)' });
+
+    // Buscar la imagen correcta para ese nivel y tema
+    const filtro = { tenant_id: req.user.tenant_id, activo: true, categoria };
+    const regla = REGLAS_IMAGEN.find(r => r.categoria === categoria && r.nivel?.some(n => nivel.toLowerCase().includes(n)));
+    if (regla?.nombre_contiene) filtro.nombre = new RegExp(regla.nombre_contiene, 'i');
+    else filtro.nivel_educativo = { $in: [nivel, 'Todos'] };
+    const imagen = await ImagenMarketing.findOne(filtro).sort({ prioridad: -1, creado: -1 });
+
+    const texto = `Disculpe, le envié la información del grado equivocado 🙏\n\n` +
+                  `Aquí tiene la que corresponde a *${nivel}*. Cualquier duda con gusto le ayudo.`;
+
+    if (req.query.enviar !== '1') {
+      return res.json({
+        ok: true,
+        modo: 'VISTA PREVIA — no se envió nada',
+        numero,
+        mensaje_que_se_enviaria: texto,
+        imagen_que_se_enviaria: imagen ? imagen.nombre : '⚠️ NO SE ENCONTRÓ imagen para ese nivel y tema',
+        para_enviarlo: 'agrega &enviar=1 a la dirección'
+      });
+    }
+
+    if (!imagen) return res.json({ ok: false, error: `No hay imagen de "${categoria}" para ${nivel} — revisa el Banco de Imágenes` });
+
+    // Enviar por AcruxLab (número oficial)
+    const conversacion = await obtenerOCrearConversacionAcrux(numero, null);
+    await enviarTextoAcruxLab(conversacion.id, texto);
+    await new Promise(r => setTimeout(r, 1500));
+
+    const adjunto = await subirImagenNuevaAcrux(imagen.imagen_base64, `${imagen.nombre}.jpg`, imagen.mime_type || 'image/jpeg', conversacion.id);
+    await odooCallLocal('acrux.chat.conversation', 'send_message',
+      [[conversacion.id], {
+        text: construirDescripcionImagen(imagen), from_me: true, ttype: 'image',
+        res_model: 'ir.attachment', res_id: adjunto.id, id: -2,
+        date_message: new Date().toISOString().replace('T', ' ').substring(0, 19), button_ids: []
+      }],
+      { context: { lang: 'es_GT', tz: 'America/Guatemala', is_acrux_chat_room: true } }
+    );
+
+    // Dejar el nivel correcto guardado, para que KAI no vuelva a equivocarse
+    await Contacto.findOneAndUpdate(
+      { tenant_id: req.user.tenant_id, numero },
+      { $set: { nivel_interes: nivel } }
+    ).catch(() => {});
+
+    console.log(`🔧 [Corrección] Se corrigió el envío a ${numero}: disculpa + imagen "${imagen.nombre}" (${nivel})`);
+    res.json({ ok: true, enviado: true, numero, nivel, imagen: imagen.nombre, conversacion_acrux: conversacion.id });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
