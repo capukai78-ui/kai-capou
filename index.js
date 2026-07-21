@@ -9,7 +9,7 @@ const cors = require('cors');
 
 dotenv.config();
 
-const VERSION_KAI = 'v2026.07.20-pendientes-y-por-que'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-detectar-intencion-formal'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -948,7 +948,24 @@ async function procesarNuevosMensajesAcruxLab() {
     if (idsContactos.length) {
       try {
         const uidServicio = await getOdooUID(); // nuestro propio usuario de servicio (KAI escribe con este)
-        const convsOdoo = await odooCallLocal('acrux.chat.conversation', 'read', [idsContactos, ['id', 'agent_id']]) || [];
+        const convsOdoo = await odooCallLocal('acrux.chat.conversation', 'read', [idsContactos, ['id', 'agent_id', 'status']]) || [];
+
+        // Las conversaciones en estado 'new' NO aceptan escritura. Hay que activarlas
+        // antes de intentar responder, o KAI falla en silencio y la familia se queda
+        // esperando. Odoo exige que tengan agente para poder activarlas, así que se les
+        // pone nuestro usuario de servicio (no una vendedora, para no quitarle chats).
+        const porActivar = convsOdoo.filter(c => c.status === 'new' && (!c.agent_id || c.agent_id[0] === uidServicio));
+        for (const c of porActivar) {
+          try {
+            const cambios = { status: 'current' };
+            if (!c.agent_id) cambios.agent_id = uidServicio;
+            await odooCallLocal('acrux.chat.conversation', 'write', [[c.id], cambios]);
+            console.log(`🔓 [AcruxLab] Conversación #${c.id} activada (estaba en 'new', nadie podía escribirle)`);
+          } catch (e) {
+            console.error(`⚠️ [AcruxLab] No se pudo activar la conversación #${c.id}: ${e.message}`);
+          }
+        }
+
         convsOdoo.forEach(c => {
           if (c.agent_id && c.agent_id[0] !== uidServicio) {
             agentePorContacto[c.id] = c.agent_id[1]; // nombre del agente humano que la tiene tomada
@@ -1642,7 +1659,11 @@ async function iniciarHandoff(tenant, numero, nombre, motivoMsg) {
 // sin necesitar el objeto Contacto completo (se evalúa antes de tenerlo actualizado).
 function esAltaIntencion(texto, ultimoMensajeBot) {
   const t = (texto || '').toLowerCase().trim();
-  const fraseAltaIntencion = /(quiero|quisiera|deseo|me gustar[ií]a|necesito|estoy interesad[oa] en|me interesa)\s+(inscribir|agendar|una visita|el open house|que mi hijo|que mi hija|que (mi|el|la)\s*\w+\s*(estudie|entre|vaya))|c[oó]mo (inscribo|agendo|hago para inscribir)|quiero inscribirlo|quiero inscribirla|aparta(me)? (un cupo|lugar)|inscribir(lo|la)?\s*(a mi hijo|a mi hija)?$/.test(t);
+  // Ojo con el plural: los papás muchas veces escriben como pareja ("NOS gustaría
+  // agendar una cita"), y antes solo se reconocía el singular ("me gustaría"), así que
+  // esa intención clarísima se pasaba por alto. También se agregó "cita" y "recorrido",
+  // que es como suelen pedir la visita al colegio.
+  const fraseAltaIntencion = /(quiero|quisiera|queremos|quisi[eé]ramos|deseo|deseamos|me gustar[ií]a|nos gustar[ií]a|necesito|necesitamos|estoy interesad[oa] en|estamos interesad[oa]s en|me interesa|nos interesa)\s+(inscribir|agendar|programar|coordinar|una (visita|cita)|el open house|conocer las instalaciones|que mi hijo|que mi hija|que (mi|el|la)\s*\w+\s*(estudie|entre|vaya))|c[oó]mo (inscribo|agendo|hago para inscribir)|quiero inscribirlo|quiero inscribirla|aparta(me)? (un cupo|lugar)|agendar (una )?(cita|visita|recorrido)|inscribir(lo|la)?\s*(a mi hijo|a mi hija)?$/.test(t);
   const esAfirmacionSimple = /^(s[ií]|s[ií] por favor|s[ií] claro|claro|dale|ok|okay|de acuerdo|perfecto|me parece bien|s[ií] me interesa|correcto|exacto|as[ií] es)\.?!?$/.test(t);
   const botPreguntoAgendar = /agendar|visita|asesor|coordinar|conectar(te)? con un asesor/.test((ultimoMensajeBot || '').toLowerCase());
   return fraseAltaIntencion || (esAfirmacionSimple && botPreguntoAgendar);
@@ -5725,9 +5746,16 @@ MUY IMPORTANTE — "es_formulario_admisiones" debe ser FALSE si:
 - La persona busca EMPLEO o manda su currículum (ej. tema "Trabaja con nosotros"). Esto NO es una admisión.
 - Es un boletín, publicidad, notificación automática o correo masivo.
 - Es una respuesta automática enviada POR el colegio.
-- Es cualquier consulta que no sea un padre/madre pidiendo información para inscribir a un hijo.
+- Es un proveedor ofreciendo productos o servicios al colegio.
 
-Solo pon TRUE cuando sea claramente un padre/madre interesado en inscribir a un alumno.
+OJO — NO te dejes llevar por el TONO del mensaje. Muchos padres escriben de forma muy
+formal o protocolaria ("El motivo de la presente es para manifestar nuestro interés...",
+"solicitar su valioso apoyo...") y AUN ASÍ son padres buscando inscribir a su hijo.
+Lo que decide es el CONTENIDO, no el estilo. Si menciona a su hijo, un grado o nivel, la
+edad del niño, pide información de admisión, o quiere agendar una visita o recorrido por
+las instalaciones → es TRUE, aunque suene a carta de oficina.
+
+Solo pon TRUE cuando sea un padre/madre interesado en inscribir a un alumno.
 
 Otras reglas:
 - Si un dato no aparece con claridad, pon null. NO inventes datos.
@@ -6414,7 +6442,7 @@ app.get('/api/debug/pendientes-y-por-que', authMiddleware, async (req, res) => {
       } else if (a?.modo === 'humano') {
         motivo = `Asignado a ${a.agente_nombre || 'una vendedora'} — le toca a ella responder`;
       } else if (o.status === 'new') {
-        motivo = 'La conversación está en estado "new" — KAI la activa al intentar responder';
+        motivo = '⚠️ La conversación está en estado "new" — en ese estado Odoo NO permite escribir. KAI la activa en la próxima corrida (45 seg)';
       } else {
         motivo = 'Sin bloqueo aparente — KAI debería responder en la próxima corrida (45 seg)';
       }
@@ -6782,10 +6810,17 @@ app.get('/api/motor/escanear-social', authMiddleware, async (req, res) => {
     const systemPrompt = `Eres un asistente del Colegio Capouilliez (Guatemala) que revisa mensajes recibidos por Instagram y Facebook Messenger.
 
 Clasifica CADA conversación en una de estas categorías:
-- "CALIENTE": el mensaje muestra interés real en inscribir a un alumno (pregunta por cuotas, admisión, cupos, requisitos, o dice que quiere inscribir).
+- "CALIENTE": el mensaje muestra interés real en inscribir a un alumno (pregunta por cuotas, admisión, cupos, requisitos, edades, dice que quiere inscribir, o pide agendar una visita/recorrido por las instalaciones).
 - "EXPLORATORIO": pregunta algo del colegio sin intención clara de inscribir todavía (horarios, ubicación, información general).
 - "TRAMITE": es un padre/alumno actual pidiendo algo administrativo (constancias, notas, pagos, papelería de alumno inscrito). NO es admisión.
-- "NO_RELEVANTE": felicitaciones, saludos, comentarios sobre publicaciones, bromas, spam, o cualquier cosa que no requiera acción de admisiones.
+- "NO_RELEVANTE": felicitaciones, saludos, comentarios sobre publicaciones, bromas, spam, ofertas de proveedores, solicitudes de empleo, o cualquier cosa que no requiera acción de admisiones.
+
+OJO CON EL TONO — muchos padres escriben de forma muy formal o protocolaria ("El motivo
+de la presente es para manifestar nuestro interés...", "solicitar su valioso apoyo..."),
+y eso NO los hace menos interesados: suelen ser de los más serios. Clasifica por el
+CONTENIDO, no por el estilo. Si menciona a su hijo, su edad, un grado, pide información
+de admisión o quiere agendar una visita → es CALIENTE, aunque parezca carta de oficina.
+Solo va a NO_RELEVANTE si de verdad no tiene que ver con inscribir a un alumno.
 
 Devuelve ÚNICAMENTE un arreglo JSON, sin explicaciones ni markdown, con este formato exacto:
 [{"indice": 0, "categoria": "CALIENTE", "motivo": "explicación breve", "accion_sugerida": "qué debería hacer el equipo", "nombre_detectado": "nombre del padre si aparece, o null", "telefono": "solo dígitos si aparece un teléfono en el mensaje, o null", "nivel": "Preprimaria, Primaria, Secundaria o null", "correo": "correo si aparece, o null"}]
