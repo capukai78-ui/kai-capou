@@ -28,7 +28,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-trato-de-usted'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-no-marcar-perdido-duplicados'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1432,12 +1432,16 @@ async function contactarLeadPorAcruxLab(tenant, lead) {
   if (yaContactado?.ultimo_contacto) {
     const horasDesde = (Date.now() - new Date(yaContactado.ultimo_contacto).getTime()) / 3600000;
     if (horasDesde < 72) {
-      await marcarLeadComoPerdido(lead.id,
-        `♻️ <b>Registro repetido</b>: al número ${tel} ya se le escribió hace ${Math.round(horasDesde)} h` +
-        (yaContactado.odoo_lead_id && yaContactado.odoo_lead_id !== lead.id ? ` (lead #${yaContactado.odoo_lead_id})` : '') +
-        `.<br>Este papá ya existe como contacto, así que no se le vuelve a escribir.<br><i>Se marca como perdido por duplicado.</i>`);
-      console.log(`♻️ [Motor proactivo] ${tel} ya contactado hace ${Math.round(horasDesde)}h — lead #${lead.id} marcado como perdido (duplicado)`);
-      return { ok: false, motivo: 'duplicado_marcado_perdido', lead_original: yaContactado.odoo_lead_id || null, horas_desde: Math.round(horasDesde) };
+      // Solo se deja una nota de rastreo, SIN tocar el estado del lead (no perdido,
+      // no archivado). El duplicado simplemente se salta — no le corresponde a KAI
+      // decidir si algo se marca como perdido, esa es una decisión del equipo.
+      await odooCallLocal('crm.lead', 'message_post', [[lead.id]], {
+        body: `♻️ <b>Registro repetido</b>: al número ${tel} ya se le escribió hace ${Math.round(horasDesde)} h` +
+          (yaContactado.odoo_lead_id && yaContactado.odoo_lead_id !== lead.id ? ` (lead #${yaContactado.odoo_lead_id})` : '') +
+          `.<br>No se le volvió a escribir para no duplicar mensajes. <i>No se cambió el estado de este lead — el equipo decide qué hacer con los duplicados.</i>`
+      }).catch(() => {});
+      console.log(`♻️ [Motor proactivo] ${tel} ya contactado hace ${Math.round(horasDesde)}h — se salta el lead #${lead.id} (duplicado, sin tocar su estado)`);
+      return { ok: false, motivo: 'duplicado_no_contactado', lead_original: yaContactado.odoo_lead_id || null, horas_desde: Math.round(horasDesde) };
     }
   }
 
@@ -1449,9 +1453,13 @@ async function contactarLeadPorAcruxLab(tenant, lead) {
     // siendo trabajado por KAI, que es justamente lo que se busca.
     if (yaEsDeAlguien && yaEsDeAlguien.id !== lead.id && yaEsDeAlguien.active !== false && yaEsDeAlguien.type === 'opportunity') {
       const duenio = yaEsDeAlguien.user_id?.[1] || 'Sylvia (oportunidad)';
-      await marcarLeadComoPerdido(lead.id,
-        `🔒 <b>Ya lo está trabajando ${duenio}</b>: este papá ya existe como ${yaEsDeAlguien.type === 'opportunity' ? 'OPORTUNIDAD' : 'lead asignado'} (#${yaEsDeAlguien.id}).<br>KAI no lo contactó para no interferir con el seguimiento que ya lleva esa persona.`);
-      console.log(`🔒 [Motor proactivo] ${tel} ya es de ${duenio} (lead #${yaEsDeAlguien.id}) — no se contacta`);
+      // Aquí NO se marca como perdido: es una oportunidad ACTIVA que alguien está
+      // trabajando de verdad. Marcarla como perdida podría arruinar un caso real en
+      // curso. Solo se deja constancia de que KAI no se metió, sin tocar su estado.
+      await odooCallLocal('crm.lead', 'message_post', [[lead.id]], {
+        body: `🔒 <b>Ya lo está trabajando ${duenio}</b>: este papá ya existe como ${yaEsDeAlguien.type === 'opportunity' ? 'OPORTUNIDAD' : 'lead asignado'} (#${yaEsDeAlguien.id}).<br>KAI no lo contactó para no interferir con el seguimiento que ya lleva esa persona. <i>No se cambió el estado de este lead.</i>`
+      }).catch(() => {});
+      console.log(`🔒 [Motor proactivo] ${tel} ya es de ${duenio} (lead #${yaEsDeAlguien.id}) — no se contacta, sin tocar su estado`);
       return { ok: false, motivo: 'ya_es_de_un_agente', duenio, lead_existente: yaEsDeAlguien.id };
     }
   } catch (e) { /* si falla la revisión, seguimos con el flujo normal */ }
@@ -1720,8 +1728,9 @@ async function motorProactivoContactarLeads() {
           // Se salta, pero hay que MARCARLO: si no, vuelve a aparecer como pendiente
           // en cada corrida (cada 10 minutos) y nunca sale de la lista.
           const idPrincipal = numerosYaVistos.get(clave);
-          await marcarLeadComoPerdido(lead.id,
-            `♻️ <b>Registro repetido</b>: este papá ya existe como contacto y se está atendiendo en el lead #${idPrincipal} (número ...${clave}).<br>No se le escribió, para no mandarle dos mensajes a la misma familia.<br><i>Se marca como perdido por duplicado.</i>`);
+          await odooCallLocal('crm.lead', 'message_post', [[lead.id]], {
+            body: `♻️ <b>Registro repetido</b>: este papá ya existe como contacto y se está atendiendo en el lead #${idPrincipal} (número ...${clave}).<br>No se le escribió, para no mandarle dos mensajes a la misma familia. <i>No se cambió el estado de este lead — el equipo decide qué hacer con los duplicados.</i>`
+          }).catch(() => {});
           continue;
         }
         numerosYaVistos.set(clave, lead.id);
@@ -5922,9 +5931,9 @@ app.post('/api/acrux/devolver-a-kai', authMiddleware, async (req, res) => {
 
 app.post('/api/acrux/responder', authMiddleware, async (req, res) => {
   try {
-    const { contacto_id, mensaje, plantilla_id, imagen_base64, imagen_mime, imagen_nombre } = req.body;
+    const { contacto_id, mensaje, plantilla_id, imagen_id, imagen_base64, imagen_mime, imagen_nombre } = req.body;
     if (!contacto_id) return res.status(400).json({ ok: false, error: 'contacto_id es requerido' });
-    if (!mensaje && !plantilla_id && !imagen_base64) return res.status(400).json({ ok: false, error: 'mensaje, plantilla_id o imagen_base64 son requeridos' });
+    if (!mensaje && !plantilla_id && !imagen_id && !imagen_base64) return res.status(400).json({ ok: false, error: 'mensaje, plantilla_id, imagen_id o imagen_base64 son requeridos' });
 
     // Un agente humano respondiendo manualmente desde el panel = KAI debe dejar de
     // auto-responder este contacto de aquí en adelante (pasa a modo "humano").
@@ -5937,7 +5946,19 @@ app.post('/api/acrux/responder', authMiddleware, async (req, res) => {
     } catch (e) { /* no bloquea el envío si esto falla */ }
 
     let valoresMensaje;
-    if (imagen_base64) {
+    if (imagen_id) {
+      // Enviar una imagen ya existente en el Banco de Imágenes, elegida desde el panel
+      // de "Imágenes sugeridas" — mismo flujo que una imagen nueva, pero el archivo
+      // sale del Banco en vez de subirlo desde la computadora del agente.
+      const imgBanco = await ImagenMarketing.findOne({ _id: imagen_id, tenant_id: req.user.tenant_id });
+      if (!imgBanco) return res.json({ ok: false, error: 'Imagen no encontrada en el Banco' });
+      const adjunto = await subirImagenNuevaAcrux(imgBanco.imagen_base64, `${imgBanco.nombre}.jpg`, imgBanco.mime_type || 'image/jpeg', contacto_id);
+      valoresMensaje = {
+        text: mensaje || construirDescripcionImagen(imgBanco),
+        from_me: true, ttype: 'image', res_model: 'ir.attachment', res_id: adjunto.id,
+        id: -2, date_message: new Date().toISOString().replace('T', ' ').substring(0, 19), button_ids: []
+      };
+    } else if (imagen_base64) {
       // Imagen NUEVA subida desde la computadora del agente — primero se sube como
       // adjunto real (ir.attachment) vía sesión web + CSRF, y luego se referencia
       // igual que una plantilla ya existente.
@@ -6601,9 +6622,10 @@ app.post('/api/motor/proactivo/ejecutar', authMiddleware, async (req, res) => {
         const clave = telLead.slice(-8);
         if (numerosVistos.has(clave)) {
           const idPrincipal = numerosVistos.get(clave);
-          const rPerdido = await marcarLeadComoPerdido(lead.id,
-            `♻️ <b>Registro repetido</b>: este papá ya existe como contacto y se está atendiendo en el lead #${idPrincipal} (número ...${clave}).<br>No se le escribió, para no duplicar mensajes.<br><i>Se marca como perdido por duplicado.</i>`);
-          resultados.push({ lead_id: lead.id, nombre: lead.partner_name || lead.contact_name || lead.name, ok: false, motivo: 'repetido_marcado_perdido', se_atiende_en_lead: idPrincipal, marcado: rPerdido.metodo || rPerdido.error });
+          await odooCallLocal('crm.lead', 'message_post', [[lead.id]], {
+            body: `♻️ <b>Registro repetido</b>: este papá ya existe como contacto y se está atendiendo en el lead #${idPrincipal} (número ...${clave}).<br>No se le escribió, para no duplicar mensajes. <i>No se cambió el estado de este lead — el equipo decide qué hacer con los duplicados.</i>`
+          }).catch(() => {});
+          resultados.push({ lead_id: lead.id, nombre: lead.partner_name || lead.contact_name || lead.name, ok: false, motivo: 'repetido_no_contactado', se_atiende_en_lead: idPrincipal });
           continue;
         }
         numerosVistos.set(clave, lead.id);
@@ -7212,6 +7234,82 @@ app.get('/api/debug/simular', authMiddleware, async (req, res) => {
       falta_preguntar_el_grado: !!match?.ambigua,
       total_imagenes_que_enviaria: imagenes.length,
       imagenes
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Rastrea los leads que KAI marcó como PERDIDOS por error (por ser duplicados) antes de
+// esta corrección — buscando la frase exacta que el sistema dejaba en el chatter. Con
+// ?revertir=1 los reactiva (active:true) y los regresa a la primera etapa del pipeline,
+// dejando nota de la corrección. NO toca los que el equipo haya marcado perdidos a mano.
+// GET /api/debug/revertir-perdidos-por-error
+app.get('/api/debug/revertir-perdidos-por-error', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const revertir = req.query.revertir === '1';
+
+    // Buscamos en el chatter de crm.lead los mensajes con la frase exacta que dejaba
+    // el sistema al marcar como perdido por duplicado (versión vieja, ya corregida).
+    const mensajes = await odooCallLocal('mail.message', 'search_read',
+      [[
+        ['model', '=', 'crm.lead'],
+        '|', ['body', 'ilike', 'Se marca como perdido por duplicado'], ['body', 'ilike', 'no se le vuelve a escribir'],
+      ]],
+      { fields: ['res_id', 'body', 'date'], limit: 200, order: 'date desc' }
+    ) || [];
+
+    const idsAfectados = [...new Set(mensajes.map(m => m.res_id))];
+    if (!idsAfectados.length) {
+      return res.json({ ok: true, total: 0, mensaje: 'No se encontró ningún lead marcado perdido por este error' });
+    }
+
+    const leads = await odooCallLocal('crm.lead', 'read',
+      [idsAfectados, ['id', 'name', 'partner_name', 'phone', 'active', 'probability', 'stage_id', 'user_id']]
+    ) || [];
+
+    // Primera etapa del pipeline, para regresar ahí a los que se reactiven
+    let primeraEtapa = null;
+    if (revertir) {
+      const etapas = await odooCallLocal('crm.stage', 'search_read', [[]], { fields: ['id', 'name'], order: 'sequence asc', limit: 1 }) || [];
+      primeraEtapa = etapas[0] || null;
+    }
+
+    let revertidos = 0;
+    const detalle = [];
+    for (const l of leads) {
+      const estabaMarcadoPerdido = l.active === false || l.probability === 0;
+      const item = {
+        lead: l.id,
+        nombre: l.partner_name || l.name,
+        telefono: l.phone,
+        estaba_archivado: l.active === false,
+        probabilidad_actual: l.probability,
+        vendedor: l.user_id?.[1] || null,
+        accion: null
+      };
+
+      if (revertir && estabaMarcadoPerdido) {
+        const cambios = { active: true };
+        if (primeraEtapa) cambios.stage_id = primeraEtapa.id;
+        await odooCallLocal('crm.lead', 'write', [[l.id], cambios]).catch(() => {});
+        await odooCallLocal('crm.lead', 'message_post', [[l.id]], {
+          body: `✅ Este lead fue marcado como perdido por error (un bug del sistema clasificaba los duplicados como perdidos). Se reactivó${primeraEtapa ? ` y se regresó a la etapa "${primeraEtapa.name}"` : ''}. El equipo debe revisar y decidir qué hacer con él.`
+        }).catch(() => {});
+        item.accion = 'reactivado';
+        revertidos++;
+      } else if (!estabaMarcadoPerdido) {
+        item.accion = 'no estaba marcado perdido (alguien ya lo corrigió, o el equipo lo cambió después)';
+      }
+
+      detalle.push(item);
+    }
+
+    res.json({
+      ok: true,
+      modo: revertir ? 'REVERTIDO' : 'VISTA PREVIA — agrega ?revertir=1 para reactivarlos',
+      total_afectados: leads.length,
+      revertidos,
+      detalle
     });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
@@ -8287,6 +8385,33 @@ app.get('/api/conversaciones', authMiddleware, async (req, res) => {
     }));
 
     res.json({ ok: true, conversaciones: convsEnriquecidas });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// Mismo panel de "datos del padre + imágenes sugeridas" que ya existía para el chat de
+// WhatsApp/Meta, pero para AcruxLab — ahí es donde vive casi todo el tráfico real hoy,
+// y antes no tenía este contexto lateral que le da fluidez a la vendedora.
+// GET /api/acrux/contacto-info?numero=502XXXXXXXX
+app.get('/api/acrux/contacto-info', authMiddleware, async (req, res) => {
+  try {
+    const numero = String(req.query.numero || '').replace(/\D/g, '');
+    if (!numero) return res.json({ ok: false, error: 'Falta ?numero=' });
+
+    const contacto = await Contacto.findOne({ tenant_id: req.user.tenant_id, numero });
+
+    let imagenesSugeridas = [];
+    if (contacto?.nivel_interes) {
+      imagenesSugeridas = await ImagenMarketing.find({
+        tenant_id: req.user.tenant_id, activo: true,
+        $or: [{ nivel_educativo: contacto.nivel_interes }, { nivel_educativo: 'Todos' }]
+      }).select('-imagen_base64').limit(6);
+    } else {
+      imagenesSugeridas = await ImagenMarketing.find({
+        tenant_id: req.user.tenant_id, activo: true, nivel_educativo: 'Todos'
+      }).select('-imagen_base64').limit(4);
+    }
+
+    res.json({ ok: true, contacto, imagenes_sugeridas: imagenesSugeridas });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
