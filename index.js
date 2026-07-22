@@ -28,7 +28,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-reversar-reactivacion'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-ultimas-asignaciones'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7366,6 +7366,30 @@ app.get('/api/debug/revertir-perdidos-por-error', authMiddleware, async (req, re
       total_afectados: leads.length,
       revertidos,
       detalle
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Muestra las últimas asignaciones SIN filtrar por fecha (a diferencia de
+// asignacion-de-hoy). Sirve para descartar un problema de zona horaria en el cálculo
+// de "hoy": el servidor puede estar en UTC, 6 horas adelante de Guatemala.
+// GET /api/debug/ultimas-asignaciones?n=15
+app.get('/api/debug/ultimas-asignaciones', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const n = Math.min(parseInt(req.query.n) || 15, 50);
+    const tenantId = req.user.tenant_id;
+
+    const convsMeta = await Conversacion.find({ tenant_id: tenantId, agente_id: { $ne: null } })
+      .select('agente_nombre nombre numero ultimaActividad').sort({ ultimaActividad: -1 }).limit(n);
+    const asignsAcrux = await AsignacionAcrux.find({ tenant_id: tenantId, agente_id: { $ne: null } })
+      .select('agente_nombre contacto_id creado').sort({ creado: -1 }).limit(n);
+
+    res.json({
+      ok: true,
+      hora_actual_servidor: new Date().toISOString(),
+      meta: convsMeta.map(c => ({ agente: c.agente_nombre, quien: c.nombre || c.numero, hora: c.ultimaActividad })),
+      acrux: asignsAcrux.map(a => ({ agente: a.agente_nombre, conversacion: a.contacto_id, hora: a.creado }))
     });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
