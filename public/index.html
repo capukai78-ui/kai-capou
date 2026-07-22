@@ -934,6 +934,34 @@ tr:hover td{background:var(--g4)}
         <div class="tw-h"><div class="tw-t">📋 Detalle — chats pendientes de atención</div></div>
         <div id="mon-pendientes" style="padding:8px;text-align:center;color:var(--text3);font-size:12px">Haz clic en Actualizar para cargar</div>
       </div>
+
+      <!-- ===== EVALUACIÓN: DISTRIBUCIÓN DE LEADS ===== -->
+      <div class="tw" style="margin-top:16px">
+        <div class="tw-h">
+          <div class="tw-t">📊 Distribución de leads por vendedora</div>
+          <select id="eval-dias" onchange="cargarEvaluacion()" style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;padding:4px 8px">
+            <option value="1">Hoy</option>
+            <option value="7" selected>Últimos 7 días</option>
+            <option value="30">Últimos 30 días</option>
+          </select>
+        </div>
+        <div id="eval-distribucion" style="padding:12px;color:var(--text3);font-size:12px">Cargando...</div>
+      </div>
+
+      <!-- ===== CHARLAS A MEDIAS ===== -->
+      <div class="tw" style="margin-top:16px">
+        <div class="tw-h"><div class="tw-t">⏳ Charlas a medias — papás esperando respuesta</div></div>
+        <div id="eval-amedias" style="padding:12px;color:var(--text3);font-size:12px">Cargando...</div>
+      </div>
+
+      <!-- ===== CALIDAD DEL TRATO (solo admin) ===== -->
+      <div class="tw" id="eval-calidad-box" style="margin-top:16px;display:none">
+        <div class="tw-h">
+          <div class="tw-t">💬 Cómo trató KAI a los papás</div>
+          <button class="rpill" onclick="cargarCalidadTrato()">Analizar últimos 3 días</button>
+        </div>
+        <div id="eval-calidad" style="padding:12px;color:var(--text3);font-size:12px">Presiona "Analizar" para que KAI revise sus propias conversaciones y detecte problemas de trato.</div>
+      </div>
     </div>
 
     <div class="page" id="p-marketing">
@@ -2573,6 +2601,114 @@ async function trasladarAOdoo(leadId){
 
 // ===== MONITOREO — Dashboard de Sylvia =====
 async function loadMonitoreo(){
+  // Mostrar el bloque de calidad solo a administradores
+  const boxCalidad = document.getElementById('eval-calidad-box');
+  if(boxCalidad) boxCalidad.style.display = (ROLE==='admin' || ROLE==='viewer') ? 'block' : 'none';
+  cargarEvaluacion();
+  _loadMonitoreoOriginal();
+}
+
+async function cargarEvaluacion(){
+  const dias = document.getElementById('eval-dias')?.value || 7;
+  const cont = document.getElementById('eval-distribucion');
+  const contMedias = document.getElementById('eval-amedias');
+  try{
+    const d = await fetch(API+'/api/dashboard/evaluacion?dias='+dias,{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+    if(!d.ok){ cont.innerHTML = '<span style="color:var(--red)">No se pudo cargar</span>'; return; }
+
+    // --- Distribución por vendedora ---
+    const vs = d.distribucion.por_vendedora.filter(v=>v.rol==='vendedor');
+    if(!vs.length){
+      cont.innerHTML = '<div style="color:var(--text3)">Sin leads asignados en este período</div>';
+    } else {
+      const maxAsig = Math.max(...vs.map(v=>v.asignados), 1);
+      cont.innerHTML = vs.map(v=>{
+        const pct = Math.round(v.asignados/maxAsig*100);
+        const tasaResp = v.asignados ? Math.round(v.respondidos/v.asignados*100) : 0;
+        return `<div style="margin-bottom:14px">
+          <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
+            <span style="font-weight:600">${v.nombre}</span>
+            <span style="color:var(--text3)">${v.asignados} leads</span>
+          </div>
+          <div style="background:var(--bg3);border-radius:6px;height:22px;overflow:hidden">
+            <div style="width:${pct}%;height:100%;background:linear-gradient(90deg,#1F4E79,#2E7D9A);display:flex;align-items:center;padding-left:8px;color:#fff;font-size:11px;border-radius:6px">${v.asignados}</div>
+          </div>
+          <div style="display:flex;gap:16px;font-size:11px;color:var(--text3);margin-top:4px">
+            <span>✓ Respondió ${v.respondidos} (${tasaResp}%)</span>
+            <span>⏳ Pendientes ${v.pendientes}</span>
+            <span>Cerrados ${v.cerrados}</span>
+          </div>
+        </div>`;
+      }).join('');
+
+      // Aviso de balance
+      const bal = d.distribucion.balance_del_reparto;
+      if(bal.length===2){
+        const dif = Math.abs(bal[0].porcentaje - bal[1].porcentaje);
+        const color = dif <= 15 ? 'var(--green)' : (dif <= 30 ? '#E65100' : 'var(--red)');
+        const txt = dif <= 15 ? 'El reparto está parejo ✓' : 'El reparto está desbalanceado — conviene revisar la disponibilidad de cada asesora';
+        cont.innerHTML += `<div style="margin-top:8px;padding:8px 12px;background:var(--bg3);border-radius:8px;font-size:12px;border-left:3px solid ${color}">
+          ${bal[0].nombre}: ${bal[0].porcentaje}% · ${bal[1].nombre}: ${bal[1].porcentaje}%<br><span style="color:${color}">${txt}</span>
+        </div>`;
+      }
+      if(d.distribucion.sin_asignar>0){
+        cont.innerHTML += `<div style="margin-top:6px;font-size:11px;color:#E65100">⚠️ ${d.distribucion.sin_asignar} conversación(es) sin vendedora asignada</div>`;
+      }
+    }
+
+    // --- Charlas a medias ---
+    const am = d.charlas_a_medias;
+    if(!am.total){
+      contMedias.innerHTML = '<div style="color:var(--green)">✓ No hay charlas a medias — todos los papás fueron respondidos</div>';
+    } else {
+      contMedias.innerHTML = `<div style="margin-bottom:8px;color:#E65100;font-weight:600">${am.total} papá(s) con el último mensaje sin responder</div>` +
+        am.detalle.map(c=>`<div style="display:flex;justify-content:space-between;gap:10px;padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px">
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600">${c.nombre}</div>
+            <div style="color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">"${c.ultimo_mensaje}"</div>
+          </div>
+          <div style="text-align:right;white-space:nowrap">
+            <div style="color:${c.horas_esperando>=3?'var(--red)':'var(--text3)'}">${c.horas_esperando}h esperando</div>
+            <div style="color:var(--text3);font-size:11px">${c.asignada_a}</div>
+          </div>
+        </div>`).join('');
+    }
+  }catch(e){
+    cont.innerHTML = '<span style="color:var(--red)">Error de conexión</span>';
+  }
+}
+
+async function cargarCalidadTrato(){
+  const cont = document.getElementById('eval-calidad');
+  cont.innerHTML = '<div style="color:var(--text3)">Analizando conversaciones... esto puede tardar unos segundos ⏳</div>';
+  try{
+    const d = await fetch(API+'/api/dashboard/calidad-trato?dias=3',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+    if(!d.ok){ cont.innerHTML = '<span style="color:var(--red)">'+(d.error||'No se pudo analizar')+'</span>'; return; }
+    if(!d.problemas_encontrados){
+      cont.innerHTML = `<div style="color:var(--green)">✓ Se revisaron ${d.conversaciones_revisadas} conversaciones y no se encontraron problemas de trato.</div>`;
+      return;
+    }
+    const colorGrav = g => g==='alta'?'var(--red)':(g==='media'?'#E65100':'var(--text3)');
+    cont.innerHTML = `<div style="margin-bottom:10px;font-size:12px;color:var(--text3)">
+        Revisadas ${d.conversaciones_revisadas} · Problemas: <span style="color:var(--red)">${d.resumen.alta} altos</span>, ${d.resumen.media} medios, ${d.resumen.baja} bajos
+      </div>` +
+      d.hallazgos.map(h=>`<div style="padding:10px 12px;border-bottom:1px solid var(--border);font-size:12px">
+        <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+          <span style="font-weight:600">${h.papa}</span>
+          <span style="color:${colorGrav(h.gravedad)};text-transform:uppercase;font-size:10px;font-weight:700">${h.gravedad}</span>
+        </div>
+        <div style="margin-bottom:4px">${h.problema}</div>
+        <div style="color:var(--text3);font-size:11px">💡 Regla sugerida: ${h.regla_sugerida}</div>
+      </div>`).join('') +
+      `<div style="margin-top:10px;padding:8px 12px;background:var(--bg3);border-radius:8px;font-size:11px;color:var(--text3)">
+        Estos hallazgos son la base para mejorar KAI. Compártelos con IT para convertirlos en reglas permanentes.
+      </div>`;
+  }catch(e){
+    cont.innerHTML = '<span style="color:var(--red)">Error de conexión</span>';
+  }
+}
+
+async function _loadMonitoreoOriginal(){
   const resumenEl = document.getElementById('mon-resumen');
   const alertaEl = document.getElementById('mon-alerta');
   const alertaListaEl = document.getElementById('mon-alerta-lista');
