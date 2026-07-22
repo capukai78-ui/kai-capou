@@ -28,7 +28,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-fix-fuente-datos-acrux'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-trato-de-usted'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -461,7 +461,7 @@ function detectarIndustria(nombreTenant, bienvenida) {
 function buildSystemPrompt(tenant) {
   const industria = detectarIndustria(tenant.nombre, tenant.config?.bienvenida);
   const base = `Eres el asistente virtual oficial de "${tenant.nombre}", una institución de prestigio en Guatemala.\n\nSOBRE ESTE NEGOCIO:\n${tenant.config?.bienvenida || ''}\n\nSERVICIOS:\n${(tenant.config?.menu || []).map(m => `▸ ${m.opcion}: ${m.respuesta}`).join('\n')}\n\nUBICACIONES:\n${(tenant.config?.sedes || []).map(s => `📍 ${s.nombre}: ${s.direccion} | Tel: ${s.telefono} | Horario: ${s.horario}`).join('\n')}`;
-  const instruccionesColegio = `\nERES: Kai, asistente virtual de admisiones. Cálido, profesional, orientado a resultados.\nMISIÓN: Convertir cada conversación en una visita o inscripción.\n\nFLUJO INICIAL:\n1) Saluda con calidez y, si es la primera vez que escribe, pregúntale su nombre antes de continuar. Usa exactamente este formato: "¡Hola! Bienvenido al Colegio Capouilliez 👋 Soy Kai, tu asistente de admisiones.\n\n¿Con quién tengo el gusto de hablar?". Si ya sabes su nombre (por el contexto interno de memoria), NO se lo vuelvas a pedir — salúdalo por su nombre directamente y continúa con calidez, sin sonar frío ni ir directo al grano.\n2) Pregunta el nivel ofreciendo un menú numerado:\n   "¿En qué nivel está interesado? Marca el número:\n   1. Preprimaria\n   2. Primaria\n   3. Secundaria (Básico y Bachillerato en Ciencias y Letras)"\n3) Si elige Preprimaria (1): solicita la fecha de nacimiento del niño/a y, con esa fecha, comparte la tabla de edades para confirmar el grado exacto que le corresponde.\n4) Explica beneficios relevantes al nivel elegido.\n5) Captura: nombre del padre/madre, nombre del alumno, grado, zona, colegio actual, correo.\n6) Ofrece agendar una visita o invita al próximo Open House (sin mencionar que es "el primer sábado de cada mes" — la fecha puede variar, siempre confirma la fecha exacta vigente).\n7) Una sola vez por conversación, después de tener el correo o nombre del alumno, pregunta de forma natural y breve si desea recibir noticias del colegio (ej: "¿Te gustaría que te avisemos de nuestro próximo Open House y noticias del colegio? 📩"). Respeta la respuesta — si dice que no, no insistas ni lo vuelvas a preguntar en esta conversación.\n\nCONTACTO Y ASESORES — MUY IMPORTANTE:\n- Tu prioridad es avanzar la conversación hacia la visita/inscripción TÚ MISMO. NO ofrezcas pasar con un asesor como primera opción ni como salida fácil para dudas generales.\n- Solo sugiere hablar con un asesor humano DESPUÉS de haber intentado avanzar el proceso, o cuando el padre necesita algo que tú no puedes resolver (pregunta muy específica, quiere negociar, pide hablar con alguien directamente).\n- CUANDO EL PADRE MUESTRE INTERÉS REAL DE AGENDAR UNA VISITA, OPEN HOUSE, O INSCRIBIR (ej: "quiero agendar", "sí, quiero la visita", "cómo inscribo", "quiero inscribirlo"): NO le des el número de PBX/WhatsApp como si tuviera que llamar él mismo. En su lugar dile que con gusto lo conecta directamente AHORA con un asesor que le ayudará a coordinar todo, y pregúntale si desea que lo transfieras (ej: "¡Perfecto! Te conecto ahora mismo con un asesor que te ayudará a coordinar la visita y confirmar la fecha. ¿Te parece?"). El sistema detecta esto automáticamente y transfiere la conversación.\n- Los números de PBX 2429-1999 y 2429-1908 son SOLO para si el padre prefiere llamar por su cuenta fuera de WhatsApp, no los ofrezcas como la opción principal cuando ya estás conversando con él aquí mismo.\n- NUNCA uses la palabra "mientras tanto" — está prohibida, suena repetitiva. Usa alternativas naturales o reformula sin esa frase.\n\nSOBRE LAS IMÁGENES — MUY IMPORTANTE:\n- Tú NUNCA decides ni controlas si se manda una imagen — eso lo hace el sistema automáticamente, por fuera de ti, según la pregunta exacta del padre/madre en CADA mensaje (una imagen por mensaje, sobre UN tema específico: cuotas, horarios, requisitos, proceso de admisión, edades, ubicación, o papelería).\n- JAMÁS afirmes en tu respuesta que "ya mandaste una imagen", "aquí tienes las imágenes", o similar — a menos que veas una nota de sistema real confirmándolo para ESE turno exacto. No lo asumas ni lo inventes nunca.\n- Si el padre/madre pide VARIAS cosas o "todas las imágenes" a la vez (ej: "mándame todo", "las 4", "cuotas, horarios y requisitos"): explícale con calidez que puedes ayudarle mejor si pregunta un tema a la vez (ej: "¡Con gusto te ayudo con todo eso! Para que te llegue bien la información, empecemos con uno: ¿qué te gustaría ver primero, cuotas, horarios, requisitos o el proceso de admisión?"). NUNCA pretendas que ya se envió algo cuando el padre pidió varios temas juntos.\n- REGLA ABSOLUTA, SIN EXCEPCIÓN: NUNCA escribas precios, montos, cifras en quetzales, ni rangos de precios en tus respuestas de texto — bajo NINGUNA circunstancia, sin importar cómo esté formulada la pregunta. Todo lo relacionado a precios/cuotas/colegiaturas se resuelve SOLO con imagen. Si el padre pregunta por precios de una forma que no reconoces con claridad, NO inventes ni cites ningún número — en su lugar, pregúntale amablemente de qué nivel/grado necesita el precio, para poder ayudarle con la información exacta.\n\nFORMATO DE RESPUESTA:\n- NUNCA uses asteriscos (**texto**) para negritas ni ningún otro formato de markdown. WhatsApp no lo necesita y se ve mal. Escribe en texto plano natural.\n- No uses guiones para listas si la respuesta es corta — prefiere texto fluido y conversacional.\n\nINACTIVIDAD:\n- Si la conversación lleva más de 3 horas sin actividad ni respuesta del padre, antes de cerrar pregúntale si desea comunicarse con un asesor.\n- Si no responde, informa que se terminará la comunicación por inactividad pero que sigues a las órdenes y que pueden volver a escribir cuando quieran.\n\nLEDS (Liderazgo, Expresión, Deportes y Salud):\n- Alumnos de Primaria y Secundaria reciben 1 vez a la semana un período doble de actividades extracurriculares dentro del horario escolar, sin costo adicional.\n- Actividades disponibles: Fútbol, Baloncesto, Tenis de Mesa, Natación, Artes Visuales, Marimba, Teatro Musical.\n- Los alumnos son quienes eligen a qué actividad inscribirse, y participan en ella durante todo el ciclo escolar (la oferta puede variar cada año).\n\nREGLAS GENERALES:\nResponde de forma natural y cálida como WhatsApp, no como un correo. Nunca des listas largas ni tablas completas — si quieren más info ellos preguntan. Español guatemalteco. NUNCA inventes datos. NUNCA menciones Claude.`;
+  const instruccionesColegio = `\nERES: Kai, asistente virtual de admisiones. Cálido, profesional, orientado a resultados.\nMISIÓN: Convertir cada conversación en una visita o inscripción.\n\nFLUJO INICIAL:\n1) Saluda con calidez y, si es la primera vez que escribe, pregúntale su nombre antes de continuar. Usa exactamente este formato: "¡Hola! Bienvenido al Colegio Capouilliez 👋 Soy Kai, su asistente de admisiones.\n\n¿Con quién tengo el gusto de hablar?". Si ya sabes su nombre (por el contexto interno de memoria), NO se lo vuelvas a pedir — salúdalo por su nombre directamente y continúa con calidez, sin sonar frío ni ir directo al grano.\n2) Pregunta el nivel ofreciendo un menú numerado:\n   "¿En qué nivel está interesado? Marca el número:\n   1. Preprimaria\n   2. Primaria\n   3. Secundaria (Básico y Bachillerato en Ciencias y Letras)"\n3) Si elige Preprimaria (1): solicita la fecha de nacimiento del niño/a y, con esa fecha, comparte la tabla de edades para confirmar el grado exacto que le corresponde.\n4) Explica beneficios relevantes al nivel elegido.\n5) Captura: nombre del padre/madre, nombre del alumno, grado, zona, colegio actual, correo.\n6) Ofrece agendar una visita o invita al próximo Open House (sin mencionar que es "el primer sábado de cada mes" — la fecha puede variar, siempre confirma la fecha exacta vigente).\n7) Una sola vez por conversación, después de tener el correo o nombre del alumno, pregunta de forma natural y breve si desea recibir noticias del colegio (ej: "¿Le gustaría que le avisemos de nuestro próximo Open House y noticias del colegio? 📩"). Respeta la respuesta — si dice que no, no insistas ni lo vuelvas a preguntar en esta conversación.\n\nCONTACTO Y ASESORES — MUY IMPORTANTE:\n- Tu prioridad es avanzar la conversación hacia la visita/inscripción TÚ MISMO. NO ofrezcas pasar con un asesor como primera opción ni como salida fácil para dudas generales.\n- Solo sugiere hablar con un asesor humano DESPUÉS de haber intentado avanzar el proceso, o cuando el padre necesita algo que usted no puede resolver (pregunta muy específica, quiere negociar, pide hablar con alguien directamente).\n- CUANDO EL PADRE MUESTRE INTERÉS REAL DE AGENDAR UNA VISITA, OPEN HOUSE, O INSCRIBIR (ej: "quiero agendar", "sí, quiero la visita", "cómo inscribo", "quiero inscribirlo"): NO le des el número de PBX/WhatsApp como si tuviera que llamar él mismo. En su lugar dile que con gusto lo conecta directamente AHORA con un asesor que le ayudará a coordinar todo, y pregúntale si desea que lo transfieras (ej: "¡Perfecto! Te conecto ahora mismo con un asesor que te ayudará a coordinar la visita y confirmar la fecha. ¿Te parece?"). El sistema detecta esto automáticamente y transfiere la conversación.\n- Los números de PBX 2429-1999 y 2429-1908 son SOLO para si el padre prefiere llamar por su cuenta fuera de WhatsApp, no los ofrezcas como la opción principal cuando ya estás conversando con él aquí mismo.\n- NUNCA uses la palabra "mientras tanto" — está prohibida, suena repetitiva. Usa alternativas naturales o reformula sin esa frase.\n\nSOBRE LAS IMÁGENES — MUY IMPORTANTE:\n- Tú NUNCA decides ni controlas si se manda una imagen — eso lo hace el sistema automáticamente, por fuera de ti, según la pregunta exacta del padre/madre en CADA mensaje (una imagen por mensaje, sobre UN tema específico: cuotas, horarios, requisitos, proceso de admisión, edades, ubicación, o papelería).\n- JAMÁS afirmes en tu respuesta que "ya mandaste una imagen", "aquí tienes las imágenes", o similar — a menos que vea una nota de sistema real confirmándolo para ESE turno exacto. No lo asumas ni lo inventes nunca.\n- Si el padre/madre pide VARIAS cosas o "todas las imágenes" a la vez (ej: "mándame todo", "las 4", "cuotas, horarios y requisitos"): explícale con calidez que puedes ayudarle mejor si pregunta un tema a la vez (ej: "¡Con gusto le ayudo con todo eso! Para que le llegue bien la información, empecemos con uno: ¿qué le gustaría ver primero, cuotas, horarios, requisitos o el proceso de admisión?"). NUNCA pretendas que ya se envió algo cuando el padre pidió varios temas juntos.\n- REGLA ABSOLUTA, SIN EXCEPCIÓN: NUNCA escribas precios, montos, cifras en quetzales, ni rangos de precios en tus respuestas de texto — bajo NINGUNA circunstancia, sin importar cómo esté formulada la pregunta. Todo lo relacionado a precios/cuotas/colegiaturas se resuelve SOLO con imagen. Si el padre pregunta por precios de una forma que no reconoces con claridad, NO inventes ni cites ningún número — en su lugar, pregúntale amablemente de qué nivel/grado necesita el precio, para poder ayudarle con la información exacta.\n\nFORMATO DE RESPUESTA:\n- NUNCA uses asteriscos (**texto**) para negritas ni ningún otro formato de markdown. WhatsApp no lo necesita y se ve mal. Escribe en texto plano natural.\n- No uses guiones para listas si la respuesta es corta — prefiere texto fluido y conversacional.\n\nINACTIVIDAD:\n- Si la conversación lleva más de 3 horas sin actividad ni respuesta del padre, antes de cerrar pregúntale si desea comunicarse con un asesor.\n- Si no responde, informa que se terminará la comunicación por inactividad pero que sigues a las órdenes y que pueden volver a escribir cuando quieran.\n\nLEDS (Liderazgo, Expresión, Deportes y Salud):\n- Alumnos de Primaria y Secundaria reciben 1 vez a la semana un período doble de actividades extracurriculares dentro del horario escolar, sin costo adicional.\n- Actividades disponibles: Fútbol, Baloncesto, Tenis de Mesa, Natación, Artes Visuales, Marimba, Teatro Musical.\n- Los alumnos son quienes eligen a qué actividad inscribirse, y participan en ella durante todo el ciclo escolar (la oferta puede variar cada año).\n\nREGLAS GENERALES:\nResponde de forma natural y cálida como WhatsApp, no como un correo. Nunca des listas largas ni tablas completas — si quieren más info ellos preguntan. Español guatemalteco. NUNCA inventes datos. NUNCA menciones Claude.\n\nTRATO — MUY IMPORTANTE, SIN EXCEPCIÓN:\n- SIEMPRE trata al padre/madre de USTED. NUNCA de \"vos\" ni de \"tú\", aunque el español guatemalteco use \"vos\" coloquialmente y aunque el padre te tutee primero a ti.\n- Ejemplos: di \"¿cómo está?\" no \"¿cómo estás?\" ni \"¿cómo estás vos?\"; di \"qué gusto saber de usted\" no \"qué gusto saber de vos\"; di \"su hijo\" no \"tu hijo\"; di \"le ayudo\" no \"te ayudo\".\n- Este es un colegio privado y el trato formal es un pilar de la imagen institucional frente a las familias — no es una preferencia de estilo, es una regla fija.`;
   const instruccionesGeneral = `\nINSTRUCCIONES: Responde en español guatemalteco natural. Máximo 4 líneas. Usa emojis con moderación. NUNCA inventes precios. Eres cálido y profesional.`;
   return base + (industria === 'colegio' ? instruccionesColegio : instruccionesGeneral);
 }
@@ -526,16 +526,16 @@ function construirMensajeTraspaso(nombreAgente, mostroInteresReal) {
     // despide: sigue atendiendo y resolviendo todo lo que pueda. El lead ya queda
     // asignado, así que la vendedora lo retoma cuando entre a trabajar.
     return 'Nuestros asesores no se encuentran disponibles en este momento (atienden de Lunes a Jueves de 7:00 a 16:00 y Viernes de 7:00 a 15:00), ' +
-           (nombreAgente ? `pero ya dejé tu caso asignado a ${nombreAgente.split(' ')[0]}, quien te buscará apenas inicie labores. ` : 'pero ya dejé tu caso registrado para que te contacten apenas inicien labores. ') +
-           'Mientras tanto yo te puedo apoyar con todo: cuotas, requisitos, horarios, proceso de admisión o lo que necesites saber 😊\n\n¿Con qué te ayudo?';
+           (nombreAgente ? `pero ya dejé su caso asignado a ${nombreAgente.split(' ')[0]}, quien le buscará apenas inicie labores. ` : 'pero ya dejé su caso registrado para que le contacten apenas inicien labores. ') +
+           'Mientras tanto yo le puedo apoyar con todo: cuotas, requisitos, horarios, proceso de admisión o lo que necesite saber 😊\n\n¿En qué le puedo ayudar?';
   }
   if (nombreAgente) {
     const primerNombre = nombreAgente.split(' ')[0];
     return mostroInteresReal
-      ? `¡Perfecto! Te conecto con ${primerNombre}, quien te ayudará a coordinar todo 🙋`
-      : `¡Claro! Te paso con ${primerNombre}, quien te atenderá enseguida 🙋`;
+      ? `¡Perfecto! Le conecto con ${primerNombre}, quien le ayudará a coordinar todo 🙋`
+      : `¡Claro! Le paso con ${primerNombre}, quien le atenderá enseguida 🙋`;
   }
-  return 'En este momento todos nuestros asesores están ocupados. En breve uno te atenderá personalmente. 🙏';
+  return 'En este momento todos nuestros asesores están ocupados. En breve uno le atenderá personalmente. 🙏';
 }
 
 // Busca un agente disponible (round-robin simple: el que tenga menos chats activos)
@@ -1206,18 +1206,18 @@ const MAX_LEADS_POR_CORRIDA = 5;   // de cuántos en cuántos, para no mandar un
 // no leímos su solicitud.
 const MENSAJE_PRIMER_CONTACTO = (primerNombre, nivel) => {
   const saludo = primerNombre ? `Hola ${primerNombre}` : 'Hola';
-  const cabecera = `${saludo} 👋 Te escribimos del Colegio Capouilliez.`;
+  const cabecera = `${saludo} 👋 Le escribimos del Colegio Capouilliez.`;
 
   if (nivel) {
     return `${cabecera}\n\n` +
-      `Recibimos tu solicitud de información para ${nivel} 🏫\n\n` +
-      `Con gusto te ayudo con todo lo del proceso de admisión: cuotas, requisitos, horarios o lo que necesites saber.\n\n` +
-      `¿Con qué te puedo ayudar primero?`;
+      `Recibimos su solicitud de información para ${nivel} 🏫\n\n` +
+      `Con gusto le ayudo con todo lo del proceso de admisión: cuotas, requisitos, horarios o lo que necesite saber.\n\n` +
+      `¿Con qué le puedo ayudar primero?`;
   }
 
   return `${cabecera}\n\n` +
-    `Recibimos tu solicitud de información y con gusto te ayudamos con el proceso de admisiones 🏫\n\n` +
-    `¿Para qué nivel educativo estás buscando información?\n\n` +
+    `Recibimos su solicitud de información y con gusto le ayudamos con el proceso de admisiones 🏫\n\n` +
+    `¿Para qué nivel educativo está buscando información?\n\n` +
     `1️⃣ Preprimaria\n2️⃣ Primaria\n3️⃣ Secundaria (Básico y Bachillerato)`;
 };
 
@@ -4832,26 +4832,35 @@ app.get('/api/dashboard/kai-a-medias', authMiddleware, async (req, res) => {
       return `--- Conversación ${i} (${c.nombre}) ---\n${dialogo}`;
     }).join('\n\n');
 
-    const systemPrompt = `Eres un supervisor de admisiones del Colegio Capouilliez. Revisas conversaciones que el asistente KAI atendió SOLO (sin ninguna asesora), buscando charlas que quedaron A MEDIAS: el papá preguntó algo específico (cuotas, requisitos, horarios, proceso de admisión, edades, ubicación, papelería) y nunca se le respondió, o solo se le respondió parte de lo que pidió.
+    const systemPrompt = `Eres un supervisor de admisiones del Colegio Capouilliez. Revisas conversaciones que el asistente KAI atendió SOLO (sin ninguna asesora), buscando charlas que quedaron A MEDIAS: el papá preguntó algo específico (cuotas, requisitos, horarios, proceso de admisión, edades, ubicación, papelería) y nunca se le respondió, o solo se le respondió parte de lo que pidió, o la respuesta de KAI se cortó a medio texto.
 
 NO reportes conversaciones que:
 - Terminaron con el papá agradeciendo o despidiéndose sin pedir nada más.
-- El papá aún no ha hecho ninguna pregunta específica (solo saludó).
+- El papá aún no ha hecho ninguna pregunta específica (solo saludó o dio información general sin pedir nada).
 - Ya se le respondió completo, aunque la conversación siga abierta.
 
-Devuelve ÚNICAMENTE un arreglo JSON, sin markdown:
+RESPONDE ÚNICAMENTE CON EL ARREGLO JSON. No escribas explicaciones, ni texto antes o después, ni marques con \`\`\`. La primera letra de tu respuesta debe ser "[" y la última "]".
+
+Formato exacto:
 [{"conversacion": 0, "que_pidio_y_no_recibio": "descripción de lo que falta", "temas_faltantes": ["cuotas","admision","info_general"], "nivel_mencionado": "Preprimaria|Primaria|Secundaria|null"}]
 
-Los valores válidos para "temas_faltantes" son EXACTAMENTE estos (en minúscula): cuotas, admision, info_general, programas. Si una conversación está completa, no la incluyas.`;
+Los valores válidos para "temas_faltantes" son EXACTAMENTE estos (en minúscula): cuotas, admision, info_general, programas. Si una conversación está completa, no la incluyas. Si ninguna quedó a medias, responde exactamente: []`;
 
     const respuesta = await llamarClaude(systemPrompt, [{ role: 'user', content: extractos.substring(0, 14000) }], 3000);
     if (!respuesta) return res.json({ ok: false, error: 'La IA no respondió (revisar saldo de Anthropic)' });
 
     let hallazgos;
     try {
-      hallazgos = JSON.parse(respuesta.replace(/```json|```/g, '').trim());
+      // La IA a veces agrega explicación antes/después pese a la instrucción — se
+      // extrae solo el tramo entre el primer '[' y el último ']', que es el JSON real.
+      let limpio = respuesta.replace(/```json|```/g, '').trim();
+      const inicio = limpio.indexOf('[');
+      const fin = limpio.lastIndexOf(']');
+      if (inicio === -1 || fin === -1 || fin < inicio) throw new Error('No se encontró un arreglo JSON en la respuesta');
+      limpio = limpio.substring(inicio, fin + 1);
+      hallazgos = JSON.parse(limpio);
     } catch (e) {
-      return res.json({ ok: false, error: 'La IA devolvió un formato inesperado', respuesta_cruda: respuesta.substring(0, 800) });
+      return res.json({ ok: false, error: 'La IA devolvió un formato inesperado', respuesta_cruda: respuesta.substring(0, 1500) });
     }
 
     const resultado = [];
@@ -5134,16 +5143,23 @@ Por cada conversación con algún problema, repórtalo. Busca específicamente:
 Devuelve ÚNICAMENTE un arreglo JSON, sin markdown:
 [{"conversacion": 0, "problema": "descripción breve del problema", "gravedad": "alta|media|baja", "regla_sugerida": "qué regla evitaría esto a futuro"}]
 
-Si una conversación estuvo BIEN, no la incluyas. Si todas estuvieron bien, devuelve [].`;
+Si una conversación estuvo BIEN, no la incluyas. Si todas estuvieron bien, devuelve [].
+
+RESPONDE ÚNICAMENTE CON EL ARREGLO JSON. No escribas explicaciones antes ni después. La primera letra de tu respuesta debe ser "[" y la última "]".`;
 
     const respuesta = await llamarClaude(systemPrompt, [{ role: 'user', content: extractos.substring(0, 14000) }], 3000);
     if (!respuesta) return res.json({ ok: false, error: 'La IA no respondió (revisar saldo de Anthropic)' });
 
     let hallazgos;
     try {
-      hallazgos = JSON.parse(respuesta.replace(/```json|```/g, '').trim());
+      let limpio = respuesta.replace(/```json|```/g, '').trim();
+      const inicio = limpio.indexOf('[');
+      const fin = limpio.lastIndexOf(']');
+      if (inicio === -1 || fin === -1 || fin < inicio) throw new Error('No se encontró un arreglo JSON en la respuesta');
+      limpio = limpio.substring(inicio, fin + 1);
+      hallazgos = JSON.parse(limpio);
     } catch (e) {
-      return res.json({ ok: false, error: 'La IA devolvió un formato inesperado', respuesta_cruda: respuesta.substring(0, 800) });
+      return res.json({ ok: false, error: 'La IA devolvió un formato inesperado', respuesta_cruda: respuesta.substring(0, 1500) });
     }
 
     // Enriquecer con el nombre del papá
@@ -6413,7 +6429,14 @@ Otras reglas:
 
   let datos;
   try {
-    datos = JSON.parse(respuesta.replace(/```json|```/g, '').trim());
+    // La IA puede agregar texto antes/después pese a la instrucción — se extrae solo
+    // el tramo entre la primera '{' y la última '}', que es el objeto JSON real.
+    let limpio = respuesta.replace(/```json|```/g, '').trim();
+    const inicio = limpio.indexOf('{');
+    const fin = limpio.lastIndexOf('}');
+    if (inicio === -1 || fin === -1 || fin < inicio) throw new Error('No se encontró un objeto JSON en la respuesta');
+    limpio = limpio.substring(inicio, fin + 1);
+    datos = JSON.parse(limpio);
   } catch (e) {
     return { ok: false, error: 'La IA devolvió un formato inesperado', respuesta_cruda: respuesta };
   }
@@ -7641,7 +7664,12 @@ Incluye TODOS los índices que te den.`;
 
     let clasificaciones;
     try {
-      clasificaciones = JSON.parse(respuesta.replace(/```json|```/g, '').trim());
+      let limpio = respuesta.replace(/```json|```/g, '').trim();
+      const inicio = limpio.indexOf('[');
+      const fin = limpio.lastIndexOf(']');
+      if (inicio === -1 || fin === -1 || fin < inicio) throw new Error('No se encontró un arreglo JSON en la respuesta');
+      limpio = limpio.substring(inicio, fin + 1);
+      clasificaciones = JSON.parse(limpio);
     } catch (e) {
       return res.json({ ok: false, error: 'La IA devolvió un formato inesperado', respuesta_cruda: respuesta.substring(0, 800) });
     }
