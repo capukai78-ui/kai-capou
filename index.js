@@ -28,7 +28,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-no-marcar-perdido-duplicados'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-reversar-reactivacion'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -548,19 +548,24 @@ async function asignarAgenteLibre(tenantId) {
   }).sort({ _id: 1 }); // orden estable, para que el round-robin sea predecible
   if (!agentes.length) return null;
 
-  // Reparto 1 a 1 real: contamos el TOTAL histórico de conversaciones ya asignadas a
-  // cada agente en AMBOS canales (WhatsApp/IG/Messenger + AcruxLab combinados), para
-  // que la carga quede pareja entre ellos sin importar por dónde entró el lead.
+  // Reparto 1 a 1 REAL POR DÍA: se cuenta solo lo asignado HOY (desde medianoche,
+  // hora de Guatemala), no el histórico acumulado. Antes se comparaba el total de
+  // siempre, y si alguien había quedado con más en el pasado (por pruebas, por un bug,
+  // etc.), el sistema seguía "compensando" ese historial viejo durante días enteros en
+  // vez de alternar parejo cada día — que es lo que el equipo espera ver.
+  const inicioDeHoy = new Date();
+  inicioDeHoy.setHours(0, 0, 0, 0); // asume el huso horario del servidor = America/Guatemala
+
   const [countsMeta, countsAcrux] = await Promise.all([
     Conversacion.aggregate([
-      { $match: { tenant_id: tenantId, agente_id: { $ne: null } } },
+      { $match: { tenant_id: tenantId, agente_id: { $ne: null }, ultimaActividad: { $gte: inicioDeHoy } } },
       { $group: { _id: '$agente_id', total: { $sum: 1 } } }
     ]),
     AsignacionAcrux.aggregate([
       // Ojo: hay que excluir los que NO tienen vendedor. Se crean así al sincronizar el
       // semáforo de AcruxLab, y al agruparlos daban un _id nulo que reventaba el conteo
       // (y con él, TODA la asignación de vendedores del sistema).
-      { $match: { tenant_id: tenantId, agente_id: { $ne: null } } },
+      { $match: { tenant_id: tenantId, agente_id: { $ne: null }, creado: { $gte: inicioDeHoy } } },
       { $group: { _id: '$agente_id', total: { $sum: 1 } } }
     ])
   ]);
@@ -7238,6 +7243,57 @@ app.get('/api/debug/simular', authMiddleware, async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
+// Deshace la reactivación anterior: vuelve a archivar los leads que se reactivaron por
+// el endpoint "revertir-perdidos-por-error", usando la misma nota como rastro. Se usa
+// si el equipo decide que, después de todo, prefiere dejarlos como estaban.
+// GET /api/debug/reversar-reactivacion?confirmar=1
+app.get('/api/debug/reversar-reactivacion', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const confirmar = req.query.confirmar === '1';
+
+    const mensajes = await odooCallLocal('mail.message', 'search_read',
+      [[
+        ['model', '=', 'crm.lead'],
+        ['body', 'ilike', 'fue marcado como perdido por error'],
+      ]],
+      { fields: ['res_id'], limit: 200, order: 'date desc' }
+    ) || [];
+
+    const idsAfectados = [...new Set(mensajes.map(m => m.res_id))];
+    if (!idsAfectados.length) {
+      return res.json({ ok: true, total: 0, mensaje: 'No se encontró ningún lead de esa reactivación' });
+    }
+
+    const leads = await odooCallLocal('crm.lead', 'read', [idsAfectados, ['id', 'name', 'partner_name', 'active']]) || [];
+
+    let archivados = 0;
+    const detalle = [];
+    for (const l of leads) {
+      const item = { lead: l.id, nombre: l.partner_name || l.name, ya_estaba_archivado: l.active === false, accion: null };
+      if (confirmar && l.active !== false) {
+        await odooCallLocal('crm.lead', 'write', [[l.id], { active: false, probability: 0 }]).catch(() => {});
+        await odooCallLocal('crm.lead', 'message_post', [[l.id]], {
+          body: `↩️ Se vuelve a archivar a solicitud del equipo — se decidió dejarlo como estaba antes de la reactivación.`
+        }).catch(() => {});
+        item.accion = 'archivado de nuevo';
+        archivados++;
+      } else if (l.active === false) {
+        item.accion = 'ya estaba archivado';
+      }
+      detalle.push(item);
+    }
+
+    res.json({
+      ok: true,
+      modo: confirmar ? 'EJECUTADO' : 'VISTA PREVIA — agrega ?confirmar=1 para archivarlos de nuevo',
+      total: leads.length,
+      archivados,
+      detalle
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 // Rastrea los leads que KAI marcó como PERDIDOS por error (por ser duplicados) antes de
 // esta corrección — buscando la frase exacta que el sistema dejaba en el chatter. Con
 // ?revertir=1 los reactiva (active:true) y los regresa a la primera etapa del pipeline,
@@ -7310,6 +7366,54 @@ app.get('/api/debug/revertir-perdidos-por-error', authMiddleware, async (req, re
       total_afectados: leads.length,
       revertidos,
       detalle
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Muestra la asignación de HOY, en orden cronológico, para verificar si de verdad se
+// repartió 1 a 1 entre las asesoras. Es la vista que responde "¿fue equitativo hoy?"
+// con datos, no con impresión.
+// GET /api/debug/asignacion-de-hoy
+app.get('/api/debug/asignacion-de-hoy', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const tenantId = req.user.tenant_id;
+    const inicioDeHoy = new Date();
+    inicioDeHoy.setHours(0, 0, 0, 0);
+
+    const vendedoras = await UsuarioPanel.find({ tenant_id: tenantId, role: 'vendedor' }).select('nombre _id');
+    const nombrePorId = {}; vendedoras.forEach(v => { nombrePorId[v._id.toString()] = v.nombre; });
+
+    const convsMeta = await Conversacion.find({
+      tenant_id: tenantId, agente_id: { $ne: null }, ultimaActividad: { $gte: inicioDeHoy }
+    }).select('agente_id agente_nombre nombre numero ultimaActividad').sort({ ultimaActividad: 1 });
+
+    const asignsAcrux = await AsignacionAcrux.find({
+      tenant_id: tenantId, agente_id: { $ne: null }, creado: { $gte: inicioDeHoy }
+    }).select('agente_id agente_nombre contacto_id creado').sort({ creado: 1 });
+
+    const linea = [];
+    convsMeta.forEach(c => linea.push({
+      hora: c.ultimaActividad, agente_id: c.agente_id?.toString(),
+      agente: c.agente_nombre || nombrePorId[c.agente_id?.toString()] || '?',
+      nombre: c.nombre || c.numero, canal: 'meta'
+    }));
+    asignsAcrux.forEach(a => linea.push({
+      hora: a.creado, agente_id: a.agente_id?.toString(),
+      agente: a.agente_nombre || nombrePorId[a.agente_id?.toString()] || '?',
+      nombre: `Conversación AcruxLab #${a.contacto_id}`, canal: 'acrux'
+    }));
+    linea.sort((a, b) => new Date(a.hora) - new Date(b.hora));
+
+    const conteo = {};
+    linea.forEach(l => { conteo[l.agente] = (conteo[l.agente] || 0) + 1; });
+
+    res.json({
+      ok: true,
+      fecha: inicioDeHoy.toISOString().substring(0, 10),
+      total_asignados_hoy: linea.length,
+      conteo_por_vendedora: conteo,
+      orden_cronologico: linea.map(l => ({ hora: l.hora, agente: l.agente, quien: l.nombre, canal: l.canal }))
     });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
