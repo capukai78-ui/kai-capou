@@ -28,7 +28,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-pruebas-luvy-y-sylvia'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-kai-a-medias-y-diagnostico-oportunidad'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -4776,6 +4776,316 @@ app.post('/api/motor/activar', authMiddleware, async (req, res) => {
     res.json({ ok: true, mensaje: 'Motor de contacto proactivo iniciado — revisa los logs de Railway' });
     motorContactoProactivo(); // corre en segundo plano
   } catch(e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Revisa las conversaciones que KAI atiende SOLO (sin vendedora, modo bot) y detecta
+// cuáles quedaron A MEDIAS: el papá preguntó algo y nunca se le mandó. Usa la IA para
+// leer el diálogo completo y decidir qué falta. Con ?enviar=1 manda lo que falta.
+// GET /api/dashboard/kai-a-medias?dias=3
+app.get('/api/dashboard/kai-a-medias', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const tenantId = req.user.tenant_id;
+    const dias = Math.min(parseInt(req.query.dias) || 3, 14);
+    const desde = new Date(Date.now() - dias * 24 * 3600 * 1000);
+    const ejecutar = req.query.enviar === '1';
+
+    // Solo conversaciones donde KAI atiende SOLO: estado 'bot' en el panel, o modo 'bot'
+    // en AsignacionAcrux. Si ya hay vendedora, no es KAI quien debe resolver el faltante.
+    const convsPanel = await Conversacion.find({
+      tenant_id: tenantId, canal: 'whatsapp', estado: 'bot',
+      ultimaActividad: { $gte: desde }, 'mensajes.1': { $exists: true }
+    }).select('numero nombre mensajes').limit(30);
+
+    if (!convsPanel.length) {
+      return res.json({ ok: true, total: 0, mensaje: 'No hay conversaciones de KAI (solo) en ese rango' });
+    }
+
+    const extractos = convsPanel.map((c, i) => {
+      const dialogo = (c.mensajes || []).slice(-10).map(m => {
+        const quien = m.de === 'padre' ? 'PAPÁ' : 'KAI';
+        return `${quien}: ${String(m.texto || '').substring(0, 200)}`;
+      }).join('\n');
+      return `--- Conversación ${i} (${c.nombre || c.numero}) ---\n${dialogo}`;
+    }).join('\n\n');
+
+    const systemPrompt = `Eres un supervisor de admisiones del Colegio Capouilliez. Revisas conversaciones que el asistente KAI atendió SOLO (sin ninguna asesora), buscando charlas que quedaron A MEDIAS: el papá preguntó algo específico (cuotas, requisitos, horarios, proceso de admisión, edades, ubicación, papelería) y nunca se le respondió, o solo se le respondió parte de lo que pidió.
+
+NO reportes conversaciones que:
+- Terminaron con el papá agradeciendo o despidiéndose sin pedir nada más.
+- El papá aún no ha hecho ninguna pregunta específica (solo saludó).
+- Ya se le respondió completo, aunque la conversación siga abierta.
+
+Devuelve ÚNICAMENTE un arreglo JSON, sin markdown:
+[{"conversacion": 0, "que_pidio_y_no_recibio": "descripción de lo que falta", "temas_faltantes": ["cuotas","admision","info_general"], "nivel_mencionado": "Preprimaria|Primaria|Secundaria|null"}]
+
+Los valores válidos para "temas_faltantes" son EXACTAMENTE estos (en minúscula): cuotas, admision, info_general, programas. Si una conversación está completa, no la incluyas.`;
+
+    const respuesta = await llamarClaude(systemPrompt, [{ role: 'user', content: extractos.substring(0, 14000) }], 3000);
+    if (!respuesta) return res.json({ ok: false, error: 'La IA no respondió (revisar saldo de Anthropic)' });
+
+    let hallazgos;
+    try {
+      hallazgos = JSON.parse(respuesta.replace(/```json|```/g, '').trim());
+    } catch (e) {
+      return res.json({ ok: false, error: 'La IA devolvió un formato inesperado', respuesta_cruda: respuesta.substring(0, 800) });
+    }
+
+    const resultado = [];
+    for (const h of (hallazgos || [])) {
+      const conv = convsPanel[h.conversacion];
+      if (!conv) continue;
+
+      const item = {
+        nombre: conv.nombre || conv.numero,
+        numero: conv.numero,
+        que_falta: h.que_pidio_y_no_recibio,
+        temas: h.temas_faltantes || [],
+        nivel: h.nivel_mencionado || null,
+        enviado: false
+      };
+
+      if (ejecutar && item.temas.length) {
+        // Buscar y mandar las imágenes de los temas que faltaron
+        const enviadas = [];
+        for (const tema of item.temas) {
+          const filtro = { tenant_id: tenantId, activo: true, categoria: tema };
+          if (item.nivel) filtro.nivel_educativo = { $in: [item.nivel, 'Todos'] };
+          const img = await ImagenMarketing.findOne(filtro).sort({ prioridad: -1, creado: -1 });
+          if (!img) continue;
+          try {
+            const conversacionAcrux = await obtenerOCrearConversacionAcrux(conv.numero, conv.nombre);
+            const adjunto = await subirImagenNuevaAcrux(img.imagen_base64, `${img.nombre}.jpg`, img.mime_type || 'image/jpeg', conversacionAcrux.id);
+            const textoDisculpa = enviadas.length === 0
+              ? `Disculpa la demora en completar tu información 🙏\n\n${construirDescripcionImagen(img)}`
+              : construirDescripcionImagen(img);
+            await enviarTextoAcruxLab(conversacionAcrux.id, textoDisculpa);
+            await new Promise(r => setTimeout(r, 1200));
+            await odooCallLocal('acrux.chat.conversation', 'send_message',
+              [[conversacionAcrux.id], { text: construirDescripcionImagen(img), from_me: true, ttype: 'image', res_model: 'ir.attachment', res_id: adjunto.id, id: -2, date_message: new Date().toISOString().replace('T', ' ').substring(0, 19), button_ids: [] }],
+              { context: { lang: 'es_GT', tz: 'America/Guatemala', is_acrux_chat_room: true } }
+            );
+            enviadas.push(img.nombre);
+            await new Promise(r => setTimeout(r, 1800));
+          } catch (e) {
+            console.error(`❌ [Charlas a medias] Error enviando "${tema}" a ${conv.numero}: ${e.message}`);
+          }
+        }
+        item.enviado = enviadas.length > 0;
+        item.imagenes_enviadas = enviadas;
+      }
+
+      resultado.push(item);
+    }
+
+    res.json({
+      ok: true,
+      modo: ejecutar ? 'EJECUTADO' : 'VISTA PREVIA — agrega ?enviar=1 para mandar lo que falta',
+      conversaciones_revisadas: convsPanel.length,
+      a_medias_encontradas: resultado.length,
+      detalle: resultado
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Diagnóstico: por qué KAI no bloqueó a un número que ya es Oportunidad de Sylvia.
+// Muestra los datos crudos del lead en Odoo para ver si el criterio de "oportunidad"
+// coincide con cómo Sylvia realmente lo marca (puede ser el campo type, o la etapa).
+// GET /api/debug/oportunidad-detalle?numero=502XXXXXXXX
+app.get('/api/debug/oportunidad-detalle', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const numero = String(req.query.numero || '').replace(/\D/g, '');
+    if (!numero) return res.json({ ok: false, error: 'Falta ?numero=' });
+    const ultimos8 = numero.slice(-8);
+
+    const leads = await odooCallLocal('crm.lead', 'search_read',
+      [['|', ['phone', 'like', ultimos8], ['mobile', 'like', ultimos8]]],
+      { fields: ['id', 'name', 'partner_name', 'phone', 'mobile', 'type', 'stage_id', 'user_id', 'active', 'probability', 'tag_ids'], limit: 10, order: 'create_date desc' }
+    ) || [];
+
+    if (!leads.length) return res.json({ ok: true, encontrados: 0, mensaje: 'No hay ningún lead en Odoo con ese número' });
+
+    res.json({
+      ok: true,
+      encontrados: leads.length,
+      leads: leads.map(l => ({
+        id: l.id,
+        nombre: l.partner_name || l.name,
+        tipo_campo: l.type,
+        detectado_como_oportunidad_por_KAI: l.type === 'opportunity' ? 'SÍ' : 'NO — solo detecta type=opportunity',
+        etapa: l.stage_id?.[1] || null,
+        vendedor: l.user_id?.[1] || 'ninguno',
+        activo: l.active,
+        probabilidad: l.probability
+      }))
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// ===== DASHBOARD DE EVALUACIÓN — distribución de leads + calidad del trato =====
+// Devuelve todo lo que necesita el panel: cuánto atendió cada vendedora, cómo repartió
+// KAI los leads, y las charlas que quedaron a medias (papás esperando respuesta).
+// GET /api/dashboard/evaluacion?dias=7
+app.get('/api/dashboard/evaluacion', authMiddleware, async (req, res) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    const dias = Math.min(parseInt(req.query.dias) || 7, 90);
+    const desde = new Date(Date.now() - dias * 24 * 3600 * 1000);
+
+    // ===== 1. DISTRIBUCIÓN DE LEADS POR VENDEDORA =====
+    // Se cuenta desde nuestras asignaciones (panel + AcruxLab), que es lo que KAI repartió.
+    const vendedoras = await UsuarioPanel.find({ tenant_id: tenantId, activo: true }).select('nombre email role');
+    const porVendedora = {};
+    vendedoras.forEach(v => {
+      porVendedora[v._id.toString()] = {
+        nombre: v.nombre, rol: v.role,
+        asignados: 0, respondidos: 0, pendientes: 0, cerrados: 0
+      };
+    });
+
+    const convs = await Conversacion.find({
+      tenant_id: tenantId,
+      ultimaActividad: { $gte: desde }
+    }).select('agente_id agente_nombre estado mensajes ultimaActividad');
+
+    let sinAsignar = 0;
+    for (const c of convs) {
+      const clave = c.agente_id?.toString();
+      const registro = clave && porVendedora[clave] ? porVendedora[clave] : null;
+      if (!registro) { if (c.estado !== 'bot') sinAsignar++; continue; }
+
+      registro.asignados++;
+      if (c.estado === 'cerrado') registro.cerrados++;
+
+      // ¿Respondió la vendedora al menos una vez?
+      const respondioAgente = (c.mensajes || []).some(m => m.de === 'agente');
+      if (respondioAgente) registro.respondidos++;
+
+      // ¿El último mensaje es del padre sin respuesta?
+      const ultimo = (c.mensajes || [])[c.mensajes.length - 1];
+      if (ultimo && ultimo.de === 'padre' && c.estado !== 'bot' && c.estado !== 'cerrado') {
+        registro.pendientes++;
+      }
+    }
+
+    // Balance del reparto: qué tan parejo quedó entre las asesoras (no admin)
+    const soloAsesoras = Object.values(porVendedora).filter(v => v.rol === 'vendedor');
+    const totalAsesoras = soloAsesoras.reduce((s, v) => s + v.asignados, 0);
+    const balance = soloAsesoras.length && totalAsesoras
+      ? soloAsesoras.map(v => ({ nombre: v.nombre, asignados: v.asignados, porcentaje: Math.round(v.asignados / totalAsesoras * 100) }))
+      : [];
+
+    // ===== 2. CHARLAS A MEDIAS =====
+    // Papás cuyo último mensaje quedó sin respuesta, o temas que quedaron pendientes.
+    const aMedias = [];
+    for (const c of convs) {
+      if (c.estado === 'cerrado' || c.estado === 'bot') continue;
+      const msgs = c.mensajes || [];
+      if (!msgs.length) continue;
+      const ultimo = msgs[msgs.length - 1];
+      if (ultimo.de === 'padre') {
+        const horas = Math.round((Date.now() - new Date(ultimo.fecha).getTime()) / 3600000);
+        aMedias.push({
+          nombre: c.nombre || c.numero,
+          asignada_a: c.agente_nombre || 'SIN ASIGNAR',
+          ultimo_mensaje: String(ultimo.texto || '').substring(0, 80),
+          horas_esperando: horas
+        });
+      }
+    }
+    aMedias.sort((a, b) => b.horas_esperando - a.horas_esperando);
+
+    res.json({
+      ok: true,
+      dias_evaluados: dias,
+      distribucion: {
+        por_vendedora: Object.values(porVendedora).filter(v => v.asignados > 0),
+        sin_asignar: sinAsignar,
+        balance_del_reparto: balance
+      },
+      charlas_a_medias: {
+        total: aMedias.length,
+        detalle: aMedias.slice(0, 30)
+      }
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Evaluación de CÓMO trató KAI a los papás — usa la IA para revisar las conversaciones
+// y detectar problemas de trato (respuestas cortantes, fuera de lugar, temas ignorados).
+// Es la base del "aprendizaje": encuentra los errores para convertirlos en reglas.
+// GET /api/dashboard/calidad-trato?dias=3
+app.get('/api/dashboard/calidad-trato', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const tenantId = req.user.tenant_id;
+    const dias = Math.min(parseInt(req.query.dias) || 3, 14);
+    const desde = new Date(Date.now() - dias * 24 * 3600 * 1000);
+
+    // Tomamos conversaciones donde KAI participó (tiene mensajes de bot)
+    const convs = await Conversacion.find({
+      tenant_id: tenantId,
+      ultimaActividad: { $gte: desde },
+      'mensajes.de': 'bot'
+    }).select('numero nombre mensajes').limit(40);
+
+    if (!convs.length) return res.json({ ok: true, total: 0, mensaje: 'No hay conversaciones de KAI en ese rango' });
+
+    // Armamos un extracto de cada conversación para que la IA la evalúe
+    const extractos = convs.map((c, i) => {
+      const dialogo = (c.mensajes || []).slice(-8).map(m => {
+        const quien = m.de === 'padre' ? 'PAPÁ' : (m.de === 'bot' ? 'KAI' : 'ASESORA');
+        return `${quien}: ${String(m.texto || '').substring(0, 200)}`;
+      }).join('\n');
+      return `--- Conversación ${i} (${c.nombre || c.numero}) ---\n${dialogo}`;
+    }).join('\n\n');
+
+    const systemPrompt = `Eres un supervisor de calidad del Colegio Capouilliez. Revisas cómo el asistente KAI trató a los padres de familia que escribieron por WhatsApp. Los padres son clientes que merecen un trato cálido, claro y respetuoso.
+
+Por cada conversación con algún problema, repórtalo. Busca específicamente:
+- Respuestas cortantes o frías cuando el padre fue amable.
+- Que KAI ignore parte de lo que el padre preguntó (responder solo una cosa cuando pidió varias).
+- Que KAI mande información que NO corresponde a lo que se pidió (ej. imagen equivocada).
+- Que KAI responda una cortesía vacía a un mensaje importante.
+- Saludos repetidos o preguntar algo que el padre ya había dicho (ej. su nombre).
+- Charlas que quedaron a medias: el padre preguntó algo y KAI no lo resolvió.
+
+Devuelve ÚNICAMENTE un arreglo JSON, sin markdown:
+[{"conversacion": 0, "problema": "descripción breve del problema", "gravedad": "alta|media|baja", "regla_sugerida": "qué regla evitaría esto a futuro"}]
+
+Si una conversación estuvo BIEN, no la incluyas. Si todas estuvieron bien, devuelve [].`;
+
+    const respuesta = await llamarClaude(systemPrompt, [{ role: 'user', content: extractos.substring(0, 14000) }], 3000);
+    if (!respuesta) return res.json({ ok: false, error: 'La IA no respondió (revisar saldo de Anthropic)' });
+
+    let hallazgos;
+    try {
+      hallazgos = JSON.parse(respuesta.replace(/```json|```/g, '').trim());
+    } catch (e) {
+      return res.json({ ok: false, error: 'La IA devolvió un formato inesperado', respuesta_cruda: respuesta.substring(0, 800) });
+    }
+
+    // Enriquecer con el nombre del papá
+    const detalle = (hallazgos || []).map(h => ({
+      papa: convs[h.conversacion]?.nombre || convs[h.conversacion]?.numero || '?',
+      problema: h.problema,
+      gravedad: h.gravedad,
+      regla_sugerida: h.regla_sugerida
+    }));
+
+    res.json({
+      ok: true,
+      conversaciones_revisadas: convs.length,
+      problemas_encontrados: detalle.length,
+      resumen: {
+        alta: detalle.filter(d => d.gravedad === 'alta').length,
+        media: detalle.filter(d => d.gravedad === 'media').length,
+        baja: detalle.filter(d => d.gravedad === 'baja').length
+      },
+      hallazgos: detalle
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
 // ===== DASHBOARD DE MONITOREO — para Sylvia =====
