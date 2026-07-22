@@ -28,7 +28,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-kai-a-medias-y-diagnostico-oportunidad'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-fix-fuente-datos-acrux'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -4790,23 +4790,46 @@ app.get('/api/dashboard/kai-a-medias', authMiddleware, async (req, res) => {
     const desde = new Date(Date.now() - dias * 24 * 3600 * 1000);
     const ejecutar = req.query.enviar === '1';
 
-    // Solo conversaciones donde KAI atiende SOLO: estado 'bot' en el panel, o modo 'bot'
-    // en AsignacionAcrux. Si ya hay vendedora, no es KAI quien debe resolver el faltante.
-    const convsPanel = await Conversacion.find({
-      tenant_id: tenantId, canal: 'whatsapp', estado: 'bot',
-      ultimaActividad: { $gte: desde }, 'mensajes.1': { $exists: true }
-    }).select('numero nombre mensajes').limit(30);
+    // ===== FUENTE DE DATOS CORREGIDA =====
+    // La conversación real vive en AcruxLab (Odoo), no en la colección local de Mongo
+    // — esa solo se usa para el canal Meta antiguo, que ya no es donde llega el tráfico.
+    // Se toman las conversaciones que KAI atiende SOLO: modo 'bot' en AsignacionAcrux
+    // (o sin registro, que también cuenta como "de KAI").
+    const asignsHumano = await AsignacionAcrux.find({ tenant_id: tenantId, modo: 'humano' }).select('contacto_id');
+    const idsHumano = new Set(asignsHumano.map(a => a.contacto_id));
 
-    if (!convsPanel.length) {
+    const desdeStr = desde.toISOString().replace('T', ' ').substring(0, 19);
+    const mensajesRecientes = await odooCallLocal('acrux.chat.message', 'search_read',
+      [[['date_message', '>=', desdeStr]]],
+      { fields: ['id', 'text', 'date_message', 'contact_id', 'from_me'], limit: 3000, order: 'date_message asc' }
+    ) || [];
+
+    const porContacto = {};
+    mensajesRecientes.forEach(m => {
+      if (!m.contact_id) return;
+      const cid = m.contact_id[0];
+      if (idsHumano.has(cid)) return; // esa es de una vendedora, no de KAI
+      if (!porContacto[cid]) porContacto[cid] = { id: cid, nombre: m.contact_id[1], mensajes: [] };
+      porContacto[cid].mensajes.push(m);
+    });
+
+    // Solo las que tienen conversación real (al menos 2 mensajes)
+    const candidatas = Object.values(porContacto).filter(c => c.mensajes.length >= 2);
+    if (!candidatas.length) {
       return res.json({ ok: true, total: 0, mensaje: 'No hay conversaciones de KAI (solo) en ese rango' });
     }
 
-    const extractos = convsPanel.map((c, i) => {
-      const dialogo = (c.mensajes || []).slice(-10).map(m => {
-        const quien = m.de === 'padre' ? 'PAPÁ' : 'KAI';
-        return `${quien}: ${String(m.texto || '').substring(0, 200)}`;
+    // Números reales, para poder contactar después
+    const idsConv = candidatas.map(c => c.id);
+    const convsOdoo = await odooCallLocal('acrux.chat.conversation', 'read', [idsConv, ['id', 'number', 'name']]).catch(() => []) || [];
+    const numeroPorId = {}; convsOdoo.forEach(c => { numeroPorId[c.id] = c.number; });
+
+    const extractos = candidatas.slice(0, 30).map((c, i) => {
+      const dialogo = c.mensajes.slice(-10).map(m => {
+        const quien = m.from_me ? 'KAI' : 'PAPÁ';
+        return `${quien}: ${String(m.text || '').substring(0, 200)}`;
       }).join('\n');
-      return `--- Conversación ${i} (${c.nombre || c.numero}) ---\n${dialogo}`;
+      return `--- Conversación ${i} (${c.nombre}) ---\n${dialogo}`;
     }).join('\n\n');
 
     const systemPrompt = `Eres un supervisor de admisiones del Colegio Capouilliez. Revisas conversaciones que el asistente KAI atendió SOLO (sin ninguna asesora), buscando charlas que quedaron A MEDIAS: el papá preguntó algo específico (cuotas, requisitos, horarios, proceso de admisión, edades, ubicación, papelería) y nunca se le respondió, o solo se le respondió parte de lo que pidió.
@@ -4833,12 +4856,14 @@ Los valores válidos para "temas_faltantes" son EXACTAMENTE estos (en minúscula
 
     const resultado = [];
     for (const h of (hallazgos || [])) {
-      const conv = convsPanel[h.conversacion];
+      const conv = candidatas[h.conversacion];
       if (!conv) continue;
+      const numero = numeroPorId[conv.id];
+      if (!numero) continue;
 
       const item = {
-        nombre: conv.nombre || conv.numero,
-        numero: conv.numero,
+        nombre: conv.nombre || numero,
+        numero,
         que_falta: h.que_pidio_y_no_recibio,
         temas: h.temas_faltantes || [],
         nivel: h.nivel_mencionado || null,
@@ -4854,21 +4879,20 @@ Los valores válidos para "temas_faltantes" son EXACTAMENTE estos (en minúscula
           const img = await ImagenMarketing.findOne(filtro).sort({ prioridad: -1, creado: -1 });
           if (!img) continue;
           try {
-            const conversacionAcrux = await obtenerOCrearConversacionAcrux(conv.numero, conv.nombre);
-            const adjunto = await subirImagenNuevaAcrux(img.imagen_base64, `${img.nombre}.jpg`, img.mime_type || 'image/jpeg', conversacionAcrux.id);
             const textoDisculpa = enviadas.length === 0
               ? `Disculpa la demora en completar tu información 🙏\n\n${construirDescripcionImagen(img)}`
               : construirDescripcionImagen(img);
-            await enviarTextoAcruxLab(conversacionAcrux.id, textoDisculpa);
+            await enviarTextoAcruxLab(conv.id, textoDisculpa);
             await new Promise(r => setTimeout(r, 1200));
+            const adjunto = await subirImagenNuevaAcrux(img.imagen_base64, `${img.nombre}.jpg`, img.mime_type || 'image/jpeg', conv.id);
             await odooCallLocal('acrux.chat.conversation', 'send_message',
-              [[conversacionAcrux.id], { text: construirDescripcionImagen(img), from_me: true, ttype: 'image', res_model: 'ir.attachment', res_id: adjunto.id, id: -2, date_message: new Date().toISOString().replace('T', ' ').substring(0, 19), button_ids: [] }],
+              [[conv.id], { text: construirDescripcionImagen(img), from_me: true, ttype: 'image', res_model: 'ir.attachment', res_id: adjunto.id, id: -2, date_message: new Date().toISOString().replace('T', ' ').substring(0, 19), button_ids: [] }],
               { context: { lang: 'es_GT', tz: 'America/Guatemala', is_acrux_chat_room: true } }
             );
             enviadas.push(img.nombre);
             await new Promise(r => setTimeout(r, 1800));
           } catch (e) {
-            console.error(`❌ [Charlas a medias] Error enviando "${tema}" a ${conv.numero}: ${e.message}`);
+            console.error(`❌ [Charlas a medias] Error enviando "${tema}" a ${numero}: ${e.message}`);
           }
         }
         item.enviado = enviadas.length > 0;
@@ -4881,7 +4905,7 @@ Los valores válidos para "temas_faltantes" son EXACTAMENTE estos (en minúscula
     res.json({
       ok: true,
       modo: ejecutar ? 'EJECUTADO' : 'VISTA PREVIA — agrega ?enviar=1 para mandar lo que falta',
-      conversaciones_revisadas: convsPanel.length,
+      conversaciones_revisadas: candidatas.length,
       a_medias_encontradas: resultado.length,
       detalle: resultado
     });
@@ -4934,7 +4958,9 @@ app.get('/api/dashboard/evaluacion', authMiddleware, async (req, res) => {
     const desde = new Date(Date.now() - dias * 24 * 3600 * 1000);
 
     // ===== 1. DISTRIBUCIÓN DE LEADS POR VENDEDORA =====
-    // Se cuenta desde nuestras asignaciones (panel + AcruxLab), que es lo que KAI repartió.
+    // Se combinan las DOS fuentes reales: la colección local (canal Meta) y
+    // AsignacionAcrux (canal AcruxLab, que es donde vive casi todo el tráfico actual).
+    // Contar solo una de las dos daba un panorama incompleto y engañoso.
     const vendedoras = await UsuarioPanel.find({ tenant_id: tenantId, activo: true }).select('nombre email role');
     const porVendedora = {};
     vendedoras.forEach(v => {
@@ -4958,15 +4984,53 @@ app.get('/api/dashboard/evaluacion', authMiddleware, async (req, res) => {
       registro.asignados++;
       if (c.estado === 'cerrado') registro.cerrados++;
 
-      // ¿Respondió la vendedora al menos una vez?
       const respondioAgente = (c.mensajes || []).some(m => m.de === 'agente');
       if (respondioAgente) registro.respondidos++;
 
-      // ¿El último mensaje es del padre sin respuesta?
       const ultimo = (c.mensajes || [])[c.mensajes.length - 1];
       if (ultimo && ultimo.de === 'padre' && c.estado !== 'bot' && c.estado !== 'cerrado') {
         registro.pendientes++;
       }
+    }
+
+    // ===== Sumar AcruxLab =====
+    const asignsAcrux = await AsignacionAcrux.find({
+      tenant_id: tenantId,
+      $or: [{ fecha_modo_humano: { $gte: desde } }, { creado: { $gte: desde } }]
+    }).select('agente_id agente_nombre modo contacto_id');
+
+    // Para saber quién respondió y quién quedó pendiente, se necesita leer los mensajes
+    // reales de cada conversación de AcruxLab.
+    const idsAcrux = asignsAcrux.filter(a => a.agente_id).map(a => a.contacto_id);
+    let mensajesAcrux = [];
+    if (idsAcrux.length) {
+      mensajesAcrux = await odooCallLocal('acrux.chat.message', 'search_read',
+        [[['contact_id', 'in', idsAcrux], ['date_message', '>=', desde.toISOString().replace('T', ' ').substring(0, 19)]]],
+        { fields: ['contact_id', 'from_me', 'date_message'], limit: 5000 }
+      ) || [];
+    }
+    const mensajesPorContacto = {};
+    mensajesAcrux.forEach(m => {
+      const cid = m.contact_id?.[0];
+      if (!cid) return;
+      if (!mensajesPorContacto[cid]) mensajesPorContacto[cid] = [];
+      mensajesPorContacto[cid].push(m);
+    });
+
+    for (const a of asignsAcrux) {
+      const clave = a.agente_id?.toString();
+      const registro = clave && porVendedora[clave] ? porVendedora[clave] : null;
+      if (!registro) { if (a.modo !== 'bot') sinAsignar++; continue; }
+
+      registro.asignados++;
+      const msgs = (mensajesPorContacto[a.contacto_id] || []).sort((x, y) => x.date_message.localeCompare(y.date_message));
+      if (!msgs.length) continue;
+
+      const respondioAgente = msgs.some(m => m.from_me);
+      if (respondioAgente) registro.respondidos++;
+
+      const ultimo = msgs[msgs.length - 1];
+      if (ultimo && !ultimo.from_me && a.modo !== 'bot') registro.pendientes++;
     }
 
     // Balance del reparto: qué tan parejo quedó entre las asesoras (no admin)
@@ -4977,7 +5041,7 @@ app.get('/api/dashboard/evaluacion', authMiddleware, async (req, res) => {
       : [];
 
     // ===== 2. CHARLAS A MEDIAS =====
-    // Papás cuyo último mensaje quedó sin respuesta, o temas que quedaron pendientes.
+    // Igual que arriba: se combinan las dos fuentes reales.
     const aMedias = [];
     for (const c of convs) {
       if (c.estado === 'cerrado' || c.estado === 'bot') continue;
@@ -4990,6 +5054,22 @@ app.get('/api/dashboard/evaluacion', authMiddleware, async (req, res) => {
           nombre: c.nombre || c.numero,
           asignada_a: c.agente_nombre || 'SIN ASIGNAR',
           ultimo_mensaje: String(ultimo.texto || '').substring(0, 80),
+          horas_esperando: horas
+        });
+      }
+    }
+    // AcruxLab
+    for (const a of asignsAcrux) {
+      if (a.modo === 'bot') continue; // esas las cubre el reporte de "KAI a medias"
+      const msgs = (mensajesPorContacto[a.contacto_id] || []).sort((x, y) => x.date_message.localeCompare(y.date_message));
+      if (!msgs.length) continue;
+      const ultimo = msgs[msgs.length - 1];
+      if (!ultimo.from_me) {
+        const horas = Math.round((Date.now() - new Date(ultimo.date_message + 'Z').getTime()) / 3600000);
+        aMedias.push({
+          nombre: a.agente_nombre ? `Conversación #${a.contacto_id}` : `#${a.contacto_id}`,
+          asignada_a: a.agente_nombre || 'SIN ASIGNAR',
+          ultimo_mensaje: '(ver en ChatRoom — AcruxLab)',
           horas_esperando: horas
         });
       }
