@@ -28,7 +28,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-corregir-etiquetas-filtrado'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-estado-leads-filtrado-por-numero'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -6823,11 +6823,14 @@ app.get('/api/debug/corregir-etiquetas-contactados', authMiddleware, async (req,
 app.get('/api/debug/estado-leads-odoo', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
-    const contactos = await Contacto.find({
-      tenant_id: req.user.tenant_id,
-      canal_origen: 'formulario_admisiones',
-      odoo_lead_id: { $ne: null }
-    }).limit(100);
+    // Filtro opcional: si viene ?numeros=502...,502... solo se revisan/tocan esos
+    // teléfonos exactos — para no repetir el caso de tocar de golpe todo el histórico.
+    const filtro = { tenant_id: req.user.tenant_id, canal_origen: 'formulario_admisiones', odoo_lead_id: { $ne: null } };
+    if (req.query.numeros) {
+      const listaNumeros = String(req.query.numeros).split(',').map(n => n.replace(/\D/g, '').slice(-8)).filter(Boolean);
+      filtro.numero = { $in: listaNumeros.map(n => new RegExp(n + '$')) };
+    }
+    const contactos = await Contacto.find(filtro).limit(100);
 
     if (!contactos.length) return res.json({ ok: true, total: 0, leads: [] });
 
