@@ -28,7 +28,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-duplicados-contra-todo-odoo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-duplicados-via-contacto-mongo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -4738,15 +4738,23 @@ app.get('/api/motor/escanear', authMiddleware, async (req, res) => {
 
     // Segunda pasada: el duplicado real puede estar FUERA de este lote — por ejemplo,
     // si el lead bueno ya tiene vendedor asignado, Odoo ya no lo muestra como "sin
-    // asignar" y por eso nunca se compara contra él en el paso anterior. Aquí sí se
-    // busca contra TODO Odoo (activos y archivados), para no dejarlo pasar como si
-    // fuera el único registro de esa persona.
+    // asignar" y por eso nunca se compara contra él en el paso anterior. Aquí se usa
+    // nuestro propio registro "Contacto" (Mongo) en vez de buscar directo en Odoo —
+    // es la MISMA fuente que ya usa el motor cada 10 minutos para detectar este mismo
+    // duplicado con éxito (se ve en su nota del chatter: "ya se le escribió, lead
+    // #40298"), así que es más confiable que repetir una búsqueda distinta en Odoo.
     for (const item of pendientesConDuplicado) {
       if (item.duplicadoDe) continue; // ya se detectó dentro del lote, no hace falta más
-      if (!item.tel && !item.correo) continue;
+      if (!item.tel) continue;
       try {
-        const encontrado = await buscarLeadExistente({ telefono: item.tel, correo: item.correo });
-        if (encontrado && encontrado.id !== item.l.id) item.duplicadoDe = encontrado.id;
+        const ultimos8 = String(item.tel).replace(/\D/g, '').slice(-8);
+        if (ultimos8.length !== 8) continue;
+        const contacto = await Contacto.findOne({
+          tenant_id: req.user.tenant_id,
+          numero: new RegExp(ultimos8 + '$'),
+          odoo_lead_id: { $ne: null }
+        });
+        if (contacto?.odoo_lead_id && contacto.odoo_lead_id !== item.l.id) item.duplicadoDe = contacto.odoo_lead_id;
       } catch (e) { /* si falla para uno, no bloquea a los demás */ }
     }
 
