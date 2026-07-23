@@ -28,7 +28,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-estado-leads-filtrado-por-numero'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-buscar-vendedor-en-acrux-tambien'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -6868,31 +6868,52 @@ app.get('/api/debug/estado-leads-odoo', authMiddleware, async (req, res) => {
       const l = porId[c.odoo_lead_id];
       if (!l) { resultado.push({ lead: c.odoo_lead_id, nombre: c.nombre, error: 'no encontrado en Odoo' }); continue; }
 
-      // A quién lo tenemos asignado nosotros (nuestra conversación manda)
+      // A quién lo tenemos asignado nosotros. OJO: hay que revisar las DOS fuentes reales:
+      // la colección local "Conversacion" (canal Meta antiguo) Y "AsignacionAcrux" (canal
+      // AcruxLab, que es donde vive prácticamente todo el tráfico real hoy). Antes solo se
+      // miraba la primera, así que estos leads siempre salían "ninguno" aunque sí tuvieran
+      // vendedora asignada — solo que en el otro canal.
       const conv = await Conversacion.findOne({ tenant_id: req.user.tenant_id, numero: c.numero }).sort({ ultimaActividad: -1 });
       let vendedorKai = conv?.agente_id ? await UsuarioPanel.findById(conv.agente_id) : null;
+      let asignAcrux = null;
+
+      if (!vendedorKai) {
+        try {
+          const convsAcrux = await odooCallLocal('acrux.chat.conversation', 'search_read',
+            [[['number', '=', c.numero]]], { fields: ['id'], limit: 1 });
+          if (convsAcrux && convsAcrux.length) {
+            asignAcrux = await AsignacionAcrux.findOne({ tenant_id: req.user.tenant_id, contacto_id: convsAcrux[0].id });
+            if (asignAcrux?.agente_id) vendedorKai = await UsuarioPanel.findById(asignAcrux.agente_id);
+          }
+        } catch (e) { /* si Odoo falla aquí, seguimos sin bloquear el resto */ }
+      }
 
       // Si se pidió forzar un vendedor concreto, ese manda sobre lo que hubiera.
       let asignadoAhoraEnKai = false;
-      if (debeAsignar && vendedorForzado && conv) {
-        if (String(conv.agente_id || '') !== String(vendedorForzado._id)) {
+      if (debeAsignar && vendedorForzado && (conv || asignAcrux)) {
+        if (conv && String(conv.agente_id || '') !== String(vendedorForzado._id)) {
           conv.agente_id = vendedorForzado._id;
           conv.agente_nombre = vendedorForzado.nombre;
           await conv.save();
           asignadoAhoraEnKai = true;
         }
+        if (asignAcrux && String(asignAcrux.agente_id || '') !== String(vendedorForzado._id)) {
+          asignAcrux.agente_id = vendedorForzado._id;
+          asignAcrux.agente_nombre = vendedorForzado.nombre;
+          await asignAcrux.save();
+          asignadoAhoraEnKai = true;
+        }
         vendedorKai = vendedorForzado;
       }
 
-      // Si la conversación quedó SIN vendedor (pasa con las que se crearon antes de que
-      // el sistema asignara desde el primer contacto), le damos uno ahora por reparto
-      // 1 a 1 y lo guardamos, para que Odoo y el panel queden diciendo lo mismo.
-      if (debeAsignar && !vendedorKai && conv) {
+      // Si quedó SIN vendedor en ninguna de las dos fuentes (pasa con las que se crearon
+      // antes de que el sistema asignara desde el primer contacto), le damos uno ahora por
+      // reparto 1 a 1 y lo guardamos donde corresponda, para que Odoo y el panel coincidan.
+      if (debeAsignar && !vendedorKai && (conv || asignAcrux)) {
         const nuevo = await asignarAgenteLibre(req.user.tenant_id);
         if (nuevo) {
-          conv.agente_id = nuevo._id;
-          conv.agente_nombre = nuevo.nombre;
-          await conv.save();
+          if (conv) { conv.agente_id = nuevo._id; conv.agente_nombre = nuevo.nombre; await conv.save(); }
+          if (asignAcrux) { asignAcrux.agente_id = nuevo._id; asignAcrux.agente_nombre = nuevo.nombre; await asignAcrux.save(); }
           vendedorKai = nuevo;
           asignadoAhoraEnKai = true;
         }
