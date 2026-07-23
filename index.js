@@ -28,7 +28,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-ocultar-duplicados-de-pendientes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-duplicados-contra-todo-odoo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -4733,8 +4733,22 @@ app.get('/api/motor/escanear', authMiddleware, async (req, res) => {
       else if (correo && vistoPorCorreo[correo]) duplicadoDe = vistoPorCorreo[correo];
       if (telLimpio && !vistorTelefono[telLimpio]) vistorTelefono[telLimpio] = l.id;
       if (correo && !vistoPorCorreo[correo]) vistoPorCorreo[correo] = l.id;
-      return { l, duplicadoDe };
+      return { l, tel, correo, duplicadoDe };
     });
+
+    // Segunda pasada: el duplicado real puede estar FUERA de este lote — por ejemplo,
+    // si el lead bueno ya tiene vendedor asignado, Odoo ya no lo muestra como "sin
+    // asignar" y por eso nunca se compara contra él en el paso anterior. Aquí sí se
+    // busca contra TODO Odoo (activos y archivados), para no dejarlo pasar como si
+    // fuera el único registro de esa persona.
+    for (const item of pendientesConDuplicado) {
+      if (item.duplicadoDe) continue; // ya se detectó dentro del lote, no hace falta más
+      if (!item.tel && !item.correo) continue;
+      try {
+        const encontrado = await buscarLeadExistente({ telefono: item.tel, correo: item.correo });
+        if (encontrado && encontrado.id !== item.l.id) item.duplicadoDe = encontrado.id;
+      } catch (e) { /* si falla para uno, no bloquea a los demás */ }
+    }
 
     // Para cada pendiente CON teléfono, revisar si KAI ya le tiene vendedor asignado
     // internamente aunque Odoo diga "sin asignar" (esta vista filtra por user_id=false,
@@ -7504,6 +7518,49 @@ app.get('/api/debug/revertir-perdidos-por-error', authMiddleware, async (req, re
 // eso ningún otro comando los alcanza. Deja nota explicando que es el mismo contacto de
 // otro lead ya trabajado. Sin ?aplicar=1 solo muestra qué haría.
 // GET /api/debug/sincronizar-lead-duplicado?lead=40332&vendedor=vanessa.carreto@capouilliez.edu.gt&lead_principal=40298
+// Busca un lead por correo y muestra su estado + chatter completo — para rastrear
+// EXACTAMENTE qué proceso hizo un cambio y cuándo, en vez de suponerlo.
+// GET /api/debug/rastrear-lead-por-correo?correo=xxx@gmail.com
+app.get('/api/debug/rastrear-lead-por-correo', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const correo = String(req.query.correo || '').trim();
+    if (!correo) return res.json({ ok: false, error: 'Falta ?correo=' });
+
+    const leads = await odooCallLocal('crm.lead', 'search_read',
+      [[['email_from', 'ilike', correo]]],
+      { fields: ['id', 'name', 'partner_name', 'tag_ids', 'user_id', 'create_date', 'active'], limit: 10 }
+    ) || [];
+    if (!leads.length) return res.json({ ok: true, encontrados: 0, mensaje: 'No hay ningún lead con ese correo' });
+
+    const idsTags = [...new Set(leads.flatMap(l => l.tag_ids || []))];
+    let nombresTag = {};
+    if (idsTags.length) {
+      const tags = await odooCallLocal('crm.tag', 'read', [idsTags, ['id', 'name']]).catch(() => []);
+      (tags || []).forEach(t => { nombresTag[t.id] = t.name; });
+    }
+
+    const resultado = [];
+    for (const l of leads) {
+      const mensajes = await odooCallLocal('mail.message', 'search_read',
+        [[['model', '=', 'crm.lead'], ['res_id', '=', l.id]]],
+        { fields: ['body', 'date'], limit: 20, order: 'date asc' }
+      ) || [];
+      resultado.push({
+        lead: l.id,
+        nombre: l.partner_name || l.name,
+        etiquetas: (l.tag_ids || []).map(t => nombresTag[t] || t),
+        vendedor: l.user_id?.[1] || 'SIN ASIGNAR',
+        activo: l.active,
+        creado: l.create_date?.substring(0, 16),
+        chatter: mensajes.map(m => ({ fecha: m.date, texto: (m.body || '').replace(/<[^>]+>/g, ' ').trim().substring(0, 300) }))
+      });
+    }
+
+    res.json({ ok: true, encontrados: resultado.length, leads: resultado });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/debug/sincronizar-lead-duplicado', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
