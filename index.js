@@ -28,7 +28,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-duplicados-via-contacto-mongo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-asignar-vendedor-al-reactivar'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1001,11 +1001,12 @@ async function procesarNuevosMensajesAcruxLab() {
         const convsOdoo = await odooCallLocal('acrux.chat.conversation', 'read', [idsContactos, ['id', 'agent_id', 'status', 'name']]) || [];
         convsOdoo.forEach(c => { if (c.name) odooPorContactoNombre[c.id] = c.name; });
 
-        // Las conversaciones en estado 'new' NO aceptan escritura. Hay que activarlas
-        // antes de intentar responder, o KAI falla en silencio y la familia se queda
-        // esperando. Odoo exige que tengan agente para poder activarlas, así que se les
-        // pone nuestro usuario de servicio (no una vendedora, para no quitarle chats).
-        const porActivar = convsOdoo.filter(c => c.status === 'new' && (!c.agent_id || c.agent_id[0] === uidServicio));
+        // Las conversaciones en estado 'new' o 'done' NO aceptan escritura. Hay que
+        // activarlas antes de intentar responder, o KAI falla en silencio y la familia
+        // se queda esperando. Odoo exige que tengan agente para poder activarlas, así
+        // que se les pone nuestro usuario de servicio (no una vendedora, para no
+        // quitarle chats).
+        const porActivar = convsOdoo.filter(c => (c.status === 'new' || c.status === 'done') && (!c.agent_id || c.agent_id[0] === uidServicio));
         for (const c of porActivar) {
           try {
             const cambios = { status: 'current' };
@@ -1265,12 +1266,17 @@ async function obtenerOCrearConversacionAcrux(numero, nombre) {
     // escribir con normalidad.
     const agenteEsHumano = !!(c.agent_id && c.agent_id[0] !== uidServicioActual);
 
-    if (c.status === 'new') {
+    // Se reactivan las conversaciones en 'new' (recién creadas, nunca se activaron) y
+    // también en 'done' (el ChatRoom las da por terminadas — puede pasar por inactividad
+    // larga, como en un caso real donde la última actividad fue de hace casi un año).
+    // En ambos casos Odoo exige tener un agente para poder ponerlas en 'current', que es
+    // el único estado donde se puede escribir.
+    if ((c.status === 'new' || c.status === 'done') && !agenteEsHumano) {
       try {
         const cambios = { status: 'current' };
         if (!c.agent_id) cambios.agent_id = uidServicioActual;
         await odooCallLocal('acrux.chat.conversation', 'write', [[c.id], cambios]);
-        console.log(`🔧 [AcruxLab] Conversación #${c.id} pasada de 'new' a 'current' (agente de servicio asignado)`);
+        console.log(`🔧 [AcruxLab] Conversación #${c.id} pasada de '${c.status}' a 'current' (agente de servicio asignado)`);
       } catch (e) {
         console.error(`⚠️ [AcruxLab] No se pudo activar la conversación #${c.id}: ${e.message}`);
       }
@@ -1354,6 +1360,21 @@ async function buscarLeadExistente({ telefono, correo } = {}) {
 // crea otro lead ni se reactiva nada: el registro repetido se queda como perdido, tal
 // como lo maneja el equipo. Lo único que hacemos es dejar anotado por dónde volvió,
 // para que el historial del contacto quede completo.
+// Si un contacto que ya existía (por ejemplo, de años anteriores) vuelve a escribir y
+// nunca tuvo vendedor asignado en Odoo, esto es simplemente el flujo normal: no hace
+// falta crear nada nuevo, solo se le asigna uno por el reparto 1 a 1, igual que a
+// cualquier candidato nuevo. Si ya tenía vendedor, no se toca.
+async function asignarVendedorSiFalta(tenant, existente) {
+  if (existente.user_id) return; // ya tenía, no se toca
+  try {
+    const agenteAsignado = await asignarAgenteLibre(tenant._id);
+    if (agenteAsignado?.odoo_user_id) {
+      await odooCallLocal('crm.lead', 'write', [[existente.id], { user_id: agenteAsignado.odoo_user_id }]).catch(() => {});
+      console.log(`👤 [Reactivación] Lead #${existente.id} no tenía vendedor — asignado a ${agenteAsignado.nombre}`);
+    }
+  } catch (e) { /* si falla, no bloquea el resto del flujo */ }
+}
+
 async function anotarOrigenEnLead(leadId, estabaArchivado, textoOrigen) {
   await odooCallLocal('crm.lead', 'message_post', [[leadId]], {
     body: textoOrigen +
@@ -1985,6 +2006,13 @@ async function crearCandidatoEnOdoo(tenant, contacto, numero, resultadoNivel) {
       await contacto.save();
       await anotarOrigenEnLead(existente.id, existente.active === false, `💬 Volvió a escribir por <b>WhatsApp</b> (${numero}).`);
       console.log(`🔗 Lead existente en Odoo vinculado — #${existente.id} para ${numero}${existente.active === false ? ' (estaba archivado, se reactivó)' : ''}`);
+
+      // Si es un contacto de vuelta (ej. de años anteriores) que ya existe pero nunca
+      // tuvo vendedor, no hace falta crear nada nuevo — este es el flujo normal de
+      // reactivación. Solo se revisa si le falta vendedor y, si es así, se le asigna
+      // uno por el reparto 1 a 1, igual que a cualquier candidato nuevo.
+      await asignarVendedorSiFalta(tenant, existente);
+
       return existente.id;
     }
   } catch (e) {
@@ -2167,6 +2195,7 @@ async function procesarMensajeOmnichannel(numero, nombre, mensaje, canal, tenant
         contacto.odoo_lead_id = yaExiste.id;
         await contacto.save();
         await anotarOrigenEnLead(yaExiste.id, yaExiste.active === false, `📲 Volvió a escribir por <b>${canal}</b>.`);
+        await asignarVendedorSiFalta(tenant, yaExiste);
         console.log(`🔗 [${canal}] Lead existente vinculado — #${yaExiste.id}${yaExiste.active === false ? ' (estaba archivado, se reactivó)' : ''}`);
         return;
       }
@@ -4454,6 +4483,7 @@ app.post('/api/lead-ads', async (req, res) => {
         contacto.odoo_lead_id = yaExiste.id;
         await contacto.save();
         await anotarOrigenEnLead(yaExiste.id, yaExiste.active === false, `📋 Volvió a escribir por <b>Lead Ads de Facebook</b>.`);
+        await asignarVendedorSiFalta(tenant, yaExiste);
         console.log(`🔗 [Lead Ads] Lead existente vinculado — #${yaExiste.id}${yaExiste.active === false ? ' (reactivado)' : ''}`);
       } else {
         const tagId = await getOdooTagId('Canal — Lead Ads Facebook');
@@ -4503,6 +4533,7 @@ app.post('/api/lead-web', async (req, res) => {
         contacto.odoo_lead_id = yaExiste.id;
         await contacto.save();
         await anotarOrigenEnLead(yaExiste.id, yaExiste.active === false, `📋 Volvió a escribir por el <b>formulario web</b>.${mensaje ? '<br>Mensaje: ' + mensaje : ''}`);
+        await asignarVendedorSiFalta(tenant, yaExiste);
         console.log(`🔗 [Formulario web] Lead existente vinculado — #${yaExiste.id}${yaExiste.active === false ? ' (reactivado)' : ''}`);
       } else {
         const tagId = await getOdooTagId('Canal — Formulario Web');
@@ -7143,6 +7174,7 @@ app.post('/api/motor/procesar-social-calientes', authMiddleware, async (req, res
           }
           await anotarOrigenEnLead(leadExistente.id, leadExistente.active === false,
             `📲 Volvió a escribir por <b>${item.canal === 'instagram' ? 'Instagram' : 'Messenger'}</b>: "${(item.mensaje || '').substring(0, 200)}"<br>KAI lo clasificó como CALIENTE.`);
+          await asignarVendedorSiFalta(tenant, leadExistente);
 
           if (item.id) {
             await Conversacion.findOneAndUpdate(
@@ -7773,8 +7805,8 @@ app.get('/api/debug/pendientes-y-por-que', authMiddleware, async (req, res) => {
         }
       } else if (a?.modo === 'humano') {
         motivo = `Asignado a ${a.agente_nombre || 'una vendedora'} — le toca a ella responder`;
-      } else if (o.status === 'new') {
-        motivo = '⚠️ La conversación está en estado "new" — en ese estado Odoo NO permite escribir. KAI la activa en la próxima corrida (45 seg)';
+      } else if (o.status === 'new' || o.status === 'done') {
+        motivo = `⚠️ La conversación está en estado "${o.status}" — en ese estado Odoo NO permite escribir. KAI la activa en la próxima corrida (45 seg)`;
       } else {
         motivo = 'Sin bloqueo aparente — KAI debería responder en la próxima corrida (45 seg)';
       }
