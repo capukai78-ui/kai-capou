@@ -28,7 +28,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-buscar-vendedor-en-acrux-tambien'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-columna-vendedor-en-pendientes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -4736,6 +4736,25 @@ app.get('/api/motor/escanear', authMiddleware, async (req, res) => {
       return { l, duplicadoDe };
     });
 
+    // Para cada pendiente CON teléfono, revisar si KAI ya le tiene vendedor asignado
+    // internamente aunque Odoo diga "sin asignar" (esta vista filtra por user_id=false,
+    // así que si KAI ya asignó pero no se sincronizó a Odoo, aquí se vería vacío y
+    // parecería que nadie lo tiene — justo la sorpresa que no queremos repetir).
+    const vendedorEnKaiPorLead = {};
+    for (const { l } of pendientesConDuplicado) {
+      const tel = (l.mobile && String(l.mobile) !== 'false') ? l.mobile : ((l.phone && String(l.phone) !== 'false') ? l.phone : null);
+      if (!tel) continue;
+      const telLimpio = String(tel).replace(/\D/g, '');
+      try {
+        const convsAcrux = await odooCallLocal('acrux.chat.conversation', 'search_read',
+          [[['number', 'like', telLimpio.slice(-8)]]], { fields: ['id'], limit: 1 });
+        if (convsAcrux && convsAcrux.length) {
+          const asignAcrux = await AsignacionAcrux.findOne({ tenant_id: req.user.tenant_id, contacto_id: convsAcrux[0].id });
+          if (asignAcrux?.agente_nombre) vendedorEnKaiPorLead[l.id] = asignAcrux.agente_nombre;
+        }
+      } catch (e) { /* si falla para uno, no bloquea a los demás */ }
+    }
+
     res.json({
       ok: true,
       resumen: {
@@ -4749,6 +4768,7 @@ app.get('/api/motor/escanear', authMiddleware, async (req, res) => {
         id: l.id,
         nombre: l.name,
         contacto: l.partner_name || l.contact_name || null,
+        vendedor_en_kai: vendedorEnKaiPorLead[l.id] || null,
         telefono: (l.mobile && String(l.mobile) !== 'false') ? l.mobile : ((l.phone && String(l.phone) !== 'false') ? l.phone : null),
         email: l.email_from || null,
         nivel: l.x_studio_comentarios || null,
@@ -6894,12 +6914,14 @@ app.get('/api/debug/estado-leads-odoo', authMiddleware, async (req, res) => {
         if (conv && String(conv.agente_id || '') !== String(vendedorForzado._id)) {
           conv.agente_id = vendedorForzado._id;
           conv.agente_nombre = vendedorForzado.nombre;
+          conv.ultimaActividad = new Date();
           await conv.save();
           asignadoAhoraEnKai = true;
         }
         if (asignAcrux && String(asignAcrux.agente_id || '') !== String(vendedorForzado._id)) {
           asignAcrux.agente_id = vendedorForzado._id;
           asignAcrux.agente_nombre = vendedorForzado.nombre;
+          asignAcrux.fecha_asignado = new Date();
           await asignAcrux.save();
           asignadoAhoraEnKai = true;
         }
@@ -6912,8 +6934,16 @@ app.get('/api/debug/estado-leads-odoo', authMiddleware, async (req, res) => {
       if (debeAsignar && !vendedorKai && (conv || asignAcrux)) {
         const nuevo = await asignarAgenteLibre(req.user.tenant_id);
         if (nuevo) {
-          if (conv) { conv.agente_id = nuevo._id; conv.agente_nombre = nuevo.nombre; await conv.save(); }
-          if (asignAcrux) { asignAcrux.agente_id = nuevo._id; asignAcrux.agente_nombre = nuevo.nombre; await asignAcrux.save(); }
+          // OJO: hay que actualizar la fecha (fecha_asignado / ultimaActividad) al MOMENTO
+          // de asignar, no solo el agente. Si solo se cambia el agente en un registro que
+          // YA existía, "fecha_asignado" se queda con su valor viejo (el default de Mongoose
+          // solo aplica al CREAR el documento, no al editarlo) — y entonces el conteo de
+          // "asignados hoy" nunca ve esta asignación nueva. Ese hueco fue lo que hizo que
+          // los 7 leads de esta corrida cayeran todos en la misma persona: el reparto seguía
+          // pensando que ella tenía cero, porque cada asignación anterior quedaba invisible
+          // para el conteo del día.
+          if (conv) { conv.agente_id = nuevo._id; conv.agente_nombre = nuevo.nombre; conv.ultimaActividad = new Date(); await conv.save(); }
+          if (asignAcrux) { asignAcrux.agente_id = nuevo._id; asignAcrux.agente_nombre = nuevo.nombre; asignAcrux.fecha_asignado = new Date(); await asignAcrux.save(); }
           vendedorKai = nuevo;
           asignadoAhoraEnKai = true;
         }
