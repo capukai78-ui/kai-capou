@@ -2506,6 +2506,7 @@ async function escanearLeadsNuevos(){
           <thead><tr style="border-bottom:1px solid var(--border)">
             <th style="text-align:left;padding:8px 12px;color:var(--text3);font-weight:500">Padre/Madre</th>
             <th style="text-align:left;padding:8px 12px;color:var(--text3);font-weight:500">Teléfono / Correo</th>
+            <th style="text-align:left;padding:8px 12px;color:var(--text3);font-weight:500">Vendedor (en KAI)</th>
             <th style="text-align:left;padding:8px 12px;color:var(--text3);font-weight:500">Nivel / Zona</th>
             <th style="text-align:left;padding:8px 12px;color:var(--text3);font-weight:500">Origen</th>
             <th style="text-align:left;padding:8px 12px;color:var(--text3);font-weight:500">Llegó</th>
@@ -2521,6 +2522,11 @@ async function escanearLeadsNuevos(){
               <td style="padding:10px 12px;font-size:11px">
                 <div style="font-weight:500;color:var(--text2)">${l.telefono}</div>
                 ${l.email?`<div style="color:var(--text3);margin-top:2px">📧 ${l.email}</div>`:''}
+              </td>
+              <td style="padding:10px 12px;font-size:11px">
+                ${l.vendedor_en_kai
+                  ? `<div style="color:var(--red);font-weight:600">⚠️ ${l.vendedor_en_kai}</div><div style="font-size:9px;color:var(--text3)">ya asignado en KAI, falta sincronizar a Odoo</div>`
+                  : '<div style="color:var(--text3)">Sin asignar</div>'}
               </td>
               <td style="padding:10px 12px;font-size:11px">
                 ${l.nivel?`<div style="color:var(--g)">${l.nivel}</div>`:''}
