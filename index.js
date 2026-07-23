@@ -28,7 +28,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-buscar-telefono-con-formato'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-historial-completo-diagnostico'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -6045,6 +6045,29 @@ app.get('/api/acrux/plantillas', authMiddleware, async (req, res) => {
 
 // Devuelve una conversación de AcruxLab a modo "bot" — para que KAI retome cuando
 // el agente humano ya terminó de ayudar.
+// Marca un chat como "en seguimiento humano" SIN necesidad de escribirle primero —
+// para casos como agendar una visita por teléfono, donde la vendedora ya está
+// trabajando al papá pero nunca escribió en el ChatRoom (así que el semáforo normal
+// nunca lo habría detectado, y KAI seguiría atendiéndolo como si nadie lo tuviera).
+app.post('/api/acrux/tomar-seguimiento', authMiddleware, async (req, res) => {
+  try {
+    const { contacto_id } = req.body;
+    if (!contacto_id) return res.status(400).json({ ok: false, error: 'contacto_id es requerido' });
+    await AsignacionAcrux.findOneAndUpdate(
+      { tenant_id: req.user.tenant_id, contacto_id },
+      {
+        modo: 'humano',
+        fecha_modo_humano: new Date(),
+        agente_id: req.user.id,
+        agente_nombre: req.user.nombre,
+        sin_auto_recuperacion: true // que no se le devuelva solo a KAI por inactividad
+      },
+      { upsert: true, setDefaultsOnInsert: true }
+    );
+    res.json({ ok: true, mensaje: `Marcado como en seguimiento de ${req.user.nombre} — KAI ya no le escribirá` });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.post('/api/acrux/devolver-a-kai', authMiddleware, async (req, res) => {
   try {
     const { contacto_id } = req.body;
@@ -7940,6 +7963,67 @@ app.get('/api/motor/corregir-envio', authMiddleware, async (req, res) => {
 // ¿Por qué KAI no está atendiendo a este número? Recorre TODOS los filtros que aplica
 // el motor y dice exactamente cuál lo está frenando.
 // GET /api/debug/por-que-no-atiende?numero=50244109412
+// Diagnóstico completo de un número: TODAS las conversaciones de AcruxLab que existan
+// para ese teléfono (puede haber más de una), TODOS sus mensajes (no solo los últimos),
+// y las actividades/citas del lead en Odoo — para confirmar si hubo interacción humana
+// que no se vio en el diagnóstico rápido (ej. una cita de Open House agendada aparte).
+// GET /api/debug/historial-completo?numero=502XXXXXXXX
+app.get('/api/debug/historial-completo', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const numero = String(req.query.numero || '').replace(/\D/g, '');
+    if (!numero) return res.json({ ok: false, error: 'Falta ?numero=' });
+    const ultimos8 = numero.slice(-8);
+
+    // TODAS las conversaciones de AcruxLab con este número (puede haber más de una)
+    const conversaciones = await odooCallLocal('acrux.chat.conversation', 'search_read',
+      [[['number', 'like', ultimos8]]],
+      { fields: ['id', 'name', 'number', 'status', 'agent_id', 'create_date'], limit: 10 }
+    ) || [];
+
+    const detalle = [];
+    for (const conv of conversaciones) {
+      const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
+        [[['contact_id', '=', conv.id]]],
+        { fields: ['id', 'text', 'from_me', 'date_message'], limit: 200, order: 'date_message asc' }
+      ) || [];
+      detalle.push({
+        conversacion: conv.id, status: conv.status, agente: conv.agent_id?.[1] || null,
+        creada: conv.create_date, total_mensajes: mensajes.length,
+        mensajes: mensajes.map(m => ({ de: m.from_me ? 'colegio' : 'padre', texto: (m.text || '').substring(0, 200), fecha: m.date_message }))
+      });
+    }
+
+    // Leads de Odoo con este teléfono, y sus actividades/citas agendadas
+    const condicionesTel = condicionesTelefono(numero);
+    let leads = [];
+    if (condicionesTel.length) {
+      const dominioTel = [];
+      for (let i = 0; i < condicionesTel.length - 1; i++) dominioTel.push('|');
+      condicionesTel.forEach(c => dominioTel.push(c));
+      leads = await odooCallLocal('crm.lead', 'search_read',
+        [dominioTel],
+        { fields: ['id', 'name', 'partner_name', 'user_id', 'type', 'active'], limit: 10, context: { active_test: false } }
+      ) || [];
+    }
+
+    const leadsConActividades = [];
+    for (const l of leads) {
+      const actividades = await odooCallLocal('mail.activity', 'search_read',
+        [[['res_model', '=', 'crm.lead'], ['res_id', '=', l.id]]],
+        { fields: ['id', 'summary', 'date_deadline', 'user_id', 'activity_type_id'], limit: 20 }
+      ).catch(() => []);
+      leadsConActividades.push({
+        lead: l.id, nombre: l.partner_name || l.name, vendedor: l.user_id?.[1] || 'SIN ASIGNAR',
+        tipo: l.type, activo: l.active,
+        citas_actividades: actividades.map(a => ({ resumen: a.summary, fecha_limite: a.date_deadline, asignado_a: a.user_id?.[1], tipo: a.activity_type_id?.[1] }))
+      });
+    }
+
+    res.json({ ok: true, conversaciones_acrux: detalle, leads: leadsConActividades });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/debug/por-que-no-atiende', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
