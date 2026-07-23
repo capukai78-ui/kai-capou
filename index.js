@@ -28,7 +28,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-reparto-sin-filtro-disponible'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-corregir-etiquetas-en-lote'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -6761,6 +6761,60 @@ app.post('/api/motor/migrar-a-acrux', authMiddleware, async (req, res) => {
 // Estado REAL en Odoo de los leads que KAI contactó: si tienen vendedor asignado allá,
 // qué etiquetas traen, y a quién los tenemos asignados nosotros. Con ?asignar=1 escribe
 // en Odoo el vendedor que ya tenemos registrado (requiere odoo_user_id configurado).
+// Corrige la etiqueta "KAI — Contactado" en lote: busca contactos del Formulario de
+// Admisiones que YA fueron contactados de verdad (Contacto.ultimo_contacto tiene fecha)
+// pero cuyo lead en Odoo se quedó con una etiqueta vieja (ej. "Exploratorio") porque el
+// primer intento de escritura falló en silencio. Sin ?aplicar=1 solo lista, no toca nada.
+// GET /api/debug/corregir-etiquetas-contactados
+app.get('/api/debug/corregir-etiquetas-contactados', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const aplicar = req.query.aplicar === '1';
+    const contactos = await Contacto.find({
+      tenant_id: req.user.tenant_id,
+      odoo_lead_id: { $ne: null },
+      ultimo_contacto: { $ne: null } // solo los que de verdad ya recibieron el mensaje
+    }).select('numero nombre odoo_lead_id ultimo_contacto').limit(200);
+
+    if (!contactos.length) return res.json({ ok: true, total: 0, mensaje: 'No hay contactos ya contactados para revisar' });
+
+    const ids = contactos.map(c => c.odoo_lead_id);
+    const leads = await odooCallLocal('crm.lead', 'read', [ids, ['id', 'name', 'partner_name', 'tag_ids']]) || [];
+    const tagContactadoId = await getOdooTagId(TAG_KAI_CONTACTADO);
+
+    const detalle = [];
+    let corregidos = 0;
+    for (const c of contactos) {
+      const l = leads.find(x => x.id === c.odoo_lead_id);
+      if (!l) continue;
+      const yaTieneEtiqueta = (l.tag_ids || []).includes(tagContactadoId);
+      const item = {
+        lead: l.id, nombre: l.partner_name || l.name || c.nombre,
+        numero: c.numero, ya_tenia_etiqueta: yaTieneEtiqueta, accion: null
+      };
+      if (!yaTieneEtiqueta) {
+        if (aplicar) {
+          await odooCallLocal('crm.lead', 'write', [[l.id], { tag_ids: [[4, tagContactadoId]] }]).catch(e => { item.error = e.message; });
+          item.accion = item.error ? 'falló' : 'etiquetado';
+          if (!item.error) corregidos++;
+        } else {
+          item.accion = 'se etiquetaría';
+        }
+        detalle.push(item);
+      }
+    }
+
+    res.json({
+      ok: true,
+      modo: aplicar ? 'EJECUTADO' : 'VISTA PREVIA — agrega ?aplicar=1 para corregir de verdad',
+      total_revisados: contactos.length,
+      con_etiqueta_faltante: detalle.length,
+      corregidos,
+      detalle
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/debug/estado-leads-odoo', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
