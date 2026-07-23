@@ -1346,7 +1346,9 @@ async function abrirChat(id){
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           ${imgs.map(img=>`
             <div onclick="seleccionarImagenChat('${img._id}')" style="cursor:pointer;text-align:center;width:70px">
-              <div style="width:70px;height:60px;background:var(--bg2);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:20px;border:1px solid var(--border)">🖼️</div>
+              <div style="width:70px;height:60px;background:var(--bg2);border-radius:8px;overflow:hidden;display:flex;align-items:center;justify-content:center;border:1px solid var(--border)">
+                ${img.imagen_base64 ? `<img src="data:${img.mime_type||'image/jpeg'};base64,${img.imagen_base64}" style="width:100%;height:100%;object-fit:cover" onerror="this.parentElement.innerHTML='🖼️'">` : '🖼️'}
+              </div>
               <div style="font-size:9px;color:var(--text3);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${img.nombre}</div>
             </div>`).join('')}
         </div>
@@ -1409,11 +1411,16 @@ function colorEtiqueta(texto){
   return _paletaEtiquetas[Math.abs(hash) % _paletaEtiquetas.length];
 }
 
-// Tiempo relativo estilo "hace 8 minutos" a partir de un datetime de Odoo (UTC, "YYYY-MM-DD HH:MM:SS")
+// Tiempo relativo estilo "hace 8 minutos" — acepta tanto fechas de Odoo
+// ("YYYY-MM-DD HH:MM:SS", sin zona horaria) como fechas de Mongo (ISO completo,
+// ya con "T" y "Z"). Antes se le agregaba una "Z" a la fuerza sin revisar si ya
+// traía una, y esa "Z" duplicada invalidaba la fecha — de ahí salía "hace NaN día".
 function tiempoRelativo(fechaOdoo){
   if(!fechaOdoo) return '';
-  const fecha = new Date(fechaOdoo.replace(' ','T')+'Z');
+  const yaEsISO = /[Zz]$|[+-]\d{2}:?\d{2}$/.test(String(fechaOdoo).trim());
+  const fecha = yaEsISO ? new Date(fechaOdoo) : new Date(String(fechaOdoo).replace(' ','T')+'Z');
   const diffMs = Date.now() - fecha.getTime();
+  if(isNaN(diffMs)) return ''; // por si algún formato inesperado se cuela, no mostrar basura
   const min = Math.floor(diffMs/60000);
   if(min < 1) return 'ahora';
   if(min < 60) return `hace ${min} minuto${min>1?'s':''}`;
@@ -1768,7 +1775,9 @@ async function cargarInfoContactoAcrux(numero){
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           ${imgs.map(img=>`
             <div onclick="enviarImagenSugeridaAcrux('${img._id}')" title="Enviar" style="cursor:pointer;text-align:center;width:70px">
-              <div style="width:70px;height:60px;background:var(--bg2);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:20px;border:1px solid var(--border)">🖼️</div>
+              <div style="width:70px;height:60px;background:var(--bg2);border-radius:8px;overflow:hidden;display:flex;align-items:center;justify-content:center;border:1px solid var(--border)">
+                ${img.imagen_base64 ? `<img src="data:${img.mime_type||'image/jpeg'};base64,${img.imagen_base64}" style="width:100%;height:100%;object-fit:cover" onerror="this.parentElement.innerHTML='🖼️'">` : '🖼️'}
+              </div>
               <div style="font-size:9px;color:var(--text3);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${img.nombre}</div>
             </div>`).join('')}
         </div>
