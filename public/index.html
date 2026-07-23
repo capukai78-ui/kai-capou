@@ -446,6 +446,7 @@ tr:hover td{background:var(--g4)}
                 </div>
                 <div style="display:flex;align-items:center;gap:8px">
                   <span id="acrux-chat-modo" style="font-size:10px;font-weight:700;padding:3px 10px;border-radius:10px"></span>
+                  <button id="acrux-btn-tomar" onclick="tomarSeguimientoAcrux()" title="Para cuando ya lo estás trabajando por otro medio (ej. una llamada) y KAI no debe seguir escribiéndole aunque nadie le haya respondido en este chat" style="display:none;background:var(--bg3);border:1px solid var(--border);color:var(--text2);border-radius:8px;padding:6px 12px;font-size:11px;cursor:pointer">👤 Ya lo estoy trabajando</button>
                   <button id="acrux-btn-devolver" onclick="devolverAKaiAcrux()" style="display:none;background:var(--bg3);border:1px solid var(--border);color:var(--text2);border-radius:8px;padding:6px 12px;font-size:11px;cursor:pointer">✓ Devolver a KAI</button>
                 </div>
               </div>
@@ -1823,14 +1824,17 @@ async function abrirAcruxChat(contactoId){
 
       const modoEl = document.getElementById('acrux-chat-modo');
       const btnDevolver = document.getElementById('acrux-btn-devolver');
+      const btnTomar = document.getElementById('acrux-btn-tomar');
       if(hilo.modo === 'humano'){
         modoEl.textContent = '👤 ' + (hilo.agente_asignado || 'Humano');
         modoEl.style.background = 'var(--g3)'; modoEl.style.color = 'var(--g)';
         btnDevolver.style.display = 'inline-block';
+        btnTomar.style.display = 'none';
       } else {
         modoEl.textContent = '🤖 KAI atendiendo';
         modoEl.style.background = 'var(--acrux2)'; modoEl.style.color = 'var(--acrux)';
         btnDevolver.style.display = 'none';
+        btnTomar.style.display = 'inline-block';
       }
 
       const resumenEl = document.getElementById('acrux-resumen-kai');
@@ -1926,6 +1930,23 @@ async function devolverAKaiAcrux(){
     }).then(r=>r.json());
     if(r.ok){ showToast('Devuelto a KAI ✓','ok'); abrirAcruxChat(_acruxContactoActivo); }
     else { showToast(r.error||'No se pudo devolver','error'); }
+  } catch(e){ showToast('Error de conexión','error'); }
+}
+
+// Marca el chat como "en seguimiento humano" sin necesidad de escribirle primero —
+// para cuando ya se está trabajando al papá por otro medio (ej. una llamada para
+// agendar una visita) y KAI no tiene forma de saberlo por sí solo.
+async function tomarSeguimientoAcrux(){
+  if(!_acruxContactoActivo) return;
+  if(!confirm('¿Marcar este chat como que ya lo estás trabajando tú? KAI dejará de escribirle, aunque no le hayas respondido en este chat todavía.')) return;
+  try {
+    const r = await fetch(API+'/api/acrux/tomar-seguimiento',{
+      method:'POST',
+      headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'},
+      body: JSON.stringify({ contacto_id: _acruxContactoActivo })
+    }).then(r=>r.json());
+    if(r.ok){ showToast(r.mensaje||'Marcado ✓','ok'); abrirAcruxChat(_acruxContactoActivo); }
+    else { showToast(r.error||'No se pudo marcar','error'); }
   } catch(e){ showToast('Error de conexión','error'); }
 }
 
