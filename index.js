@@ -28,7 +28,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-columna-vendedor-en-pendientes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-sincronizar-lead-duplicado'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7494,6 +7494,46 @@ app.get('/api/debug/revertir-perdidos-por-error', authMiddleware, async (req, re
 // real usa .catch(()=>{}) ahí, así que si algo falla, queda en silencio). Esto lo
 // muestra tal cual, para saber por qué algunos leads se quedan sin la etiqueta.
 // GET /api/debug/probar-etiqueta?lead=40310
+// Etiqueta y asigna vendedor a un lead por ID directo — sirve para duplicados sueltos
+// (mismo papá, otro registro de Odoo) que no están vinculados a nuestro Contacto y por
+// eso ningún otro comando los alcanza. Deja nota explicando que es el mismo contacto de
+// otro lead ya trabajado. Sin ?aplicar=1 solo muestra qué haría.
+// GET /api/debug/sincronizar-lead-duplicado?lead=40332&vendedor=vanessa.carreto@capouilliez.edu.gt&lead_principal=40298
+app.get('/api/debug/sincronizar-lead-duplicado', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const leadId = parseInt(req.query.lead);
+    const leadPrincipal = req.query.lead_principal ? parseInt(req.query.lead_principal) : null;
+    const vendedorEmail = req.query.vendedor;
+    if (!leadId || !vendedorEmail) return res.json({ ok: false, error: 'Faltan ?lead= y ?vendedor=' });
+
+    const vendedor = await UsuarioPanel.findOne({ tenant_id: req.user.tenant_id, email: new RegExp('^' + vendedorEmail + '$', 'i') });
+    if (!vendedor) return res.json({ ok: false, error: `No existe un usuario con el correo "${vendedorEmail}"` });
+    if (!vendedor.odoo_user_id) return res.json({ ok: false, error: `A ${vendedor.nombre} le falta el ID de Odoo en Usuarios y Sedes` });
+
+    const antes = await odooCallLocal('crm.lead', 'read', [[leadId], ['id', 'name', 'partner_name', 'user_id', 'tag_ids']]);
+    if (!antes || !antes.length) return res.json({ ok: false, error: `No existe el lead #${leadId}` });
+
+    if (req.query.aplicar !== '1') {
+      return res.json({
+        ok: true, modo: 'VISTA PREVIA — agrega &aplicar=1 para escribir de verdad',
+        lead: leadId, nombre: antes[0].partner_name || antes[0].name,
+        vendedor_actual: antes[0].user_id?.[1] || 'SIN ASIGNAR',
+        se_asignaria_a: vendedor.nombre
+      });
+    }
+
+    const tagContactadoId = await getOdooTagId(TAG_KAI_CONTACTADO);
+    await odooCallLocal('crm.lead', 'write', [[leadId], { user_id: vendedor.odoo_user_id, tag_ids: [[4, tagContactadoId]] }]);
+    await odooCallLocal('crm.lead', 'message_post', [[leadId]], {
+      body: `👤 Asignado a ${vendedor.nombre} — este registro es un duplicado del mismo contacto` +
+        (leadPrincipal ? ` que el lead #${leadPrincipal}, donde ya se le está atendiendo.` : '.')
+    }).catch(() => {});
+
+    res.json({ ok: true, modo: 'EJECUTADO', lead: leadId, asignado_a: vendedor.nombre });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/debug/probar-etiqueta', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
