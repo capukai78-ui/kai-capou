@@ -28,7 +28,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-ultimas-asignaciones'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-probar-etiqueta'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -565,7 +565,7 @@ async function asignarAgenteLibre(tenantId) {
       // Ojo: hay que excluir los que NO tienen vendedor. Se crean así al sincronizar el
       // semáforo de AcruxLab, y al agruparlos daban un _id nulo que reventaba el conteo
       // (y con él, TODA la asignación de vendedores del sistema).
-      { $match: { tenant_id: tenantId, agente_id: { $ne: null }, creado: { $gte: inicioDeHoy } } },
+      { $match: { tenant_id: tenantId, agente_id: { $ne: null }, fecha_asignado: { $gte: inicioDeHoy } } },
       { $group: { _id: '$agente_id', total: { $sum: 1 } } }
     ])
   ]);
@@ -5019,8 +5019,8 @@ app.get('/api/dashboard/evaluacion', authMiddleware, async (req, res) => {
     // ===== Sumar AcruxLab =====
     const asignsAcrux = await AsignacionAcrux.find({
       tenant_id: tenantId,
-      $or: [{ fecha_modo_humano: { $gte: desde } }, { creado: { $gte: desde } }]
-    }).select('agente_id agente_nombre modo contacto_id');
+      $or: [{ fecha_modo_humano: { $gte: desde } }, { fecha_asignado: { $gte: desde } }]
+    }).select('agente_id agente_nombre modo contacto_id fecha_asignado');
 
     // Para saber quién respondió y quién quedó pendiente, se necesita leer los mensajes
     // reales de cada conversación de AcruxLab.
@@ -7370,6 +7370,54 @@ app.get('/api/debug/revertir-perdidos-por-error', authMiddleware, async (req, re
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
+// Prueba poner la etiqueta "KAI — Contactado" a un lead SIN ocultar el error (el código
+// real usa .catch(()=>{}) ahí, así que si algo falla, queda en silencio). Esto lo
+// muestra tal cual, para saber por qué algunos leads se quedan sin la etiqueta.
+// GET /api/debug/probar-etiqueta?lead=40310
+app.get('/api/debug/probar-etiqueta', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const leadId = parseInt(req.query.lead);
+    if (!leadId) return res.json({ ok: false, error: 'Falta ?lead=' });
+
+    const pasos = [];
+
+    // 1) Resolver el ID de la etiqueta
+    let tagId;
+    try {
+      const existentes = await odooCallLocal('crm.tag', 'search_read', [[['name', '=', 'KAI — Contactado']]], { fields: ['id'], limit: 5 });
+      pasos.push({ paso: '1. Buscar la etiqueta', encontradas: existentes });
+      if (existentes && existentes.length) {
+        tagId = existentes[0].id;
+      } else {
+        tagId = await odooCallLocal('crm.tag', 'create', [{ name: 'KAI — Contactado' }]);
+        pasos.push({ paso: '1b. Se creó porque no existía', id_creado: tagId });
+      }
+    } catch (e) {
+      pasos.push({ paso: '1. Buscar/crear la etiqueta', error: e.message });
+      return res.json({ ok: false, pasos });
+    }
+
+    // 2) Ver el estado actual del lead (qué etiquetas ya tiene)
+    const antes = await odooCallLocal('crm.lead', 'read', [[leadId], ['id', 'name', 'tag_ids']]).catch(e => ({ error: e.message }));
+    pasos.push({ paso: '2. Etiquetas actuales del lead', resultado: antes });
+
+    // 3) Intentar escribir la etiqueta, SIN atrapar el error
+    try {
+      await odooCallLocal('crm.lead', 'write', [[leadId], { tag_ids: [[4, tagId]] }]);
+      pasos.push({ paso: '3. Escribir la etiqueta', resultado: '✅ sin error' });
+    } catch (e) {
+      pasos.push({ paso: '3. Escribir la etiqueta', error: e.message });
+    }
+
+    // 4) Releer para confirmar si de verdad se guardó
+    const despues = await odooCallLocal('crm.lead', 'read', [[leadId], ['id', 'tag_ids']]).catch(e => ({ error: e.message }));
+    pasos.push({ paso: '4. Releer después de escribir', resultado: despues });
+
+    res.json({ ok: true, lead: leadId, tag_id_usado: tagId, pasos });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 // Muestra las últimas asignaciones SIN filtrar por fecha (a diferencia de
 // asignacion-de-hoy). Sirve para descartar un problema de zona horaria en el cálculo
 // de "hoy": el servidor puede estar en UTC, 6 horas adelante de Guatemala.
@@ -7383,13 +7431,13 @@ app.get('/api/debug/ultimas-asignaciones', authMiddleware, async (req, res) => {
     const convsMeta = await Conversacion.find({ tenant_id: tenantId, agente_id: { $ne: null } })
       .select('agente_nombre nombre numero ultimaActividad').sort({ ultimaActividad: -1 }).limit(n);
     const asignsAcrux = await AsignacionAcrux.find({ tenant_id: tenantId, agente_id: { $ne: null } })
-      .select('agente_nombre contacto_id creado').sort({ creado: -1 }).limit(n);
+      .select('agente_nombre contacto_id fecha_asignado').sort({ fecha_asignado: -1 }).limit(n);
 
     res.json({
       ok: true,
       hora_actual_servidor: new Date().toISOString(),
       meta: convsMeta.map(c => ({ agente: c.agente_nombre, quien: c.nombre || c.numero, hora: c.ultimaActividad })),
-      acrux: asignsAcrux.map(a => ({ agente: a.agente_nombre, conversacion: a.contacto_id, hora: a.creado }))
+      acrux: asignsAcrux.map(a => ({ agente: a.agente_nombre, conversacion: a.contacto_id, hora: a.fecha_asignado }))
     });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
@@ -7413,8 +7461,8 @@ app.get('/api/debug/asignacion-de-hoy', authMiddleware, async (req, res) => {
     }).select('agente_id agente_nombre nombre numero ultimaActividad').sort({ ultimaActividad: 1 });
 
     const asignsAcrux = await AsignacionAcrux.find({
-      tenant_id: tenantId, agente_id: { $ne: null }, creado: { $gte: inicioDeHoy }
-    }).select('agente_id agente_nombre contacto_id creado').sort({ creado: 1 });
+      tenant_id: tenantId, agente_id: { $ne: null }, fecha_asignado: { $gte: inicioDeHoy }
+    }).select('agente_id agente_nombre contacto_id fecha_asignado').sort({ fecha_asignado: 1 });
 
     const linea = [];
     convsMeta.forEach(c => linea.push({
@@ -7423,7 +7471,7 @@ app.get('/api/debug/asignacion-de-hoy', authMiddleware, async (req, res) => {
       nombre: c.nombre || c.numero, canal: 'meta'
     }));
     asignsAcrux.forEach(a => linea.push({
-      hora: a.creado, agente_id: a.agente_id?.toString(),
+      hora: a.fecha_asignado, agente_id: a.agente_id?.toString(),
       agente: a.agente_nombre || nombrePorId[a.agente_id?.toString()] || '?',
       nombre: `Conversación AcruxLab #${a.contacto_id}`, canal: 'acrux'
     }));
