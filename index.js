@@ -28,7 +28,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-sincronizar-lead-duplicado'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-ocultar-duplicados-de-pendientes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -4764,7 +4764,12 @@ app.get('/api/motor/escanear', authMiddleware, async (req, res) => {
   
         sin_whatsapp_valido: sinWA.length
       },
-      pendientes: pendientesConDuplicado.map(({ l, duplicadoDe }) => ({
+      // Los duplicados NO se muestran en "Pendientes" — no se les toca nada en Odoo (ni
+      // etiqueta ni vendedor, eso lo decide el equipo a mano), simplemente se sacan de
+      // esta lista para no generar trabajo repetido ni ruido visual. El que ya existía
+      // (lead_principal) sigue su curso normal; el duplicado queda intacto en Odoo, solo
+      // deja de aparecer aquí.
+      pendientes: pendientesConDuplicado.filter(({ duplicadoDe }) => !duplicadoDe).map(({ l, duplicadoDe }) => ({
         id: l.id,
         nombre: l.name,
         contacto: l.partner_name || l.contact_name || null,
