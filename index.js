@@ -28,7 +28,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-asignar-vendedor-al-reactivar'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-leer-lead-crudo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1196,6 +1196,18 @@ async function procesarNuevosMensajesAcruxLab() {
 // Corre cada 45 segundos — suficientemente rápido para no hacer esperar a la familia,
 // sin saturar la API de Odoo con consultas constantes.
 setInterval(procesarNuevosMensajesAcruxLab, 45000);
+
+// Fuerza AHORA MISMO el motor que revisa mensajes sin responder en AcruxLab, en vez de
+// esperar los 45 segundos del ciclo automático. Es el que responde conversaciones YA
+// abiertas (como cuando un papá contesta algo y KAI todavía no le ha respondido) —
+// distinto del motor proactivo, que solo contacta leads nuevos sin conversación previa.
+app.post('/api/debug/forzar-respuesta-acrux', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    await procesarNuevosMensajesAcruxLab();
+    res.json({ ok: true, mensaje: 'Motor de respuestas ejecutado' });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
 setTimeout(procesarNuevosMensajesAcruxLab, 8000); // primera corrida poco después de iniciar el servidor
 
 // ===== MOTOR PROACTIVO — KAI contacta primero a los leads sin asignar =====
@@ -8086,6 +8098,21 @@ app.get('/api/debug/comparar-conversacion-acrux', authMiddleware, async (req, re
 // son de la misma persona. Incluye los archivados/perdidos, porque los repetidos suelen
 // marcarse así y hay que poder verlos igual.
 // GET /api/debug/leads-duplicados?dias=60
+// Muestra los campos crudos de uno o varios leads por ID — para comparar formatos
+// exactos (ej. el teléfono guardado con o sin guiones) entre registros que deberían
+// haberse detectado como duplicados y no se detectaron.
+// GET /api/debug/leer-lead-crudo?ids=40127,40128,40277
+app.get('/api/debug/leer-lead-crudo', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const ids = String(req.query.ids || '').split(',').map(n => parseInt(n)).filter(Boolean);
+    if (!ids.length) return res.json({ ok: false, error: 'Falta ?ids=40127,40128,...' });
+
+    const leads = await odooCallLocal('crm.lead', 'read', [ids, ['id', 'name', 'partner_name', 'phone', 'mobile', 'email_from', 'type', 'active', 'create_date', 'user_id']]) || [];
+    res.json({ ok: true, leads });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/debug/leads-duplicados', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
