@@ -28,7 +28,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-historial-completo-diagnostico'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-buscar-por-nombre'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7968,6 +7968,24 @@ app.get('/api/motor/corregir-envio', authMiddleware, async (req, res) => {
 // y las actividades/citas del lead en Odoo — para confirmar si hubo interacción humana
 // que no se vio en el diagnóstico rápido (ej. una cita de Open House agendada aparte).
 // GET /api/debug/historial-completo?numero=502XXXXXXXX
+// Busca leads por nombre parcial (no por teléfono) — útil cuando el número puede estar
+// mal escrito o guardado en un formato que no calza con las búsquedas normales.
+// GET /api/debug/buscar-lead-por-nombre?nombre=Nery Vasquez
+app.get('/api/debug/buscar-lead-por-nombre', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const nombre = String(req.query.nombre || '').trim();
+    if (!nombre) return res.json({ ok: false, error: 'Falta ?nombre=' });
+
+    const leads = await odooCallLocal('crm.lead', 'search_read',
+      [['|', ['partner_name', 'ilike', nombre], ['name', 'ilike', nombre]]],
+      { fields: ['id', 'name', 'partner_name', 'phone', 'mobile', 'email_from', 'user_id', 'type', 'active', 'create_date', 'stage_id'], limit: 20, order: 'create_date desc', context: { active_test: false } }
+    ) || [];
+
+    res.json({ ok: true, encontrados: leads.length, leads });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/debug/historial-completo', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
