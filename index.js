@@ -28,7 +28,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-leer-lead-crudo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-buscar-telefono-con-formato'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1323,6 +1323,34 @@ async function obtenerOCrearConversacionAcrux(numero, nombre) {
   return { id: nuevoId, creada: true, agente: agenteHumano ? info.agent_id[1] : null, status: info.status, valid_number: info.valid_number };
 }
 
+// Genera las condiciones de búsqueda de teléfono cubriendo los formatos reales que se
+// han visto en Odoo: KAI siempre escribe limpio ("50242140856", sin espacios ni +), pero
+// leads creados por otros medios (entrada manual, importaciones) pueden traer espacios
+// o el signo "+" (ej. "+502 4214 0856"). El operador 'like' de Odoo hace coincidencia de
+// texto literal, así que un espacio de más rompe la búsqueda por completo — eso fue lo
+// que pasó con Nery Mejía: su Oportunidad estaba como "+502 4214 0856" y la búsqueda con
+// el número limpio "42140856" nunca la encontró, así que KAI creó un lead de más.
+function condicionesTelefono(telefono, campos = ['phone', 'mobile']) {
+  const soloDigitos = String(telefono || '').replace(/\D/g, '');
+  const ultimos8 = soloDigitos.slice(-8);
+  if (ultimos8.length !== 8) return [];
+
+  // Variantes conocidas: pegado, con espacio a la mitad, con guion a la mitad
+  const variantes = [
+    ultimos8,
+    ultimos8.slice(0, 4) + ' ' + ultimos8.slice(4),
+    ultimos8.slice(0, 4) + '-' + ultimos8.slice(4),
+  ];
+
+  const condiciones = [];
+  for (const campo of campos) {
+    for (const variante of variantes) {
+      condiciones.push([campo, 'like', variante]);
+    }
+  }
+  return condiciones;
+}
+
 // ===== REGLA: ANTES DE CREAR UN LEAD EN ODOO, VERIFICAR QUE NO EXISTA =====
 // Busca por teléfono (últimos 8 dígitos, para que dé igual el formato) y por correo.
 // Devuelve el lead existente o null. Usarla SIEMPRE antes de crear, para no ensuciar
@@ -1330,11 +1358,7 @@ async function obtenerOCrearConversacionAcrux(numero, nombre) {
 async function buscarLeadExistente({ telefono, correo } = {}) {
   const condiciones = [];
   if (telefono) {
-    const ultimos8 = String(telefono).replace(/\D/g, '').slice(-8);
-    if (ultimos8.length === 8) {
-      condiciones.push(['phone', 'like', ultimos8]);
-      condiciones.push(['mobile', 'like', ultimos8]);
-    }
+    condiciones.push(...condicionesTelefono(telefono));
   }
   if (correo && String(correo).includes('@')) condiciones.push(['email_from', 'ilike', String(correo).trim()]);
   if (!condiciones.length) return null;
@@ -5041,10 +5065,14 @@ app.get('/api/debug/oportunidad-detalle', authMiddleware, async (req, res) => {
   try {
     const numero = String(req.query.numero || '').replace(/\D/g, '');
     if (!numero) return res.json({ ok: false, error: 'Falta ?numero=' });
-    const ultimos8 = numero.slice(-8);
+
+    const condiciones = condicionesTelefono(numero);
+    const dominioTel = [];
+    for (let i = 0; i < condiciones.length - 1; i++) dominioTel.push('|');
+    condiciones.forEach(c => dominioTel.push(c));
 
     const leads = await odooCallLocal('crm.lead', 'search_read',
-      [['|', ['phone', 'like', ultimos8], ['mobile', 'like', ultimos8]]],
+      [dominioTel],
       { fields: ['id', 'name', 'partner_name', 'phone', 'mobile', 'type', 'stage_id', 'user_id', 'active', 'probability', 'tag_ids'], limit: 10, order: 'create_date desc' }
     ) || [];
 
@@ -7153,9 +7181,12 @@ app.post('/api/motor/procesar-social-calientes', authMiddleware, async (req, res
         // a quién se le crearía lead nuevo y a quién no.
         let yaExiste = null;
         if (tel) {
-          const ultimos8 = tel.slice(-8);
+          const condicionesTel = condicionesTelefono(tel);
+          const dominioTel = [['active', '=', true]];
+          for (let i = 0; i < condicionesTel.length - 1; i++) dominioTel.push('|');
+          condicionesTel.forEach(c => dominioTel.push(c));
           const encontrados = await odooCallLocal('crm.lead', 'search_read',
-            [[['active', '=', true], '|', ['phone', 'like', ultimos8], ['mobile', 'like', ultimos8]]],
+            [dominioTel],
             { fields: ['id', 'partner_name', 'name', 'user_id', 'create_date'], limit: 3, order: 'create_date desc' }
           ) || [];
           if (encontrados.length) yaExiste = encontrados[0];
