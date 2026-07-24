@@ -28,7 +28,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-niveles-multiples-recordados'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-niveles-multiples-whatsapp-tambien'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -2625,6 +2625,15 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
   const nivelMencionadoAhora = detectarNivelEnTexto(mensajeUsuario);
   if (nivelMencionadoAhora) ctxSesion.nivelSesion = nivelMencionadoAhora; // lo dicho en ESTE mensaje manda sobre lo anterior
 
+  // Si el mensaje menciona VARIOS niveles a la vez (ej. "Preprimaria y Primaria", papá
+  // con hijos en dos grados distintos), se guardan TODOS — para que un mensaje genérico
+  // posterior ("cuotas, requisitos y horarios") mande la información de ambos, no solo
+  // del nivel único de la sesión. Mismo tratamiento que en AcruxLab.
+  const nivelesExplicitosAhora = detectarNivelesExplicitosEnMensaje(mensajeUsuario);
+  if (nivelesExplicitosAhora.length > 1) {
+    ctxSesion.nivelesMultiples = [...new Set([...(ctxSesion.nivelesMultiples || []), ...nivelesExplicitosAhora])];
+  }
+
   // Si había una PREGUNTA PENDIENTE (ej: "¿cuotas de qué grado?") y este mensaje trae un
   // grado, completar esa pregunta pendiente tiene prioridad sobre cualquier otra cosa —
   // aunque el mensaje también toque, por casualidad, la palabra clave de un tema distinto
@@ -2657,19 +2666,40 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
 
   if (matchImagen && !matchImagen.ambigua && matchImagen.regla) {
     ctxSesion.temaPendienteCategoria = null; // ya se resolvió, no queda nada pendiente
-    const regla = matchImagen.regla;
-    const filtroImg = { tenant_id: tenant._id, activo: true, categoria: regla.categoria };
-    if (regla.nivel_educativo) filtroImg.nivel_educativo = { $in: [regla.nivel_educativo, 'Todos'] };
-    if (regla.nombre_contiene) filtroImg.nombre = new RegExp(regla.nombre_contiene, 'i');
-    const imagenDirecta = await ImagenMarketing.findOne(filtroImg).sort({ prioridad: -1, creado: -1 });
 
-    if (imagenDirecta) {
-      await enviarImagenDesdeDB(imagenDirecta, numeroOrigen, construirDescripcionImagen(imagenDirecta));
-      console.log(`🖼️ Imagen directa enviada (sin texto): "${imagenDirecta.nombre}" → ${numeroOrigen}`);
+    // El papá puede pedir VARIAS cosas en un solo mensaje ("cuotas, requisitos, horarios
+    // y el proceso de admisión"), o necesitar el mismo tema para VARIOS niveles (hijos en
+    // grados distintos). Antes solo se mandaba la primera coincidencia y el resto se
+    // perdía. Mismo tratamiento que ya funciona en AcruxLab.
+    const nivelParaBuscar = nivelMencionadoAhora || ctxSesion.nivelSesion;
+    let reglasAEnviar = buscarTodasLasReglasCoincidentes(mensajeUsuario, nivelParaBuscar, ctxSesion.nivelesMultiples);
+    if (!reglasAEnviar.length || !reglasAEnviar.some(r => r.categoria === matchImagen.regla.categoria)) {
+      reglasAEnviar = [matchImagen.regla];
+    }
+
+    const enviadas = [];
+    for (const regla of reglasAEnviar) {
+      const filtroImg = { tenant_id: tenant._id, activo: true, categoria: regla.categoria };
+      if (regla.nivel_educativo) filtroImg.nivel_educativo = { $in: [regla.nivel_educativo, 'Todos'] };
+      if (regla.nombre_contiene) filtroImg.nombre = new RegExp(regla.nombre_contiene, 'i');
+      const imagenDirecta = await ImagenMarketing.findOne(filtroImg).sort({ prioridad: -1, creado: -1 });
+      if (!imagenDirecta) continue;
+
+      try {
+        await enviarImagenDesdeDB(imagenDirecta, numeroOrigen, construirDescripcionImagen(imagenDirecta));
+        enviadas.push(imagenDirecta.nombre);
+        console.log(`🖼️ Imagen directa enviada (sin texto): "${imagenDirecta.nombre}" → ${numeroOrigen}`);
+        if (reglasAEnviar.length > 1) await new Promise(r => setTimeout(r, 1800)); // respiro entre imágenes
+      } catch (e) {
+        console.error(`❌ Error enviando imagen "${imagenDirecta.nombre}" a ${numeroOrigen}:`, e.message);
+      }
+    }
+
+    if (enviadas.length) {
       ctxSesion.historial.push({ role: 'user', content: mensajeUsuario });
-      ctxSesion.historial.push({ role: 'assistant', content: `[NOTA DE SISTEMA — esto NO es algo que tú dijiste ni debes imitar este formato de frase: el sistema envió automáticamente la imagen "${imagenDirecta.nombre}" con el detalle completo de ESTE tema específico. No repitas estos datos en texto. Recuerda: tú NUNCA controlas ni sabes con certeza si se manda una imagen en otros mensajes — eso lo decide el sistema por separado según palabras clave. Jamás afirmes "te mandé la imagen" o "aquí tienes las imágenes" a menos que este mensaje de sistema aparezca de verdad para ESE turno.]` });
+      ctxSesion.historial.push({ role: 'assistant', content: `[NOTA DE SISTEMA — esto NO es algo que tú dijiste ni debes imitar este formato de frase: el sistema envió automáticamente ${enviadas.length === 1 ? 'la imagen' : 'las imágenes'} "${enviadas.join('", "')}" con el detalle completo de ${enviadas.length === 1 ? 'ESE tema' : 'ESOS temas'}. No repitas estos datos en texto. Recuerda: tú NUNCA controlas ni sabes con certeza si se manda una imagen en otros mensajes — eso lo decide el sistema por separado según palabras clave. Jamás afirmes "te mandé la imagen" o "aquí tienes las imágenes" a menos que este mensaje de sistema aparezca de verdad para ESE turno.]` });
       ctxSesion.ultimaActividad = Date.now();
-      return ''; // texto vacío = no se manda ningún mensaje de texto, solo la imagen
+      return ''; // texto vacío = no se manda ningún mensaje de texto, solo la(s) imagen(es)
     }
   }
 
@@ -7483,12 +7513,13 @@ app.get('/api/debug/simular', authMiddleware, async (req, res) => {
   try {
     const mensaje = String(req.query.mensaje || '').trim();
     const nivelSesion = String(req.query.nivel || '').trim() || null;
+    const nivelesMultiples = req.query.niveles_multiples ? String(req.query.niveles_multiples).split(',').map(n => n.trim()) : [];
     if (!mensaje) return res.json({ ok: false, error: 'Falta ?mensaje=' });
 
     const nivelDetectado = detectarNivelEnTexto(mensaje);
     const nivelUsado = nivelDetectado || nivelSesion;
     const match = buscarReglaImagenCoincidente(mensaje, nivelUsado);
-    const todas = buscarTodasLasReglasCoincidentes(mensaje, nivelUsado);
+    const todas = buscarTodasLasReglasCoincidentes(mensaje, nivelUsado, nivelesMultiples);
 
     // Buscar las imágenes reales que se enviarían
     const imagenes = [];
