@@ -34,7 +34,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-auditoria-en-excel'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-buscar-oportunidades-mal-asignadas'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -5426,6 +5426,56 @@ app.get('/api/reportes/leads-excel', authMiddleware, async (req, res) => {
     console.error('❌ [Reporte Excel] Error generando el reporte:', e.message);
     res.status(500).json({ ok: false, error: e.message });
   }
+});
+
+// Busca TODAS las Oportunidades (y leads) que hoy están asignadas al usuario de
+// SERVICIO de KAI (el mismo con el que KAI inicia sesión en Odoo — "Administrador").
+// Esto NUNCA debería pasar: KAI nunca debe quedar como "vendedor" de nada. Si aparece
+// alguna, revisa el chatter para ver el registro de cambio de vendedor (Odoo lo rastrea
+// automáticamente en los campos con seguimiento) y así saber CUÁNDO y CÓMO pasó, en vez
+// de suponerlo.
+// GET /api/debug/oportunidades-mal-asignadas
+app.get('/api/debug/oportunidades-mal-asignadas', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const uidServicio = await getOdooUID();
+
+    const leads = await odooCallLocal('crm.lead', 'search_read',
+      [[['user_id', '=', uidServicio], ['active', '=', true]]],
+      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'email_from', 'type', 'stage_id', 'create_date', 'write_date'], limit: 100, order: 'write_date desc' }
+    ) || [];
+
+    if (!leads.length) return res.json({ ok: true, total: 0, mensaje: 'No hay ninguna Oportunidad ni Lead asignado al usuario de servicio de KAI ahora mismo.' });
+
+    const detalle = [];
+    for (const l of leads) {
+      // Buscamos específicamente los mensajes de seguimiento de campo ("Salesperson"/
+      // "Vendedor" cambiado), que Odoo genera automáticamente sin que nosotros lo pidamos.
+      const mensajes = await odooCallLocal('mail.message', 'search_read',
+        [[['model', '=', 'crm.lead'], ['res_id', '=', l.id]]],
+        { fields: ['body', 'date', 'author_id', 'subtype_id'], limit: 30, order: 'date desc' }
+      ).catch(() => []);
+
+      const notaDeCambioDeVendedor = mensajes.find(m => /vendedor|salesperson|responsable/i.test(m.body || ''));
+
+      detalle.push({
+        lead: l.id,
+        nombre: l.partner_name || l.contact_name || l.name,
+        telefono: l.phone || null,
+        correo: l.email_from || null,
+        tipo: l.type === 'opportunity' ? 'Oportunidad' : 'Lead',
+        etapa: l.stage_id?.[1] || '',
+        creado: l.create_date,
+        ultima_modificacion: l.write_date,
+        nota_de_cambio_de_vendedor: notaDeCambioDeVendedor
+          ? { fecha: notaDeCambioDeVendedor.date, autor: notaDeCambioDeVendedor.author_id?.[1] || null, texto: (notaDeCambioDeVendedor.body || '').replace(/<[^>]+>/g, ' ').trim().substring(0, 300) }
+          : 'No se encontró una nota de cambio de vendedor en el chatter — revisar a mano en Odoo',
+        ultimos_5_mensajes: mensajes.slice(0, 5).map(m => ({ fecha: m.date, autor: m.author_id?.[1] || null, texto: (m.body || '').replace(/<[^>]+>/g, ' ').trim().substring(0, 200) }))
+      });
+    }
+
+    res.json({ ok: true, total: detalle.length, leads: detalle });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
 app.get('/api/dashboard/evaluacion', authMiddleware, async (req, res) => {
