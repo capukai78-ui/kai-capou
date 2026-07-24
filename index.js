@@ -34,7 +34,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-auditoria-agentes-acrux'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-auditoria-con-tipo-real'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -6553,6 +6553,27 @@ app.get('/api/debug/auditoria-agentes-acrux', authMiddleware, async (req, res) =
     const usuariosPorId = {};
     usuarios.forEach(u => { usuariosPorId[u._id.toString()] = u; });
 
+    // 4) El TIPO real (Lead u Oportunidad) de cada uno — usando el vínculo directo que
+    // guarda nuestro propio Contacto (odoo_lead_id), NUNCA una búsqueda por teléfono,
+    // porque ya sabemos que el formato del número guardado en Odoo puede no coincidir
+    // (nos pasó con Nery Mejía). Este es el dato más importante de esta revisión: si
+    // alguno YA es Oportunidad y sigue mal asignado, es más urgente que uno que sigue
+    // como Lead simple.
+    const numeros = conversaciones.map(c => String(c.number || '').replace(/\D/g, ''));
+    const contactos = await Contacto.find({ tenant_id: req.user.tenant_id, numero: { $in: numeros } }).select('numero odoo_lead_id').lean();
+    const contactoPorNumero = {};
+    contactos.forEach(c => { contactoPorNumero[c.numero] = c; });
+
+    const idsLeadsAConsultar = contactos.filter(c => c.odoo_lead_id).map(c => c.odoo_lead_id);
+    let leadsPorId = {};
+    if (idsLeadsAConsultar.length) {
+      const leadsOdoo = await odooCallLocal('crm.lead', 'read',
+        [idsLeadsAConsultar, ['id', 'type', 'stage_id', 'active', 'user_id']],
+        { context: { active_test: false } }
+      ).catch(() => []);
+      (leadsOdoo || []).forEach(l => { leadsPorId[l.id] = l; });
+    }
+
     const detalle = [];
     for (const conv of conversaciones) {
       const asign = porContactoId[conv.id];
@@ -6566,14 +6587,22 @@ app.get('/api/debug/auditoria-agentes-acrux', authMiddleware, async (req, res) =
       const usuarioReal = usuariosPorId[asign.agente_id.toString()];
       const consistente = usuarioReal && usuarioReal.nombre === asign.agente_nombre;
 
+      const numeroLimpio = String(conv.number || '').replace(/\D/g, '');
+      const contacto = contactoPorNumero[numeroLimpio];
+      const leadReal = contacto?.odoo_lead_id ? leadsPorId[contacto.odoo_lead_id] : null;
+
       detalle.push({
         contacto_id: conv.id,
         numero: conv.number,
         agente_nombre_guardado: asign.agente_nombre,
         agente_id_apunta_a: usuarioReal ? usuarioReal.nombre : '⚠️ ese agente_id ya no existe como usuario',
         registro_interno_consistente: consistente,
-        tiene_odoo_user_id: !!usuarioReal?.odoo_user_id,
         se_corregiria_a: consistente ? asign.agente_nombre : (usuarioReal ? usuarioReal.nombre : 'NECESITA REVISIÓN MANUAL'),
+        lead_odoo_id: contacto?.odoo_lead_id || null,
+        tipo_en_odoo: leadReal ? (leadReal.type === 'opportunity' ? '🔴 OPORTUNIDAD' : 'Lead') : 'No se encontró vínculo — revisar a mano',
+        etapa_en_odoo: leadReal?.stage_id?.[1] || null,
+        vendedor_en_el_lead_de_odoo: leadReal?.user_id?.[1] || 'Sin asignar',
+        lead_activo: leadReal?.active ?? null,
         ultima_actividad_en_odoo: conv.write_date
       });
     }
@@ -6584,6 +6613,7 @@ app.get('/api/debug/auditoria-agentes-acrux', authMiddleware, async (req, res) =
       total_que_de_verdad_necesitan_corregirse: detalle.length,
       con_registro_interno_inconsistente: detalle.filter(d => !d.registro_interno_consistente).length,
       con_registro_interno_ok_solo_falta_sincronizar: detalle.filter(d => d.registro_interno_consistente).length,
+      que_ya_son_oportunidad: detalle.filter(d => d.tipo_en_odoo === '🔴 OPORTUNIDAD').length,
       detalle
     });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
@@ -8329,6 +8359,27 @@ app.get('/api/debug/revertir-perdidos-por-error', authMiddleware, async (req, re
 // Busca un lead por correo y muestra su estado + chatter completo — para rastrear
 // EXACTAMENTE qué proceso hizo un cambio y cuándo, en vez de suponerlo.
 // GET /api/debug/rastrear-lead-por-correo?correo=xxx@gmail.com
+// Muestra el lead de Odoo al que NUESTRO propio Contacto está vinculado (usando
+// odoo_lead_id directamente) — en vez de rebuscar por teléfono, que puede fallar si el
+// número está guardado en Odoo con un formato que la búsqueda no reconoce.
+// GET /api/debug/lead-vinculado-al-contacto?numero=502XXXXXXXX
+app.get('/api/debug/lead-vinculado-al-contacto', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const numero = String(req.query.numero || '').replace(/\D/g, '');
+    const contacto = await Contacto.findOne({ tenant_id: req.user.tenant_id, numero }).lean();
+    if (!contacto) return res.json({ ok: false, error: 'No existe un Contacto con ese número en nuestro sistema' });
+    if (!contacto.odoo_lead_id) return res.json({ ok: true, contacto, mensaje: 'Este contacto no tiene ningún odoo_lead_id vinculado todavía' });
+
+    const lead = await odooCallLocal('crm.lead', 'read',
+      [[contacto.odoo_lead_id], ['id', 'name', 'partner_name', 'phone', 'user_id', 'type', 'stage_id', 'active', 'create_date']],
+      { context: { active_test: false } }
+    );
+
+    res.json({ ok: true, contacto_en_mongo: contacto, lead_vinculado: lead?.[0] || 'No se encontró (puede que se haya eliminado en Odoo)' });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/debug/rastrear-lead-por-correo', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
