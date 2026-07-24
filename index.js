@@ -34,7 +34,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-boton-descargar-excel'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-filtro-proveedores'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -690,6 +690,14 @@ async function asegurarAsignacionesAcrux(tenantId, conversaciones) {
 // arriesgar el flujo de WhatsApp que ya está confirmado funcionando. Comparte el mismo
 // "cerebro" (buildSystemPrompt, FAQs, detección de handoff) pero lleva su memoria aparte.
 async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
+  // ===== ¿ES UN PROVEEDOR OFRECIENDO PRODUCTOS/SERVICIOS, NO UN PADRE? =====
+  // Mismo filtro que en WhatsApp — se revisa ANTES que cualquier otra cosa. No se crea
+  // lead, no se asigna vendedora, no se llama a la IA.
+  if (!esNumeroDePrueba(numero) && esProveedorOAjenoAAdmisiones(mensajeUsuario)) {
+    console.log(`📦 [AcruxLab] Mensaje de proveedor detectado (${numero}) — se responde fijo, sin crear lead ni asignar vendedora`);
+    return { texto: MENSAJE_RESPUESTA_PROVEEDOR, handoff: false };
+  }
+
   // Usamos el número limpio (sin prefijo) como clave — así, si el mismo padre ya había
   // escrito antes por el WhatsApp normal, comparte la MISMA memoria y el MISMO lead de
   // Odoo, en vez de crear un contacto/lead duplicado solo por venir de otro canal.
@@ -1934,6 +1942,22 @@ async function iniciarHandoff(tenant, numero, nombre, motivoMsg) {
 // Devuelve { nivel: 1|2|3, etiqueta: string } o null si no hay suficiente señal todavía.
 // Detector independiente de Nivel 1 (Alta Intención) — usado para decidir el handoff inmediato,
 // sin necesitar el objeto Contacto completo (se evalúa antes de tenerlo actualizado).
+// Detecta mensajes de PROVEEDORES ofreciendo productos/servicios al colegio (no son
+// padres de familia). Caso real que lo motivó: una promotora de productos eléctricos
+// escribió ofreciendo su catálogo, y como no decía nada de admisiones, la IA respondió
+// de forma genérica ofreciendo conectarla con un asesor — y el mecanismo que evita que
+// Kai incumpla sus propias promesas terminó convirtiendo eso en un traspaso real a una
+// vendedora. Este filtro corre ANTES de que la IA responda, para que ni siquiera llegue
+// a ese punto: si se detecta, se responde con un mensaje fijo y no se asigna vendedora
+// ni se crea ningún lead.
+function esProveedorOAjenoAAdmisiones(texto) {
+  const t = (texto || '').toLowerCase();
+  const señalesProveedor = /promotor(a)?\s+de\s+la\s+marca|represent(o|amos)\s+a\s+la\s+marca|distribuidor(a)?\s+(de|autorizad)|pongo\s+a\s+su\s+disposici[oó]n|ponemos\s+a\s+su\s+disposici[oó]n|nuestra\s+l[ií]nea\s+de\s+productos|cat[aá]logo\s+de\s+productos|precios\s+especiales\s+para|atenci[oó]n\s+personalizada\s+para\s+sus\s+requerimientos|le\s+comparto\s+(mi\s+contacto\s+y\s+)?(nuestro\s+)?cat[aá]logo/.test(t);
+  const mencionaAdmision = /hijo|hija|alumn[oa]|inscrib|admisi[oó]n|colegiatura|matr[ií]cula|cupo|ni[ñn][oa]/.test(t);
+  return señalesProveedor && !mencionaAdmision;
+}
+const MENSAJE_RESPUESTA_PROVEEDOR = 'Gracias por escribirnos 🙌 Este medio es exclusivo para temas de admisiones del Colegio Capouilliez. Para propuestas comerciales o de proveedores, le pedimos amablemente escribir a nuestro correo institucional. ¡Que tenga un excelente día!';
+
 function esAltaIntencion(texto, ultimoMensajeBot) {
   const t = (texto || '').toLowerCase().trim();
   // Ojo con el plural: los papás muchas veces escriben como pareja ("NOS gustaría
@@ -2586,6 +2610,14 @@ async function detectarYEnviarImagen(tenant, mensajeUsuario, contacto, canal, nu
 }
 
 async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
+  // ===== ¿ES UN PROVEEDOR OFRECIENDO PRODUCTOS/SERVICIOS, NO UN PADRE? =====
+  // Se revisa ANTES que cualquier otra cosa — ni se busca lead, ni se asigna vendedora,
+  // ni se llama a la IA. Solo se responde el mensaje fijo y ya.
+  if (!esNumeroDePrueba(numeroOrigen) && esProveedorOAjenoAAdmisiones(mensajeUsuario)) {
+    console.log(`📦 [WhatsApp] Mensaje de proveedor detectado (${numeroOrigen}) — se responde fijo, sin crear lead ni asignar vendedora`);
+    return MENSAJE_RESPUESTA_PROVEEDOR;
+  }
+
   // ===== ¿ESTE PAPÁ YA ES DE ALGUIEN EN ODOO? =====
   // Misma regla que en AcruxLab: si ya está como OPORTUNIDAD (esas son de Sylvia) o ya
   // tiene un vendedor asignado, ya lo está trabajando una persona y KAI no debe meterse.
