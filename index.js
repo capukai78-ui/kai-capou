@@ -6,6 +6,7 @@ const dotenv = require('dotenv');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
+const XLSX = require('xlsx'); // para el reporte diario de leads en Excel
 
 dotenv.config();
 
@@ -28,7 +29,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-flujo-primaria-secundaria-directo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-reporte-leads-excel'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -5263,6 +5264,87 @@ app.get('/api/debug/oportunidad-detalle', authMiddleware, async (req, res) => {
 // Devuelve todo lo que necesita el panel: cuánto atendió cada vendedora, cómo repartió
 // KAI los leads, y las charlas que quedaron a medias (papás esperando respuesta).
 // GET /api/dashboard/evaluacion?dias=7
+// ===== REPORTE DIARIO DE LEADS EN EXCEL =====
+// Para que el equipo tenga visibilidad de todo lo que ingresó y cómo va cada uno,
+// sin depender de revisar chat por chat. Trae: fecha de ingreso, nombre, teléfono,
+// nivel, canal, vendedor asignado, si se atendió, y el resumen de cómo va la
+// conversación. Pensado para sacarse cada 7 días al inicio, y luego a diario.
+// GET /api/reportes/leads-excel?dias=7
+app.get('/api/reportes/leads-excel', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const dias = parseInt(req.query.dias) || 7;
+    const desde = new Date(Date.now() - dias * 24 * 60 * 60 * 1000);
+
+    const contactos = await Contacto.find({
+      tenant_id: req.user.tenant_id,
+      primer_contacto: { $gte: desde },
+      numero: { $nin: NUMEROS_DE_PRUEBA }
+    }).sort({ primer_contacto: -1 }).lean();
+
+    // Traer de un solo golpe (no uno por uno) el vendedor/etapa/etiqueta real en Odoo
+    // para todos los que ya tienen lead creado.
+    const idsOdoo = contactos.filter(c => c.odoo_lead_id).map(c => c.odoo_lead_id);
+    let porLeadOdoo = {};
+    if (idsOdoo.length) {
+      const leadsOdoo = await odooCallLocal('crm.lead', 'read',
+        [idsOdoo, ['id', 'user_id', 'stage_id', 'type', 'active', 'tag_ids']]
+      ).catch(() => []);
+      let nombresTag = {};
+      const idsTags = [...new Set((leadsOdoo || []).flatMap(l => l.tag_ids || []))];
+      if (idsTags.length) {
+        const tags = await odooCallLocal('crm.tag', 'read', [idsTags, ['id', 'name']]).catch(() => []);
+        (tags || []).forEach(t => { nombresTag[t.id] = t.name; });
+      }
+      (leadsOdoo || []).forEach(l => {
+        porLeadOdoo[l.id] = {
+          vendedor: l.user_id?.[1] || 'Sin asignar',
+          etapa: l.stage_id?.[1] || '',
+          tipo: l.type === 'opportunity' ? 'Oportunidad' : 'Lead',
+          activo: l.active,
+          etiquetas: (l.tag_ids || []).map(t => nombresTag[t]).filter(Boolean).join(', ')
+        };
+      });
+    }
+
+    const filas = contactos.map(c => {
+      const odoo = c.odoo_lead_id ? porLeadOdoo[c.odoo_lead_id] : null;
+      return {
+        'Fecha de ingreso': c.primer_contacto ? new Date(c.primer_contacto).toLocaleString('es-GT', { timeZone: 'America/Guatemala' }) : '',
+        'Padre/Madre': c.nombre || '(sin nombre)',
+        'Alumno': c.nombre_alumno || '',
+        'Teléfono': c.numero,
+        'Correo': c.correo || '',
+        'Nivel de interés': c.nivel_interes || '',
+        'Canal': c.canal_origen || '',
+        'Vendedor asignado': odoo?.vendedor || 'Sin lead en Odoo todavía',
+        'Tipo': odoo?.tipo || '',
+        'Etapa en Odoo': odoo?.etapa || '',
+        'Etiquetas': odoo?.etiquetas || '',
+        '¿Se atendió?': c.total_conversaciones > 0 ? 'Sí' : 'No',
+        'Total de conversaciones': c.total_conversaciones || 0,
+        'Cómo va (resumen)': c.resumen_ultimo_contacto || '',
+        'Última actividad': c.ultimo_contacto ? new Date(c.ultimo_contacto).toLocaleString('es-GT', { timeZone: 'America/Guatemala' }) : '',
+        'Nivel de calor': c.nivel_calor_etiqueta || ''
+      };
+    });
+
+    const libro = XLSX.utils.book_new();
+    const hoja = XLSX.utils.json_to_sheet(filas);
+    hoja['!cols'] = [
+      { wch: 18 }, { wch: 22 }, { wch: 18 }, { wch: 15 }, { wch: 24 }, { wch: 14 }, { wch: 10 },
+      { wch: 22 }, { wch: 12 }, { wch: 16 }, { wch: 20 }, { wch: 10 }, { wch: 10 }, { wch: 50 }, { wch: 18 }, { wch: 20 }
+    ];
+    XLSX.utils.book_append_sheet(libro, hoja, `Últimos ${dias} días`);
+
+    const buffer = XLSX.write(libro, { type: 'buffer', bookType: 'xlsx' });
+    const nombreArchivo = `Reporte_Leads_KAI_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${nombreArchivo}"`);
+    res.send(buffer);
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/dashboard/evaluacion', authMiddleware, async (req, res) => {
   try {
     const tenantId = req.user.tenant_id;
