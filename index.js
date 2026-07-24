@@ -45,7 +45,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-pausa-corrige-omnichannel'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-actividad-reciente-acrux'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -3312,6 +3312,13 @@ setInterval(async () => {
 
       // Enviar mensaje de cierre y marcar como cerrada para no repetirlo
       try {
+        // ===== INTERRUPTOR MAESTRO: KAI PAUSADO EN PRODUCCIÓN =====
+        // Este cron manda directo por WhatsApp, sin pasar por responderConIA — por eso
+        // seguía funcionando aunque las respuestas ya estaban pausadas.
+        if (KAI_PAUSADO_PARA_PRODUCCION && !esNumeroDePrueba(numero)) {
+          console.log(`⏸️ [Cierre por inactividad] KAI pausado en producción — no se cierra ${numero}`);
+          continue;
+        }
         const tenant = await Tenant.findOne({ activo: true }); // ajustar si hay multi-tenant real
         await enviarWhatsAppMeta(numero, MENSAJE_CIERRE_INACTIVIDAD);
         conv.cerrada = true;
@@ -6590,6 +6597,56 @@ app.get('/api/debug/ver-asignacion-cruda', authMiddleware, async (req, res) => {
 // verifica: el modo real (humano/bot — nunca sugiere tocar si Kai sigue atendiendo),
 // el vendedor guardado, y el tipo real del lead en Odoo (Lead u Oportunidad).
 // GET /api/debug/reporte-para-confirmar?contactos=8540,8537,2380,8509
+// Busca TODOS los mensajes que salieron del número oficial en la última X horas, en
+// CUALQUIER conversación, y marca cuáles son de números reales (no de prueba) — para
+// encontrar con evidencia directa si algo sigue saliendo pese a la pausa, sin depender
+// de que alguien indique el número exacto.
+// GET /api/debug/actividad-reciente-acrux?horas=1
+app.get('/api/debug/actividad-reciente-acrux', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const horas = parseFloat(req.query.horas) || 1;
+    const desde = new Date(Date.now() - horas * 60 * 60 * 1000);
+    const desdeStr = desde.toISOString().replace('T', ' ').substring(0, 19);
+
+    // Mensajes salientes ("from_me") recientes, en cualquier conversación
+    const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
+      [[['from_me', '=', true], ['date_message', '>=', desdeStr]]],
+      { fields: ['id', 'contact_id', 'text', 'date_message'], limit: 200, order: 'date_message desc' }
+    ) || [];
+
+    if (!mensajes.length) return res.json({ ok: true, total: 0, mensaje: `No salió ningún mensaje del número oficial en la última${horas === 1 ? ' hora' : 's ' + horas + ' horas'}.` });
+
+    // Traer el número de cada conversación para poder filtrar los de prueba
+    const idsConv = [...new Set(mensajes.map(m => m.contact_id?.[0]).filter(Boolean))];
+    const conversaciones = await odooCallLocal('acrux.chat.conversation', 'read', [idsConv, ['id', 'number']]).catch(() => []);
+    const numeroPorConvId = {};
+    (conversaciones || []).forEach(c => { numeroPorConvId[c.id] = c.number; });
+
+    const detalle = mensajes.map(m => {
+      const numero = numeroPorConvId[m.contact_id?.[0]] || 'desconocido';
+      const esPrueba = esNumeroDePrueba(numero);
+      return {
+        conversacion: m.contact_id?.[0], numero,
+        es_numero_de_prueba: esPrueba,
+        fecha: m.date_message,
+        texto: (m.text || '').substring(0, 150)
+      };
+    });
+
+    const reales = detalle.filter(d => !d.es_numero_de_prueba);
+
+    res.json({
+      ok: true,
+      total_mensajes_salientes: detalle.length,
+      total_de_numeros_de_prueba: detalle.length - reales.length,
+      total_de_numeros_reales_ALERTA: reales.length,
+      detalle_numeros_reales: reales,
+      detalle_completo: detalle
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/debug/reporte-para-confirmar', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
