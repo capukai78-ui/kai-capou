@@ -34,7 +34,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-buscar-leads-por-numeros'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-asignar-vendedor-directo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -8368,6 +8368,37 @@ app.get('/api/debug/revertir-perdidos-por-error', authMiddleware, async (req, re
 // confirmar con certeza si de verdad no existe ningún lead, o si existe pero nunca se
 // enlazó desde nuestro lado.
 // GET /api/debug/buscar-leads-por-numeros?numeros=502...,502...,502...
+// Asigna un vendedor a un lead/oportunidad específico, por ID directo — rápido, sin
+// vueltas, para cuando ya se confirmó con certeza quién es el vendedor correcto.
+// GET /api/debug/asignar-vendedor-directo?lead=15185&email=sylvia@capouilliez.edu.gt
+app.get('/api/debug/asignar-vendedor-directo', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const leadId = parseInt(req.query.lead);
+    const email = String(req.query.email || '').trim();
+    if (!leadId || !email) return res.json({ ok: false, error: 'Faltan ?lead= y ?email=' });
+
+    const vendedor = await UsuarioPanel.findOne({ tenant_id: req.user.tenant_id, email: new RegExp('^' + email + '$', 'i') });
+    if (!vendedor) return res.json({ ok: false, error: `No existe un usuario con el correo "${email}"` });
+    if (!vendedor.odoo_user_id) return res.json({ ok: false, error: `${vendedor.nombre} no tiene odoo_user_id configurado` });
+
+    const antes = await odooCallLocal('crm.lead', 'read', [[leadId], ['id', 'name', 'partner_name', 'user_id']]);
+    if (!antes?.length) return res.json({ ok: false, error: `No existe el lead #${leadId}` });
+
+    if (req.query.aplicar !== '1') {
+      return res.json({
+        ok: true, modo: 'VISTA PREVIA — agrega &aplicar=1 para escribir de verdad',
+        lead: leadId, nombre: antes[0].partner_name || antes[0].name,
+        vendedor_actual: antes[0].user_id?.[1] || 'Sin asignar',
+        se_asignaria_a: vendedor.nombre
+      });
+    }
+
+    await odooCallLocal('crm.lead', 'write', [[leadId], { user_id: vendedor.odoo_user_id }]);
+    res.json({ ok: true, modo: 'EJECUTADO', lead: leadId, asignado_a: vendedor.nombre });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/debug/buscar-leads-por-numeros', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
