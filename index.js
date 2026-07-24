@@ -34,7 +34,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-buscar-oportunidades-mal-asignadas'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-probar-sincronizar-agente'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -880,6 +880,19 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
       );
       nombreAgente = asign?.agente_nombre;
       historial.push({ role: 'assistant', content: '(Se transfirió la conversación a un asesor humano.)' });
+
+      // CRÍTICO: avisarle a Odoo mismo quién es el agente — si no, Odoo se queda
+      // pensando para siempre que la conversación la tiene "Administrador" (el usuario
+      // con el que KAI inicia sesión), y eso genera errores de validación reales cuando
+      // la vendedora intenta trabajar el caso desde Odoo.
+      if (asign?.agente_id) {
+        const agenteReal = await UsuarioPanel.findById(asign.agente_id);
+        if (agenteReal?.odoo_user_id) {
+          await odooCallLocal('acrux.chat.conversation', 'write', [[contactoId], { agent_id: agenteReal.odoo_user_id }]).catch(e => {
+            console.error(`⚠️ No se pudo sincronizar el agente en Odoo para la conversación ${contactoId}: ${e.message}`);
+          });
+        }
+      }
     } else {
       // Fuera de horario NO se transfiere (KAI sigue atendiendo), pero el caso SÍ queda
       // asignado y con el resumen listo, para que la vendedora lo retome apenas entre.
@@ -947,11 +960,33 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
     const dentroDeHorarioAhora = estaDentroDeHorarioLaboral();
     if (dentroDeHorarioAhora) {
       const resumenConsistencia = await generarResumenParaAgente(numero).catch(() => null);
+      // Se respeta el vendedor que YA tuviera asignado (del contacto inicial) — solo se
+      // asigna uno nuevo por el reparto 1 a 1 si de verdad no había ninguno todavía.
+      const asignExistente = await AsignacionAcrux.findOne({ tenant_id: tenant._id, contacto_id: contactoId });
+      let agenteParaEsteTraspaso = null;
+      if (asignExistente?.agente_id) {
+        agenteParaEsteTraspaso = await UsuarioPanel.findById(asignExistente.agente_id);
+      } else {
+        agenteParaEsteTraspaso = await asignarAgenteLibre(tenant._id);
+      }
       await AsignacionAcrux.findOneAndUpdate(
         { tenant_id: tenant._id, contacto_id: contactoId },
-        { modo: 'humano', fecha_modo_humano: new Date(), resumen_kai: resumenConsistencia }
+        {
+          modo: 'humano', fecha_modo_humano: new Date(), resumen_kai: resumenConsistencia,
+          ...(agenteParaEsteTraspaso ? { agente_id: agenteParaEsteTraspaso._id, agente_nombre: agenteParaEsteTraspaso.nombre } : {})
+        }
       );
-      console.log(`🔧 [Consistencia] KAI prometió un asesor en texto — se forzó el traspaso real para contacto ${contactoId}`);
+      // CRÍTICO: avisarle a Odoo mismo quién es el agente ahora. Si esto no se hace,
+      // Odoo se queda pensando para siempre que la conversación la tiene "Administrador"
+      // (el usuario con el que KAI inicia sesión) — y eso es justo lo que causó el error
+      // de validación real: Odoo veía "atendido por Administrador" aunque nuestro Mongo
+      // ya decía que era de una vendedora real.
+      if (agenteParaEsteTraspaso?.odoo_user_id) {
+        await odooCallLocal('acrux.chat.conversation', 'write', [[contactoId], { agent_id: agenteParaEsteTraspaso.odoo_user_id }]).catch(e => {
+          console.error(`⚠️ No se pudo sincronizar el agente en Odoo para la conversación ${contactoId}: ${e.message}`);
+        });
+      }
+      console.log(`🔧 [Consistencia] KAI prometió un asesor en texto — se forzó el traspaso real para contacto ${contactoId}${agenteParaEsteTraspaso ? ' → ' + agenteParaEsteTraspaso.nombre : ''}`);
     }
   }
 
@@ -2155,7 +2190,7 @@ async function crearCandidatoEnOdoo(tenant, contacto, numero, resultadoNivel) {
       team_id: teamId,
       type: 'lead', // entra como Lead (bandeja de calificación), no directo como Oportunidad
       tag_ids: tagId ? [[6, 0, [tagId]]] : undefined,
-      user_id: agenteAsignado?.odoo_user_id || undefined
+      user_id: agenteAsignado?.odoo_user_id || false // explícito SIEMPRE, nunca undefined — si no hay vendedor, Odoo debe saber que es "ninguno", no asignárselo a KAI por defecto
     }]);
 
     if (leadId) {
@@ -2307,6 +2342,12 @@ async function procesarMensajeOmnichannel(numero, nombre, mensaje, canal, tenant
         return;
       }
 
+      // SIEMPRE se asigna una vendedora real ANTES de crear el lead — nunca se deja el
+      // campo sin poner. Si no se hace explícito (aunque sea "false"), Odoo por defecto
+      // le pone como vendedor a quien está creando el registro — que es KAI mismo. Eso
+      // fue justo la causa real de que 53 leads terminaran asignados a "Administrador".
+      const agenteNuevo = await asignarAgenteLibre(tenant._id);
+
       const leadId = await odooCallLocal('crm.lead', 'create', [{
         name: `Lead KAI — ${nombre || 'Sin nombre'} (${etiquetaCanal})`,
         phone: telParaBuscar,
@@ -2314,7 +2355,8 @@ async function procesarMensajeOmnichannel(numero, nombre, mensaje, canal, tenant
         description: `Canal de origen: ${canal}\nCapturado automáticamente por KAI.`,
         team_id: teamId,
         type: 'lead', // entra como Lead, no directo como Oportunidad
-        tag_ids: tagId ? [[6, 0, [tagId]]] : undefined
+        tag_ids: tagId ? [[6, 0, [tagId]]] : undefined,
+        user_id: agenteNuevo?.odoo_user_id || false // explícito SIEMPRE, nunca undefined
       }]);
       if (leadId) {
         contacto.odoo_lead_id = leadId;
@@ -4725,6 +4767,7 @@ app.post('/api/lead-ads', async (req, res) => {
         console.log(`🔗 [Lead Ads] Lead existente vinculado — #${yaExiste.id}${yaExiste.active === false ? ' (reactivado)' : ''}`);
       } else {
         const tagId = await getOdooTagId('Canal — Lead Ads Facebook');
+        const agenteNuevo = await asignarAgenteLibre(tenant._id); // nunca se deja sin vendedor explícito
         const leadId = await odooCallLocal('crm.lead', 'create', [{
           name: `Lead Ads — ${nombre}`,
           phone: telefono || null,
@@ -4733,7 +4776,8 @@ app.post('/api/lead-ads', async (req, res) => {
           description: `Formulario de Lead Ad completado.\nNivel de interés: ${nivel || 'No especificado'}\nCapturado automáticamente por KAI.`,
           team_id: tenant?.odoo_team_id || 1,
           type: 'lead', // entra como Lead, no directo como Oportunidad
-          tag_ids: tagId ? [[6, 0, [tagId]]] : undefined
+          tag_ids: tagId ? [[6, 0, [tagId]]] : undefined,
+          user_id: agenteNuevo?.odoo_user_id || false
         }]);
         if (leadId) { contacto.odoo_lead_id = leadId; await contacto.save(); }
       }
@@ -4775,6 +4819,7 @@ app.post('/api/lead-web', async (req, res) => {
         console.log(`🔗 [Formulario web] Lead existente vinculado — #${yaExiste.id}${yaExiste.active === false ? ' (reactivado)' : ''}`);
       } else {
         const tagId = await getOdooTagId('Canal — Formulario Web');
+        const agenteNuevo = await asignarAgenteLibre(tenant._id); // nunca se deja sin vendedor explícito
         const leadId = await odooCallLocal('crm.lead', 'create', [{
           name: `Formulario Web — ${nombre || correo || telefono}`,
           phone: telefono || null,
@@ -4783,7 +4828,8 @@ app.post('/api/lead-web', async (req, res) => {
           description: `Formulario web completado.\n${mensaje ? 'Mensaje: ' + mensaje : ''}\nNivel de interés: ${nivel_interes || 'No especificado'}\nCapturado automáticamente por KAI.`,
           team_id: tenant?.odoo_team_id || 1,
           type: 'lead', // entra como Lead, no directo como Oportunidad
-          tag_ids: tagId ? [[6, 0, [tagId]]] : undefined
+          tag_ids: tagId ? [[6, 0, [tagId]]] : undefined,
+          user_id: agenteNuevo?.odoo_user_id || false
         }]);
         if (leadId) { contacto.odoo_lead_id = leadId; await contacto.save(); }
       }
@@ -6428,6 +6474,51 @@ app.get('/api/acrux/plantillas', authMiddleware, async (req, res) => {
 // para casos como agendar una visita por teléfono, donde la vendedora ya está
 // trabajando al papá pero nunca escribió en el ChatRoom (así que el semáforo normal
 // nunca lo habría detectado, y KAI seguiría atendiéndolo como si nadie lo tuviera).
+// Sincroniza el agente de UNA conversación puntual de AcruxLab en Odoo — para probar el
+// mecanismo con un solo caso real (ej. Karen Fuentes) ANTES de confiar en que el arreglo
+// automático (ya en el código, pero conviene probarlo primero) funcione con todas las
+// vendedoras. Solo toca la conversación que le pases, nada más.
+// GET /api/debug/probar-sincronizar-agente?contacto_id=6927
+app.get('/api/debug/probar-sincronizar-agente', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const contactoId = parseInt(req.query.contacto_id);
+    if (!contactoId) return res.json({ ok: false, error: 'Falta ?contacto_id= (el ID de la conversación de AcruxLab)' });
+
+    const asign = await AsignacionAcrux.findOne({ tenant_id: req.user.tenant_id, contacto_id: contactoId });
+    if (!asign?.agente_id) return res.json({ ok: false, error: 'Esta conversación no tiene ningún agente asignado en nuestro sistema (Mongo) — nada que sincronizar.' });
+
+    const agente = await UsuarioPanel.findById(asign.agente_id);
+    if (!agente) return res.json({ ok: false, error: 'El agente asignado en Mongo ya no existe como usuario del panel.' });
+    if (!agente.odoo_user_id) return res.json({ ok: false, error: `${agente.nombre} no tiene su odoo_user_id configurado en Usuarios y Sedes — no se puede sincronizar sin eso.` });
+
+    // Estado ANTES, para comparar
+    const antes = await odooCallLocal('acrux.chat.conversation', 'read', [[contactoId], ['id', 'agent_id', 'status']]);
+    if (!antes || !antes.length) return res.json({ ok: false, error: `No existe la conversación #${contactoId} en Odoo.` });
+
+    if (req.query.aplicar !== '1') {
+      return res.json({
+        ok: true, modo: 'VISTA PREVIA — agrega &aplicar=1 para escribir de verdad',
+        conversacion: contactoId,
+        agente_actual_en_odoo: antes[0].agent_id?.[1] || 'ninguno',
+        se_cambiaria_a: agente.nombre,
+        agente_en_nuestro_sistema: asign.agente_nombre
+      });
+    }
+
+    await odooCallLocal('acrux.chat.conversation', 'write', [[contactoId], { agent_id: agente.odoo_user_id }]);
+    const despues = await odooCallLocal('acrux.chat.conversation', 'read', [[contactoId], ['id', 'agent_id', 'status']]);
+
+    res.json({
+      ok: true, modo: 'EJECUTADO',
+      conversacion: contactoId,
+      agente_antes: antes[0].agent_id?.[1] || 'ninguno',
+      agente_despues: despues[0].agent_id?.[1] || 'ninguno',
+      status: despues[0].status
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.post('/api/acrux/tomar-seguimiento', authMiddleware, async (req, res) => {
   try {
     const { contacto_id } = req.body;
@@ -7746,7 +7837,7 @@ app.post('/api/motor/procesar-social-calientes', authMiddleware, async (req, res
           description: `Origen: ${item.canal}\nMensaje recibido: ${item.mensaje || ''}\nClasificado por KAI como CALIENTE: ${item.motivo || ''}`,
           type: 'lead',
           tag_ids: tagRedes ? [[6, 0, [tagRedes]]] : undefined,
-          user_id: vendedor?.odoo_user_id || undefined
+          user_id: vendedor?.odoo_user_id || false // explícito SIEMPRE, nunca undefined
         }]);
 
         let contactado = false;
