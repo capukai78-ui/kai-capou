@@ -15,6 +15,17 @@ try { XLSX = require('xlsx'); } catch (e) { console.error('⚠️ xlsx no está 
 
 dotenv.config();
 
+// ===== INTERRUPTOR MAESTRO — KAI PAUSADO EN PRODUCCIÓN =====
+// Activado el 24/07/2026 a solicitud del equipo: demasiados inconvenientes en un mismo
+// día (leads duplicados, papás atendidos a medias, ajustes de horario pendientes,
+// cambio de formularios en camino). Mientras esto sea TRUE:
+//   - KAI NO responde a NINGÚN número real, en NINGÚN canal (WhatsApp, AcruxLab)
+//   - KAI NO contacta leads nuevos de forma proactiva
+//   - Los NÚMEROS DE PRUEBA siguen funcionando exactamente igual que siempre, para que
+//     el equipo pueda seguir probando con confianza mientras se van liberando partes
+// Para reactivar KAI en producción: cambiar esta línea a false.
+const KAI_PAUSADO_PARA_PRODUCCION = true;
+
 // ===== NÚMEROS DE PRUEBA =====
 // Son los del equipo que prueban el sistema. KAI SIEMPRE los atiende (aunque figuren
 // como oportunidad o tengan vendedor), y NUNCA se les crea lead en Odoo ni se cuentan
@@ -34,7 +45,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-reporte-para-confirmar'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-kai-pausado-en-produccion'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -690,6 +701,14 @@ async function asegurarAsignacionesAcrux(tenantId, conversaciones) {
 // arriesgar el flujo de WhatsApp que ya está confirmado funcionando. Comparte el mismo
 // "cerebro" (buildSystemPrompt, FAQs, detección de handoff) pero lleva su memoria aparte.
 async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
+  // ===== INTERRUPTOR MAESTRO: KAI PAUSADO EN PRODUCCIÓN =====
+  // Se revisa PRIMERO que nada — ni siquiera se llega al filtro de proveedores. Los
+  // números de prueba siguen funcionando exactamente igual, para poder seguir probando.
+  if (KAI_PAUSADO_PARA_PRODUCCION && !esNumeroDePrueba(numero)) {
+    console.log(`⏸️ [AcruxLab] KAI pausado en producción — no se responde a ${numero} (número real)`);
+    return { texto: null, handoff: false };
+  }
+
   // ===== ¿ES UN PROVEEDOR OFRECIENDO PRODUCTOS/SERVICIOS, NO UN PADRE? =====
   // Mismo filtro que en WhatsApp — se revisa ANTES que cualquier otra cosa. No se crea
   // lead, no se asigna vendedora, no se llama a la IA.
@@ -1542,6 +1561,14 @@ async function marcarLeadComoPerdido(leadId, motivo) {
 }
 
 async function contactarLeadPorAcruxLab(tenant, lead) {
+  // ===== INTERRUPTOR MAESTRO: KAI PAUSADO EN PRODUCCIÓN =====
+  // No se contacta a NINGÚN lead real de forma proactiva mientras esto esté activo.
+  const telParaVerificarPausa = (lead.mobile && String(lead.mobile) !== 'false') ? lead.mobile : ((lead.phone && String(lead.phone) !== 'false') ? lead.phone : null);
+  if (KAI_PAUSADO_PARA_PRODUCCION && !esNumeroDePrueba(telParaVerificarPausa)) {
+    console.log(`⏸️ [Motor AcruxLab] KAI pausado en producción — no se contacta lead #${lead.id}`);
+    return { ok: false, motivo: 'kai_pausado' };
+  }
+
   const marcarSinWhatsApp = async (nota) => {
     const tagSinWAId = await getOdooTagId(TAG_KAI_SIN_WHATSAPP);
     await odooCallLocal('crm.lead', 'write', [[lead.id], { tag_ids: [[4, tagSinWAId]] }]).catch(() => {});
@@ -1733,6 +1760,13 @@ async function contactarLeadPorAcruxLab(tenant, lead) {
 
 
 async function contactarLeadPorWhatsApp(tenant, lead) {
+  // ===== INTERRUPTOR MAESTRO: KAI PAUSADO EN PRODUCCIÓN =====
+  const telParaVerificarPausaWA = (lead.mobile && String(lead.mobile) !== 'false') ? lead.mobile : ((lead.phone && String(lead.phone) !== 'false') ? lead.phone : null);
+  if (KAI_PAUSADO_PARA_PRODUCCION && !esNumeroDePrueba(telParaVerificarPausaWA)) {
+    console.log(`⏸️ [Motor WhatsApp] KAI pausado en producción — no se contacta lead #${lead.id}`);
+    return { ok: false, motivo: 'kai_pausado' };
+  }
+
   // Marca el lead para que no se vuelva a intentar en cada corrida. Sin esto, los
   // registros sin teléfono (correos del formulario, boletines, etc.) se re-consultaban
   // cada 10 minutos para siempre y ocupaban los cupos de los papás reales.
@@ -2660,6 +2694,12 @@ async function detectarYEnviarImagen(tenant, mensajeUsuario, contacto, canal, nu
 }
 
 async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
+  // ===== INTERRUPTOR MAESTRO: KAI PAUSADO EN PRODUCCIÓN =====
+  if (KAI_PAUSADO_PARA_PRODUCCION && !esNumeroDePrueba(numeroOrigen)) {
+    console.log(`⏸️ [WhatsApp] KAI pausado en producción — no se responde a ${numeroOrigen} (número real)`);
+    return '';
+  }
+
   // ===== ¿ES UN PROVEEDOR OFRECIENDO PRODUCTOS/SERVICIOS, NO UN PADRE? =====
   // Se revisa ANTES que cualquier otra cosa — ni se busca lead, ni se asigna vendedora,
   // ni se llama a la IA. Solo se responde el mensaje fijo y ya.
@@ -4750,8 +4790,15 @@ app.post('/api/lead-ads', async (req, res) => {
     const tenant = await Tenant.findOne({ activo: true });
     if (!tenant) return;
 
-    // Crear/actualizar contacto con canal lead_ads
     const numero = telefono ? `502${telefono.slice(-8)}` : `fb_lead_${leadgen_id}`;
+
+    // ===== INTERRUPTOR MAESTRO: KAI PAUSADO EN PRODUCCIÓN =====
+    if (KAI_PAUSADO_PARA_PRODUCCION && !esNumeroDePrueba(numero)) {
+      console.log(`⏸️ [Lead Ads] KAI pausado en producción — no se procesa ${numero}`);
+      return;
+    }
+
+    // Crear/actualizar contacto con canal lead_ads
     let contacto = await Contacto.findOne({ tenant_id: tenant._id, numero });
     if (!contacto) {
       contacto = await Contacto.create({
@@ -4804,6 +4851,13 @@ app.post('/api/lead-web', async (req, res) => {
     if (!tenant) return res.status(500).json({ ok: false, error: 'Tenant no encontrado' });
 
     const numero = telefono ? `502${String(telefono).replace(/\D/g,'').slice(-8)}` : `web_${Date.now()}`;
+
+    // ===== INTERRUPTOR MAESTRO: KAI PAUSADO EN PRODUCCIÓN =====
+    if (KAI_PAUSADO_PARA_PRODUCCION && !esNumeroDePrueba(numero)) {
+      console.log(`⏸️ [Formulario Web] KAI pausado en producción — no se procesa ${numero}`);
+      return res.json({ ok: true, mensaje: 'Recibido (KAI en pausa temporal)' });
+    }
+
     let contacto = await Contacto.findOne({ tenant_id: tenant._id, numero });
     if (!contacto) {
       contacto = await Contacto.create({
@@ -7993,6 +8047,13 @@ app.post('/api/motor/procesar-social-calientes', authMiddleware, async (req, res
     for (const item of lista) {
       let tel = item.telefono_detectado ? String(item.telefono_detectado).replace(/\D/g, '') : null;
       if (tel && tel.length === 8) tel = '502' + tel;
+
+      // ===== INTERRUPTOR MAESTRO: KAI PAUSADO EN PRODUCCIÓN =====
+      if (KAI_PAUSADO_PARA_PRODUCCION && !esNumeroDePrueba(tel)) {
+        resultados.push({ nombre: item.nombre_detectado || item.nombre, ok: false, motivo: 'kai_pausado' });
+        continue;
+      }
+
       const nombre = item.nombre_detectado || item.nombre || 'Sin nombre';
 
       if (!ejecutar) {
