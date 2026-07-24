@@ -28,7 +28,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-proceso-admision-solo-imagen'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-calcular-nivel-desde-fecha'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -719,9 +719,20 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
   // Si el papá solo está agradeciendo o despidiéndose, NO se le manda ninguna imagen.
   const soloAgradece = esAgradecimientoOCierre(mensajeUsuario);
 
+  // Si el mensaje no trae una PALABRA de nivel pero SÍ parece una fecha de nacimiento
+  // (ej. "01/03/2018", solo eso, sin decir "primaria"), el código la calcula él mismo —
+  // determinista, sin depender de que la IA lo haga bien en texto libre y sin que ese
+  // cálculo se pierda sin llegar nunca al sistema de imágenes.
+  const nivelPorFecha = !nivelMencionadoAhora ? calcularNivelDesdeFecha(mensajeUsuario) : null;
+  const nivelParaCompletarTema = nivelMencionadoAhora || nivelPorFecha;
+  if (nivelPorFecha) {
+    conv.nivelSesion = nivelPorFecha;
+    conv.nivelesMultiples = [...new Set([...(conv.nivelesMultiples || []), nivelPorFecha])];
+  }
+
   let matchImagen = null;
-  if (!soloAgradece && nivelMencionadoAhora && conv.temaPendienteCategoria) {
-    const reglaCompletada = completarTemaPendiente(conv.temaPendienteCategoria, nivelMencionadoAhora);
+  if (!soloAgradece && nivelParaCompletarTema && conv.temaPendienteCategoria) {
+    const reglaCompletada = completarTemaPendiente(conv.temaPendienteCategoria, nivelParaCompletarTema);
     if (reglaCompletada) matchImagen = { regla: reglaCompletada, ambigua: false };
   }
   if (!matchImagen && !soloAgradece) {
@@ -2460,6 +2471,49 @@ function detectarNivelesExplicitosEnMensaje(texto) {
   return detectados;
 }
 
+// Calcula el nivel educativo a partir de una fecha de nacimiento en el texto del
+// padre — de forma determinista, en código, NO dejándoselo a la IA. Antes la IA hacía
+// el cálculo ella misma dentro del texto libre, y como el resultado nunca llegaba de
+// vuelta al código, el sistema de imágenes automáticas nunca se enteraba de qué grado
+// se había resuelto — por eso la conversación se quedaba dando vueltas sin mandar nunca
+// la imagen real, y encima la IA terminaba mencionando precios en texto libre.
+//
+// REGLA OFICIAL (03_Admisión.pdf): la edad que cuenta es la que el niño/a CUMPLE entre
+// el 1 de enero y el 30 de junio del ciclo (2027). Tabla: Jardín 2, Infantil 3,
+// Kínder 4, Párvulos 5, Preparatoria 6, Primaria 7–12, Secundaria 13–16.
+const MESES_ES = { enero:0, febrero:1, marzo:2, abril:3, mayo:4, junio:5, julio:6, agosto:7, septiembre:8, setiembre:8, octubre:9, noviembre:10, diciembre:11 };
+function calcularNivelDesdeFecha(texto, anoCiclo = 2027) {
+  const t = (texto || '').trim();
+  let dia, mes, anio;
+
+  // Formato DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY (también admite años de 2 dígitos)
+  let m = t.match(/\b(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})\b/);
+  if (m) {
+    dia = parseInt(m[1]); mes = parseInt(m[2]) - 1; anio = parseInt(m[3]);
+    if (anio < 100) anio += anio < 50 ? 2000 : 1900;
+  } else {
+    // Formato "9 de septiembre de 2021" / "9 de septiembre 2021"
+    m = t.toLowerCase().match(/\b(\d{1,2})\s+de\s+([a-zñ]+)\s+(?:de\s+)?(\d{4})\b/);
+    if (m && MESES_ES[m[2]] !== undefined) {
+      dia = parseInt(m[1]); mes = MESES_ES[m[2]]; anio = parseInt(m[3]);
+    }
+  }
+  if (dia === undefined || isNaN(new Date(anio, mes, dia).getTime()) || mes < 0 || mes > 11 || dia < 1 || dia > 31) return null;
+
+  // Edad que cumple el 30 de junio del ciclo (si su cumpleaños ya pasó para esa fecha,
+  // cuenta la edad que YA tiene en ese momento; si no ha pasado, la que tenía antes)
+  const fechaCorte = new Date(anoCiclo, 5, 30); // 30 de junio (mes 5 = junio, base 0)
+  let edad = anoCiclo - anio;
+  const yaCumplioParaElCorte = (mes < 5) || (mes === 5 && dia <= 30);
+  if (!yaCumplioParaElCorte) edad -= 1;
+
+  const TABLA = { 2: 'jardín', 3: 'infantil', 4: 'kínder', 5: 'párvulos', 6: 'preparatoria' };
+  if (TABLA[edad]) return TABLA[edad];
+  if (edad >= 7 && edad <= 12) return 'primaria';
+  if (edad >= 13 && edad <= 16) return 'secundaria';
+  return null; // fuera de rango de edades que el colegio admite
+}
+
 function detectarNivelEnTexto(texto) {
   const t = (texto || '').toLowerCase();
   const detectados = [];
@@ -2639,9 +2693,21 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
   // aunque el mensaje también toque, por casualidad, la palabra clave de un tema distinto
   // (ej. "bachillerato" es grado de Cuotas pero también palabra propia de Programas). El
   // padre está respondiendo la pregunta que le acabamos de hacer, no cambiando de tema.
+  // Si el mensaje no trae una PALABRA de nivel pero SÍ parece una fecha de nacimiento,
+  // el código la calcula él mismo — determinista, para que ese cálculo sí llegue al
+  // sistema de imágenes (antes se perdía: la IA lo calculaba solo en el texto, el
+  // código nunca se enteraba, y la conversación se quedaba dando vueltas sin mandar
+  // nunca la imagen real). Mismo tratamiento que en AcruxLab.
+  const nivelPorFecha = !nivelMencionadoAhora ? calcularNivelDesdeFecha(mensajeUsuario) : null;
+  const nivelParaCompletarTema = nivelMencionadoAhora || nivelPorFecha;
+  if (nivelPorFecha) {
+    ctxSesion.nivelSesion = nivelPorFecha;
+    ctxSesion.nivelesMultiples = [...new Set([...(ctxSesion.nivelesMultiples || []), nivelPorFecha])];
+  }
+
   let matchImagen = null;
-  if (nivelMencionadoAhora && ctxSesion.temaPendienteCategoria) {
-    const reglaCompletada = completarTemaPendiente(ctxSesion.temaPendienteCategoria, nivelMencionadoAhora);
+  if (nivelParaCompletarTema && ctxSesion.temaPendienteCategoria) {
+    const reglaCompletada = completarTemaPendiente(ctxSesion.temaPendienteCategoria, nivelParaCompletarTema);
     if (reglaCompletada) matchImagen = { regla: reglaCompletada, ambigua: false };
   }
   if (!matchImagen && !esAgradecimientoOCierre(mensajeUsuario)) {
