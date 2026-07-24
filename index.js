@@ -34,7 +34,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-sincronizacion-agente-apagada-por-defecto'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-auditoria-agentes-acrux'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -6506,6 +6506,115 @@ app.get('/api/debug/ver-asignacion-cruda', authMiddleware, async (req, res) => {
       usuario_real_al_que_apunta_agente_id: usuarioPorId ? { id: usuarioPorId._id, nombre: usuarioPorId.nombre, email: usuarioPorId.email } : 'agente_id no existe o es nulo',
       coincide: usuarioPorId ? (usuarioPorId.nombre === asign.agente_nombre) : null
     });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Corrige el agente_id de UN registro puntual de AsignacionAcrux, cuando ya se confirmó
+// con evidencia (Odoo + chatter) cuál es el vendedor correcto. Por email, para no
+// depender de coincidencia de nombres. Sin ?aplicar=1 solo muestra qué haría.
+// GET /api/debug/corregir-agente-id?contacto_id=6927&email=sylvia@capouilliez.edu.gt
+// ===== AUDITORÍA: CONVERSACIONES DONDE ODOO DICE "ADMINISTRADOR" PERO NUESTRO SISTEMA
+// SABE QUE ES DE UNA VENDEDORA REAL =====
+// De SOLO LECTURA — no escribe absolutamente nada en Odoo ni en Mongo. Busca todas las
+// conversaciones de AcruxLab activas (status='current') cuyo agente en Odoo es el
+// usuario de servicio de KAI ("Administrador"), y las cruza con nuestro registro interno
+// (AsignacionAcrux). Para cada una, además, revisa si el registro interno mismo está
+// consistente (agente_id apunta al mismo nombre que agente_nombre) — porque ya
+// encontramos un caso (Karen Fuentes) donde el registro interno también estaba mal.
+// GET /api/debug/auditoria-agentes-acrux
+app.get('/api/debug/auditoria-agentes-acrux', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const uidServicio = await getOdooUID();
+
+    // 1) Todas las conversaciones activas que Odoo cree que son de "Administrador"
+    const conversaciones = await odooCallLocal('acrux.chat.conversation', 'search_read',
+      [[['agent_id', '=', uidServicio], ['status', '=', 'current']]],
+      { fields: ['id', 'number', 'write_date'], limit: 500 }
+    ) || [];
+
+    if (!conversaciones.length) {
+      return res.json({ ok: true, total: 0, mensaje: 'No hay ninguna conversación activa donde Odoo diga "Administrador" — nada que revisar.' });
+    }
+
+    const idsConversacion = conversaciones.map(c => c.id);
+
+    // 2) Nuestro registro interno para esas mismas conversaciones, todas de un golpe
+    const asignaciones = await AsignacionAcrux.find({
+      tenant_id: req.user.tenant_id,
+      contacto_id: { $in: idsConversacion }
+    }).lean();
+    const porContactoId = {};
+    asignaciones.forEach(a => { porContactoId[a.contacto_id] = a; });
+
+    // 3) Todos los usuarios del panel, para comparar agente_id -> nombre real sin
+    // hacer una consulta por cada conversación (evita N+1 contra Mongo).
+    const usuarios = await UsuarioPanel.find({ tenant_id: req.user.tenant_id }).select('nombre email odoo_user_id').lean();
+    const usuariosPorId = {};
+    usuarios.forEach(u => { usuariosPorId[u._id.toString()] = u; });
+
+    const detalle = [];
+    for (const conv of conversaciones) {
+      const asign = porContactoId[conv.id];
+
+      if (!asign || asign.modo !== 'humano' || !asign.agente_id) {
+        // KAI todavía la está atendiendo de verdad (modo bot), o no hay ningún registro —
+        // en ese caso "Administrador" en Odoo es CORRECTO, no hay nada que corregir.
+        continue;
+      }
+
+      const usuarioReal = usuariosPorId[asign.agente_id.toString()];
+      const consistente = usuarioReal && usuarioReal.nombre === asign.agente_nombre;
+
+      detalle.push({
+        contacto_id: conv.id,
+        numero: conv.number,
+        agente_nombre_guardado: asign.agente_nombre,
+        agente_id_apunta_a: usuarioReal ? usuarioReal.nombre : '⚠️ ese agente_id ya no existe como usuario',
+        registro_interno_consistente: consistente,
+        tiene_odoo_user_id: !!usuarioReal?.odoo_user_id,
+        se_corregiria_a: consistente ? asign.agente_nombre : (usuarioReal ? usuarioReal.nombre : 'NECESITA REVISIÓN MANUAL'),
+        ultima_actividad_en_odoo: conv.write_date
+      });
+    }
+
+    res.json({
+      ok: true,
+      total_conversaciones_como_administrador_en_odoo: conversaciones.length,
+      total_que_de_verdad_necesitan_corregirse: detalle.length,
+      con_registro_interno_inconsistente: detalle.filter(d => !d.registro_interno_consistente).length,
+      con_registro_interno_ok_solo_falta_sincronizar: detalle.filter(d => d.registro_interno_consistente).length,
+      detalle
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+app.get('/api/debug/corregir-agente-id', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const contactoId = parseInt(req.query.contacto_id);
+    const email = String(req.query.email || '').trim();
+    if (!contactoId || !email) return res.json({ ok: false, error: 'Faltan ?contacto_id= y ?email=' });
+
+    const asign = await AsignacionAcrux.findOne({ tenant_id: req.user.tenant_id, contacto_id: contactoId });
+    if (!asign) return res.json({ ok: false, error: 'No existe ese registro' });
+
+    const vendedorCorrecto = await UsuarioPanel.findOne({ tenant_id: req.user.tenant_id, email: new RegExp('^' + email + '$', 'i') });
+    if (!vendedorCorrecto) return res.json({ ok: false, error: `No existe un usuario con el correo "${email}"` });
+
+    if (req.query.aplicar !== '1') {
+      return res.json({
+        ok: true, modo: 'VISTA PREVIA — agrega &aplicar=1 para corregir de verdad',
+        antes: { agente_id: asign.agente_id, agente_nombre: asign.agente_nombre },
+        despues: { agente_id: vendedorCorrecto._id, agente_nombre: vendedorCorrecto.nombre }
+      });
+    }
+
+    asign.agente_id = vendedorCorrecto._id;
+    asign.agente_nombre = vendedorCorrecto.nombre;
+    await asign.save();
+
+    res.json({ ok: true, modo: 'EJECUTADO', corregido_a: vendedorCorrecto.nombre });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
