@@ -34,7 +34,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-filtro-proveedores'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-auditoria-en-excel'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -5386,6 +5386,37 @@ app.get('/api/reportes/leads-excel', authMiddleware, async (req, res) => {
     ];
     XLSX.utils.book_append_sheet(libro, hoja, `Últimos ${dias} días`);
 
+    // Segunda hoja: auditoría histórica de leads perdidos (siempre a 45 días, sin
+    // importar el período del reporte principal, para tener visibilidad completa desde
+    // que se lanzó KAI). Con límite de tiempo — si Odoo tarda demasiado revisando el
+    // chatter de tantos leads, el reporte principal se entrega igual, solo sin esta hoja.
+    const auditoria = await conLimite(auditarLeadsPerdidos(45).catch(() => null), 15000);
+    if (auditoria && auditoria.length) {
+      const filasAuditoria = auditoria.map(a => ({
+        'Lead': a.lead,
+        'Nombre': a.nombre,
+        'Teléfono': a.telefono || '',
+        'Correo': a.correo || '',
+        'Vendedor': a.vendedor,
+        'Tipo': a.tipo,
+        'Etapa': a.etapa,
+        'Motivo de pérdida (Odoo)': a.motivo_perdida || '',
+        'Etiquetas': (a.etiquetas || []).join(', '),
+        'Creado': a.creado,
+        'Última modificación': a.ultima_modificacion,
+        'Días entre creación y último mensaje': a.dias_entre_creacion_y_ultimo_mensaje,
+        'Total mensajes en chatter': a.total_mensajes_chatter,
+        'Quién escribió en el chatter': (a.autores_en_el_chatter || []).join(', '),
+        'Causa probable': a.causa_probable
+      }));
+      const hojaAuditoria = XLSX.utils.json_to_sheet(filasAuditoria);
+      hojaAuditoria['!cols'] = [
+        { wch: 8 }, { wch: 22 }, { wch: 15 }, { wch: 24 }, { wch: 18 }, { wch: 12 }, { wch: 16 },
+        { wch: 20 }, { wch: 20 }, { wch: 18 }, { wch: 18 }, { wch: 14 }, { wch: 12 }, { wch: 22 }, { wch: 60 }
+      ];
+      XLSX.utils.book_append_sheet(libro, hojaAuditoria, 'Auditoría de perdidos');
+    }
+
     const buffer = XLSX.write(libro, { type: 'buffer', bookType: 'xlsx' });
     const nombreArchivo = `Reporte_Leads_KAI_${new Date().toISOString().slice(0, 10)}.xlsx`;
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -7255,6 +7286,98 @@ app.get('/api/debug/corregir-etiquetas-contactados', authMiddleware, async (req,
       con_etiqueta_faltante: detalle.length,
       corregidos,
       detalle
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// ===== AUDITORÍA HISTÓRICA: LEADS DEL FORMULARIO QUE TERMINARON EN "PERDIDO" =====
+// Trae TODO el histórico desde que se lanzó KAI (por defecto 45 días, ajustable) —
+// leads del canal Formulario Admisiones que hoy están archivados/perdidos — junto con
+// su chatter COMPLETO. Es de solo lectura, no toca nada. La idea es ver con evidencia
+// real (no suposición) si el archivo fue: (a) KAI marcándolo mal por el bug antiguo ya
+// corregido, (b) el equipo archivándolo a mano por una razón legítima, o (c) otra causa.
+// Se usa tanto desde el endpoint de diagnóstico como desde el reporte en Excel, para no
+// duplicar la lógica.
+async function auditarLeadsPerdidos(dias) {
+  const desde = new Date(Date.now() - dias * 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').substring(0, 19);
+
+  const leads = await odooCallLocal('crm.lead', 'search_read',
+    [[
+      ['active', '=', false],
+      ['create_date', '>=', desde],
+      '|', ['name', 'ilike', 'Formulario Admisiones'], ['name', 'ilike', 'Lead KAI']
+    ]],
+    { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'email_from', 'user_id', 'type', 'stage_id', 'lost_reason_id', 'create_date', 'write_date', 'tag_ids'], limit: 300, order: 'create_date asc', context: { active_test: false } }
+  ) || [];
+
+  if (!leads.length) return [];
+
+  const idsTags = [...new Set(leads.flatMap(l => l.tag_ids || []))];
+  let nombresTag = {};
+  if (idsTags.length) {
+    const tags = await odooCallLocal('crm.tag', 'read', [idsTags, ['id', 'name']]).catch(() => []);
+    (tags || []).forEach(t => { nombresTag[t.id] = t.name; });
+  }
+
+  const detalle = [];
+  for (const l of leads) {
+    const mensajes = await odooCallLocal('mail.message', 'search_read',
+      [[['model', '=', 'crm.lead'], ['res_id', '=', l.id]]],
+      { fields: ['body', 'date', 'author_id'], limit: 50, order: 'date asc' }
+    ).catch(() => []);
+
+    const textoChatter = mensajes.map(m => (m.body || '').replace(/<[^>]+>/g, ' ').trim()).join(' | ');
+
+    let causaProbable = 'Sin evidencia clara en el chatter — revisar a mano';
+    if (/registro repetido/i.test(textoChatter)) {
+      causaProbable = 'KAI detectó duplicado (con la regla actual, esto NO archiva — si está perdido, alguien lo archivó después a mano)';
+    }
+    if (/marcado.{0,20}perdido|perdido.{0,20}autom[aá]tic/i.test(textoChatter)) {
+      causaProbable = '⚠️ Posible marca automática antigua — texto de "perdido" encontrado en el chatter, revisar fecha exacta';
+    }
+    const autores = [...new Set(mensajes.map(m => m.author_id?.[1]).filter(Boolean))];
+    const diasEntreCreacionYUltimoMensaje = mensajes.length
+      ? Math.round((new Date(mensajes[mensajes.length - 1].date) - new Date(l.create_date)) / (1000 * 60 * 60 * 24))
+      : null;
+
+    detalle.push({
+      lead: l.id,
+      nombre: l.partner_name || l.contact_name || l.name,
+      telefono: l.phone || null,
+      correo: l.email_from || null,
+      vendedor: l.user_id?.[1] || 'Sin asignar',
+      tipo: l.type === 'opportunity' ? 'Oportunidad' : 'Lead',
+      etapa: l.stage_id?.[1] || '',
+      motivo_perdida: l.lost_reason_id?.[1] || null,
+      etiquetas: (l.tag_ids || []).map(t => nombresTag[t]).filter(Boolean),
+      creado: l.create_date,
+      ultima_modificacion: l.write_date,
+      dias_entre_creacion_y_ultimo_mensaje: diasEntreCreacionYUltimoMensaje,
+      total_mensajes_chatter: mensajes.length,
+      autores_en_el_chatter: autores,
+      causa_probable: causaProbable,
+      primeros_mensajes: mensajes.slice(0, 5).map(m => ({ fecha: m.date, autor: m.author_id?.[1] || null, texto: (m.body || '').replace(/<[^>]+>/g, ' ').trim().substring(0, 250) }))
+    });
+  }
+
+  return detalle;
+}
+
+// GET /api/debug/auditoria-perdidos?dias=45
+app.get('/api/debug/auditoria-perdidos', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const dias = parseInt(req.query.dias) || 45;
+    const detalle = await auditarLeadsPerdidos(dias);
+    if (!detalle.length) return res.json({ ok: true, total: 0, mensaje: `No hay leads perdidos del Formulario en los últimos ${dias} días`, leads: [] });
+
+    res.json({
+      ok: true,
+      periodo_dias: dias,
+      total_perdidos_en_el_periodo: detalle.length,
+      resumen_por_causa: detalle.reduce((acc, d) => { acc[d.causa_probable] = (acc[d.causa_probable] || 0) + 1; return acc; }, {}),
+      resumen_por_vendedor: detalle.reduce((acc, d) => { acc[d.vendedor] = (acc[d.vendedor] || 0) + 1; return acc; }, {}),
+      leads: detalle
     });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
