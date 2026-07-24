@@ -6,7 +6,12 @@ const dotenv = require('dotenv');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
-const XLSX = require('xlsx'); // para el reporte diario de leads en Excel
+// xlsx es OPCIONAL — si no está instalada en el servidor, no debe tumbar TODO KAI (eso
+// fue justo lo que pasó: al no estar en package.json, el require() de la línea de abajo
+// hacía fallar el arranque completo del programa, y por eso Railway respondía
+// "Application failed to respond" en TODOS los endpoints, no solo en el del reporte).
+let XLSX = null;
+try { XLSX = require('xlsx'); } catch (e) { console.error('⚠️ xlsx no está instalada — el reporte en Excel no va a funcionar hasta que se agregue a package.json. El resto de KAI sigue funcionando normal.'); }
 
 dotenv.config();
 
@@ -29,7 +34,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-reporte-leads-excel'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-xlsx-opcional-no-tumba-servidor'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -5272,28 +5277,40 @@ app.get('/api/debug/oportunidad-detalle', authMiddleware, async (req, res) => {
 // GET /api/reportes/leads-excel?dias=7
 app.get('/api/reportes/leads-excel', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  if (!XLSX) return res.status(500).json({ ok: false, error: 'Falta instalar la librería "xlsx" en el servidor (agrégala a package.json y vuelve a desplegar). El resto de KAI funciona normal.' });
   try {
     const dias = parseInt(req.query.dias) || 7;
     const desde = new Date(Date.now() - dias * 24 * 60 * 60 * 1000);
+
+    // Límite de tiempo para las consultas a Odoo — si Odoo no responde rápido, el
+    // reporte sigue sin esos datos en vez de quedarse colgado hasta que Railway corte
+    // la conexión (eso fue lo que causó el 502 la primera vez: la llamada a Odoo nunca
+    // terminaba, y no había ningún límite que la cortara).
+    const conLimite = (promesa, ms = 8000) => Promise.race([
+      promesa,
+      new Promise(resolve => setTimeout(() => resolve(null), ms))
+    ]);
 
     const contactos = await Contacto.find({
       tenant_id: req.user.tenant_id,
       primer_contacto: { $gte: desde },
       numero: { $nin: NUMEROS_DE_PRUEBA }
-    }).sort({ primer_contacto: -1 }).lean();
+    }).sort({ primer_contacto: -1 }).limit(500).lean();
 
     // Traer de un solo golpe (no uno por uno) el vendedor/etapa/etiqueta real en Odoo
     // para todos los que ya tienen lead creado.
     const idsOdoo = contactos.filter(c => c.odoo_lead_id).map(c => c.odoo_lead_id);
     let porLeadOdoo = {};
     if (idsOdoo.length) {
-      const leadsOdoo = await odooCallLocal('crm.lead', 'read',
-        [idsOdoo, ['id', 'user_id', 'stage_id', 'type', 'active', 'tag_ids']]
-      ).catch(() => []);
+      const leadsOdoo = await conLimite(
+        odooCallLocal('crm.lead', 'read', [idsOdoo, ['id', 'user_id', 'stage_id', 'type', 'active', 'tag_ids']]).catch(() => [])
+      ) || [];
       let nombresTag = {};
       const idsTags = [...new Set((leadsOdoo || []).flatMap(l => l.tag_ids || []))];
       if (idsTags.length) {
-        const tags = await odooCallLocal('crm.tag', 'read', [idsTags, ['id', 'name']]).catch(() => []);
+        const tags = await conLimite(
+          odooCallLocal('crm.tag', 'read', [idsTags, ['id', 'name']]).catch(() => [])
+        ) || [];
         (tags || []).forEach(t => { nombresTag[t.id] = t.name; });
       }
       (leadsOdoo || []).forEach(l => {
@@ -5317,7 +5334,7 @@ app.get('/api/reportes/leads-excel', authMiddleware, async (req, res) => {
         'Correo': c.correo || '',
         'Nivel de interés': c.nivel_interes || '',
         'Canal': c.canal_origen || '',
-        'Vendedor asignado': odoo?.vendedor || 'Sin lead en Odoo todavía',
+        'Vendedor asignado': odoo?.vendedor || (c.odoo_lead_id ? 'No se pudo leer de Odoo (tardó demasiado)' : 'Sin lead en Odoo todavía'),
         'Tipo': odoo?.tipo || '',
         'Etapa en Odoo': odoo?.etapa || '',
         'Etiquetas': odoo?.etiquetas || '',
@@ -5342,7 +5359,10 @@ app.get('/api/reportes/leads-excel', authMiddleware, async (req, res) => {
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${nombreArchivo}"`);
     res.send(buffer);
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+  } catch (e) {
+    console.error('❌ [Reporte Excel] Error generando el reporte:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 app.get('/api/dashboard/evaluacion', authMiddleware, async (req, res) => {
