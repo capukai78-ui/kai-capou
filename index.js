@@ -45,7 +45,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-kai-pausado-en-produccion'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-pausa-corrige-omnichannel'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -2334,6 +2334,15 @@ async function procesarMensajeOmnichannel(numero, nombre, mensaje, canal, tenant
   // Los números de prueba del equipo no generan nada en Odoo.
   if (esNumeroDePrueba(numero)) {
     console.log(`🧪 [Prueba] ${numero} (${canal}) es número de pruebas — no se crea lead ni candidato`);
+    return;
+  }
+
+  // ===== INTERRUPTOR MAESTRO: KAI PAUSADO EN PRODUCCIÓN =====
+  // Esta función crea/vincula leads en Odoo para TODO mensaje entrante, sin importar si
+  // luego se responde o no — corre ANTES de responderConIA. Por eso, aunque las
+  // respuestas ya estaban pausadas, los leads seguían creándose solos. Con esto, ya no.
+  if (KAI_PAUSADO_PARA_PRODUCCION) {
+    console.log(`⏸️ [Omnichannel] KAI pausado en producción — no se crea/toca ningún lead para ${numero} (${canal})`);
     return;
   }
   try {
