@@ -34,7 +34,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-asignar-vendedor-directo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-reporte-para-confirmar'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -6522,6 +6522,63 @@ app.get('/api/debug/ver-asignacion-cruda', authMiddleware, async (req, res) => {
 // consistente (agente_id apunta al mismo nombre que agente_nombre) — porque ya
 // encontramos un caso (Karen Fuentes) donde el registro interno también estaba mal.
 // GET /api/debug/auditoria-agentes-acrux
+// Reporte consolidado, en TEXTO legible (no JSON), de una lista de conversaciones
+// puntuales — para compartir directo con el equipo y que confirmen. Para cada una
+// verifica: el modo real (humano/bot — nunca sugiere tocar si Kai sigue atendiendo),
+// el vendedor guardado, y el tipo real del lead en Odoo (Lead u Oportunidad).
+// GET /api/debug/reporte-para-confirmar?contactos=8540,8537,2380,8509
+app.get('/api/debug/reporte-para-confirmar', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const contactoIds = String(req.query.contactos || '').split(',').map(n => parseInt(n.trim())).filter(Boolean);
+    if (!contactoIds.length) return res.json({ ok: false, error: 'Falta ?contactos=8540,8537,...' });
+
+    const asignaciones = await AsignacionAcrux.find({ tenant_id: req.user.tenant_id, contacto_id: { $in: contactoIds } }).lean();
+    const porContacto = {};
+    asignaciones.forEach(a => { porContacto[a.contacto_id] = a; });
+
+    const conversacionesOdoo = await odooCallLocal('acrux.chat.conversation', 'read',
+      [contactoIds, ['id', 'number', 'agent_id', 'status']]
+    ).catch(() => []);
+    const convPorId = {};
+    (conversacionesOdoo || []).forEach(c => { convPorId[c.id] = c; });
+
+    let texto = `REPORTE PARA CONFIRMAR — ${new Date().toLocaleString('es-GT', { timeZone: 'America/Guatemala' })}\n`;
+    texto += `${'='.repeat(60)}\n\n`;
+
+    for (const id of contactoIds) {
+      const asign = porContacto[id];
+      const conv = convPorId[id];
+      texto += `Conversación #${id} — ${conv?.number || 'número desconocido'}\n`;
+      if (!asign) {
+        texto += `  Sin registro interno — nada que confirmar.\n\n`;
+        continue;
+      }
+      texto += `  Modo en KAI: ${asign.modo === 'humano' ? '👤 humano' : '🤖 bot (KAI todavía atendiendo)'}\n`;
+      texto += `  Vendedor guardado: ${asign.agente_nombre || 'ninguno'}\n`;
+      texto += `  Agente actual en Odoo: ${conv?.agent_id?.[1] || 'ninguno'}\n`;
+
+      // Buscar el lead vinculado por nuestro propio Contacto (más confiable que por teléfono)
+      const numeroLimpio = String(conv?.number || '').replace(/\D/g, '');
+      const contacto = numeroLimpio ? await Contacto.findOne({ tenant_id: req.user.tenant_id, numero: numeroLimpio }).lean() : null;
+      if (contacto?.odoo_lead_id) {
+        const lead = await odooCallLocal('crm.lead', 'read', [[contacto.odoo_lead_id], ['id', 'type', 'stage_id', 'user_id']], { context: { active_test: false } }).catch(() => null);
+        if (lead?.[0]) {
+          texto += `  Tipo en Odoo: ${lead[0].type === 'opportunity' ? '🔴 OPORTUNIDAD' : 'Lead'} (${lead[0].stage_id?.[1] || ''})\n`;
+          texto += `  Vendedor en el lead de Odoo: ${lead[0].user_id?.[1] || 'Sin asignar'}\n`;
+        }
+      } else {
+        texto += `  Sin vínculo de lead guardado en nuestro sistema.\n`;
+      }
+
+      texto += `  → ${asign.modo === 'humano' ? '✅ Se puede sincronizar con confianza' : '⛔ NO tocar — Kai sigue atendiendo'}\n\n`;
+    }
+
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.send(texto);
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/debug/auditoria-agentes-acrux', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
@@ -6656,6 +6713,14 @@ app.get('/api/debug/probar-sincronizar-agente', authMiddleware, async (req, res)
 
     const asign = await AsignacionAcrux.findOne({ tenant_id: req.user.tenant_id, contacto_id: contactoId });
     if (!asign?.agente_id) return res.json({ ok: false, error: 'Esta conversación no tiene ningún agente asignado en nuestro sistema (Mongo) — nada que sincronizar.' });
+    if (asign.modo !== 'humano') {
+      return res.json({
+        ok: false,
+        error: `Esta conversación está en modo "${asign.modo}" — KAI todavía la puede estar atendiendo. Sincronizar el agente aquí sería incorrecto: le diría a Odoo que ya hay un humano cuando puede que no. Solo se sincroniza si modo === 'humano'.`,
+        modo_actual: asign.modo,
+        agente_guardado_para_cuando_pase_a_humano: asign.agente_nombre
+      });
+    }
 
     const agente = await UsuarioPanel.findById(asign.agente_id);
     if (!agente) return res.json({ ok: false, error: 'El agente asignado en Mongo ya no existe como usuario del panel.' });
