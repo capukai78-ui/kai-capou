@@ -941,11 +941,14 @@ tr:hover td{background:var(--g4)}
       <div class="tw" style="margin-top:16px">
         <div class="tw-h">
           <div class="tw-t">📊 Distribución de leads por vendedora</div>
-          <select id="eval-dias" onchange="cargarEvaluacion()" style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;padding:4px 8px">
-            <option value="1">Hoy</option>
-            <option value="7" selected>Últimos 7 días</option>
-            <option value="30">Últimos 30 días</option>
-          </select>
+          <div style="display:flex;align-items:center;gap:8px">
+            <button onclick="descargarReporteExcel(event)" title="Descarga un Excel con todos los leads del período: fecha de ingreso, vendedor, si se atendió, y cómo va cada uno" style="background:var(--bg3);border:1px solid var(--border);color:var(--text2);border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer">📥 Descargar Excel</button>
+            <select id="eval-dias" onchange="cargarEvaluacion()" style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;padding:4px 8px">
+              <option value="1">Hoy</option>
+              <option value="7" selected>Últimos 7 días</option>
+              <option value="30">Últimos 30 días</option>
+            </select>
+          </div>
         </div>
         <div id="eval-distribucion" style="padding:12px;color:var(--text3);font-size:12px">Cargando...</div>
       </div>
@@ -2706,6 +2709,38 @@ async function loadMonitoreo(){
   if(boxCalidad) boxCalidad.style.display = (ROLE==='admin' || ROLE==='viewer') ? 'block' : 'none';
   cargarEvaluacion();
   _loadMonitoreoOriginal();
+}
+
+// Descarga el reporte de leads en Excel — usa el mismo período que esté seleccionado
+// en el filtro de "Distribución de leads" (Hoy / 7 días / 30 días), para no duplicar
+// el control en la pantalla.
+async function descargarReporteExcel(ev){
+  const dias = document.getElementById('eval-dias')?.value || 7;
+  const boton = ev?.target;
+  const textoOriginal = boton ? boton.textContent : null;
+  if (boton) { boton.textContent = '⏳ Generando...'; boton.disabled = true; }
+  try {
+    const r = await fetch(API + '/api/reportes/leads-excel?dias=' + dias, {
+      headers: { Authorization: 'Bearer ' + TOKEN }
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      showToast(err.error || 'No se pudo generar el reporte', 'error');
+      return;
+    }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Reporte_Leads_KAI_${new Date().toISOString().slice(0,10)}.xlsx`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('Reporte descargado ✓', 'ok');
+  } catch(e) {
+    showToast('Error de conexión al generar el reporte', 'error');
+  } finally {
+    if (boton) { boton.textContent = textoOriginal; boton.disabled = false; }
+  }
 }
 
 async function cargarEvaluacion(){
