@@ -34,7 +34,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-auditoria-con-tipo-real'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-buscar-leads-por-numeros'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -8363,6 +8363,49 @@ app.get('/api/debug/revertir-perdidos-por-error', authMiddleware, async (req, re
 // odoo_lead_id directamente) — en vez de rebuscar por teléfono, que puede fallar si el
 // número está guardado en Odoo con un formato que la búsqueda no reconoce.
 // GET /api/debug/lead-vinculado-al-contacto?numero=502XXXXXXXX
+// Busca VARIOS números directo en Odoo (todos los formatos, activos y archivados) —
+// para los casos donde nuestro Contacto no tiene odoo_lead_id guardado, y hace falta
+// confirmar con certeza si de verdad no existe ningún lead, o si existe pero nunca se
+// enlazó desde nuestro lado.
+// GET /api/debug/buscar-leads-por-numeros?numeros=502...,502...,502...
+app.get('/api/debug/buscar-leads-por-numeros', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const numeros = String(req.query.numeros || '').split(',').map(n => n.trim()).filter(Boolean);
+    if (!numeros.length) return res.json({ ok: false, error: 'Falta ?numeros=502...,502...' });
+
+    const resultado = [];
+    for (const numero of numeros) {
+      const condiciones = condicionesTelefono(numero);
+      if (!condiciones.length) { resultado.push({ numero, encontrados: 0, leads: [], error: 'Número inválido' }); continue; }
+
+      const dominio = [];
+      for (let i = 0; i < condiciones.length - 1; i++) dominio.push('|');
+      condiciones.forEach(c => dominio.push(c));
+
+      const leads = await odooCallLocal('crm.lead', 'search_read',
+        [dominio],
+        { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'mobile', 'user_id', 'type', 'stage_id', 'active', 'create_date'], limit: 10, order: 'create_date desc', context: { active_test: false } }
+      ).catch(() => []);
+
+      resultado.push({
+        numero,
+        encontrados: leads.length,
+        leads: leads.map(l => ({
+          id: l.id, nombre: l.partner_name || l.contact_name || l.name,
+          vendedor: l.user_id?.[1] || 'Sin asignar',
+          tipo: l.type === 'opportunity' ? 'Oportunidad' : 'Lead',
+          etapa: l.stage_id?.[1] || '',
+          activo: l.active,
+          creado: l.create_date
+        }))
+      });
+    }
+
+    res.json({ ok: true, total_numeros_revisados: resultado.length, resultado });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/debug/lead-vinculado-al-contacto', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
