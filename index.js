@@ -34,7 +34,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-probar-sincronizar-agente'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-sincronizacion-agente-apagada-por-defecto'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -885,7 +885,7 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
       // pensando para siempre que la conversación la tiene "Administrador" (el usuario
       // con el que KAI inicia sesión), y eso genera errores de validación reales cuando
       // la vendedora intenta trabajar el caso desde Odoo.
-      if (asign?.agente_id) {
+      if (SINCRONIZAR_AGENTE_EN_ODOO_ACTIVO && asign?.agente_id) {
         const agenteReal = await UsuarioPanel.findById(asign.agente_id);
         if (agenteReal?.odoo_user_id) {
           await odooCallLocal('acrux.chat.conversation', 'write', [[contactoId], { agent_id: agenteReal.odoo_user_id }]).catch(e => {
@@ -981,7 +981,7 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
       // (el usuario con el que KAI inicia sesión) — y eso es justo lo que causó el error
       // de validación real: Odoo veía "atendido por Administrador" aunque nuestro Mongo
       // ya decía que era de una vendedora real.
-      if (agenteParaEsteTraspaso?.odoo_user_id) {
+      if (SINCRONIZAR_AGENTE_EN_ODOO_ACTIVO && agenteParaEsteTraspaso?.odoo_user_id) {
         await odooCallLocal('acrux.chat.conversation', 'write', [[contactoId], { agent_id: agenteParaEsteTraspaso.odoo_user_id }]).catch(e => {
           console.error(`⚠️ No se pudo sincronizar el agente en Odoo para la conversación ${contactoId}: ${e.message}`);
         });
@@ -1037,6 +1037,14 @@ async function enviarTextoAcruxLab(contactoId, texto, intento = 1) {
 // petición explícita después de la primera prueba en vivo, mientras se decide cuándo
 // reactivarlo. Cambiar a `true` para reactivar el motor.
 const ACRUX_AUTO_RESPUESTA_ACTIVO = true; // Activado para prueba de fin de semana — monitorear los logs de cerca
+
+// Apagado por defecto hasta confirmar, caso por caso, que el registro interno
+// (AsignacionAcrux.agente_id) es confiable — se descubrió el 24/07 que puede estar
+// desalineado con agente_nombre (caso Karen Fuentes: nombre decía Sylvia, el ID
+// apuntaba a Cindy). Mientras esto esté en false, el traspaso sigue funcionando igual
+// que antes (solo actualiza nuestro Mongo), pero NO escribe nada en Odoo — así no hay
+// riesgo de sincronizar un agente equivocado por un dato ya roto de antes.
+const SINCRONIZAR_AGENTE_EN_ODOO_ACTIVO = false;
 const VENTANA_MOTOR_ACRUX_HORAS = 48; // cuánto hacia atrás revisa el motor buscando mensajes sin responder
 
 // Motor que revisa cada cierto tiempo si hay mensajes nuevos sin responder en AcruxLab,
@@ -6479,6 +6487,28 @@ app.get('/api/acrux/plantillas', authMiddleware, async (req, res) => {
 // automático (ya en el código, pero conviene probarlo primero) funcione con todas las
 // vendedoras. Solo toca la conversación que le pases, nada más.
 // GET /api/debug/probar-sincronizar-agente?contacto_id=6927
+// Muestra el registro CRUDO de AsignacionAcrux para una conversación — para detectar
+// inconsistencias entre agente_id y agente_nombre (que no deberían pasar nunca, pero
+// pasó con Karen Fuentes: el nombre decía Sylvia, el ID apuntaba a Cindy).
+// GET /api/debug/ver-asignacion-cruda?contacto_id=6927
+app.get('/api/debug/ver-asignacion-cruda', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const contactoId = parseInt(req.query.contacto_id);
+    const asign = await AsignacionAcrux.findOne({ tenant_id: req.user.tenant_id, contacto_id: contactoId }).lean();
+    if (!asign) return res.json({ ok: false, error: 'No existe registro de AsignacionAcrux para esa conversación' });
+
+    const usuarioPorId = asign.agente_id ? await UsuarioPanel.findById(asign.agente_id).select('nombre email') : null;
+
+    res.json({
+      ok: true,
+      registro_completo: asign,
+      usuario_real_al_que_apunta_agente_id: usuarioPorId ? { id: usuarioPorId._id, nombre: usuarioPorId.nombre, email: usuarioPorId.email } : 'agente_id no existe o es nulo',
+      coincide: usuarioPorId ? (usuarioPorId.nombre === asign.agente_nombre) : null
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/debug/probar-sincronizar-agente', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
