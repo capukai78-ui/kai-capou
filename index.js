@@ -45,7 +45,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-actividad-reciente-acrux'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-reporte-atendidos-semana'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1063,6 +1063,9 @@ const ACRUX_AUTO_RESPUESTA_ACTIVO = true; // Activado para prueba de fin de sema
 // apuntaba a Cindy). Mientras esto esté en false, el traspaso sigue funcionando igual
 // que antes (solo actualiza nuestro Mongo), pero NO escribe nada en Odoo — así no hay
 // riesgo de sincronizar un agente equivocado por un dato ya roto de antes.
+// REVERTIDO el 24/07 a solicitud explícita — el usuario quiere probar con 1 solo chat
+// primero, y sacar el reporte completo de atendidos antes de activar esto para todos.
+// NO cambiar a true sin confirmación directa.
 const SINCRONIZAR_AGENTE_EN_ODOO_ACTIVO = false;
 const VENTANA_MOTOR_ACRUX_HORAS = 48; // cuánto hacia atrás revisa el motor buscando mensajes sin responder
 
@@ -1561,14 +1564,6 @@ async function marcarLeadComoPerdido(leadId, motivo) {
 }
 
 async function contactarLeadPorAcruxLab(tenant, lead) {
-  // ===== INTERRUPTOR MAESTRO: KAI PAUSADO EN PRODUCCIÓN =====
-  // No se contacta a NINGÚN lead real de forma proactiva mientras esto esté activo.
-  const telParaVerificarPausa = (lead.mobile && String(lead.mobile) !== 'false') ? lead.mobile : ((lead.phone && String(lead.phone) !== 'false') ? lead.phone : null);
-  if (KAI_PAUSADO_PARA_PRODUCCION && !esNumeroDePrueba(telParaVerificarPausa)) {
-    console.log(`⏸️ [Motor AcruxLab] KAI pausado en producción — no se contacta lead #${lead.id}`);
-    return { ok: false, motivo: 'kai_pausado' };
-  }
-
   const marcarSinWhatsApp = async (nota) => {
     const tagSinWAId = await getOdooTagId(TAG_KAI_SIN_WHATSAPP);
     await odooCallLocal('crm.lead', 'write', [[lead.id], { tag_ids: [[4, tagSinWAId]] }]).catch(() => {});
@@ -1617,6 +1612,16 @@ async function contactarLeadPorAcruxLab(tenant, lead) {
   let tel = String(telFinal).replace(/\D/g, '');
   if (tel.length === 8) tel = '502' + tel;
   if (tel.length < 11) { await marcarSinWhatsApp(`el número "${telFinal}" no parece válido`); return { ok: false, motivo: 'telefono_invalido' }; }
+
+  // ===== INTERRUPTOR MAESTRO: KAI PAUSADO EN PRODUCCIÓN =====
+  // Se revisa AQUÍ, después de clasificar (leer correo, poner teléfono/nombre/nivel,
+  // etiquetar) — esa parte SIEMPRE debe correr, pausado o no, porque es solo organizar
+  // datos en Odoo, no contactar a nadie. Lo que sí se detiene aquí es todo lo que sigue:
+  // enviar el mensaje, asignar vendedora, y marcar como contactado.
+  if (KAI_PAUSADO_PARA_PRODUCCION && !esNumeroDePrueba(tel)) {
+    console.log(`⏸️ [Motor AcruxLab] KAI pausado en producción — lead #${lead.id} ya quedó clasificado, pero NO se contacta`);
+    return { ok: false, motivo: 'kai_pausado_ya_clasificado' };
+  }
 
   // ===== NO CONTACTAR DOS VECES AL MISMO NÚMERO =====
   // Un mismo papá puede tener varios leads en Odoo (llenó el formulario dos veces, o
@@ -1760,13 +1765,6 @@ async function contactarLeadPorAcruxLab(tenant, lead) {
 
 
 async function contactarLeadPorWhatsApp(tenant, lead) {
-  // ===== INTERRUPTOR MAESTRO: KAI PAUSADO EN PRODUCCIÓN =====
-  const telParaVerificarPausaWA = (lead.mobile && String(lead.mobile) !== 'false') ? lead.mobile : ((lead.phone && String(lead.phone) !== 'false') ? lead.phone : null);
-  if (KAI_PAUSADO_PARA_PRODUCCION && !esNumeroDePrueba(telParaVerificarPausaWA)) {
-    console.log(`⏸️ [Motor WhatsApp] KAI pausado en producción — no se contacta lead #${lead.id}`);
-    return { ok: false, motivo: 'kai_pausado' };
-  }
-
   // Marca el lead para que no se vuelva a intentar en cada corrida. Sin esto, los
   // registros sin teléfono (correos del formulario, boletines, etc.) se re-consultaban
   // cada 10 minutos para siempre y ocupaban los cupos de los papás reales.
@@ -1790,6 +1788,14 @@ async function contactarLeadPorWhatsApp(tenant, lead) {
   if (tel.length < 11) {
     await marcarSinWhatsApp(`el número "${telCrudo}" no parece válido`);
     return { ok: false, motivo: 'telefono_invalido' };
+  }
+
+  // ===== INTERRUPTOR MAESTRO: KAI PAUSADO EN PRODUCCIÓN =====
+  // Después de clasificar (leer correo, teléfono/nombre/nivel) — eso siempre corre.
+  // Lo que se detiene aquí es el envío del mensaje.
+  if (KAI_PAUSADO_PARA_PRODUCCION && !esNumeroDePrueba(tel)) {
+    console.log(`⏸️ [Motor WhatsApp] KAI pausado en producción — lead #${lead.id} ya quedó clasificado, pero NO se contacta`);
+    return { ok: false, motivo: 'kai_pausado_ya_clasificado' };
   }
 
   const nombre = lead.partner_name || lead.contact_name || null;
@@ -6642,6 +6648,62 @@ app.get('/api/debug/actividad-reciente-acrux', authMiddleware, async (req, res) 
       total_de_numeros_de_prueba: detalle.length - reales.length,
       total_de_numeros_reales_ALERTA: reales.length,
       detalle_numeros_reales: reales,
+      detalle_completo: detalle
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// ===== REPORTE: TODOS LOS ATENDIDOS ESTA SEMANA + VISIBILIDAD REAL EN ODOO =====
+// De SOLO LECTURA. Trae cada conversación de AcruxLab que Kai puso en modo "humano"
+// (es decir, que atendió y traspasó) en el período pedido, y para cada una revisa si el
+// agente que Odoo muestra HOY es una vendedora real y visible, o si sigue siendo
+// "Administrador" — que es lo que la deja invisible en el ChatRoom de cada vendedora.
+// GET /api/debug/reporte-atendidos-semana?dias=7
+app.get('/api/debug/reporte-atendidos-semana', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const dias = parseInt(req.query.dias) || 7;
+    const desde = new Date(Date.now() - dias * 24 * 60 * 60 * 1000);
+
+    // Todo lo que Kai atendió y marcó como traspasado a humano en el período
+    const asignaciones = await AsignacionAcrux.find({
+      tenant_id: req.user.tenant_id,
+      modo: 'humano',
+      fecha_modo_humano: { $gte: desde }
+    }).sort({ fecha_modo_humano: -1 }).limit(300).lean();
+
+    if (!asignaciones.length) return res.json({ ok: true, total: 0, mensaje: `No hay conversaciones atendidas y traspasadas en los últimos ${dias} días.` });
+
+    const idsConv = asignaciones.map(a => a.contacto_id);
+    const conversacionesOdoo = await odooCallLocal('acrux.chat.conversation', 'read',
+      [idsConv, ['id', 'number', 'agent_id', 'status']]
+    ).catch(() => []);
+    const convPorId = {};
+    (conversacionesOdoo || []).forEach(c => { convPorId[c.id] = c; });
+
+    const detalle = asignaciones.map(a => {
+      const conv = convPorId[a.contacto_id];
+      const agenteEnOdoo = conv?.agent_id?.[1] || 'ninguno';
+      const esInvisibleParaElEquipo = !agenteEnOdoo || /^administrador$/i.test(agenteEnOdoo);
+      return {
+        contacto_id: a.contacto_id,
+        numero: conv?.number || 'desconocido',
+        vendedora_segun_kai: a.agente_nombre || 'ninguna',
+        agente_visible_en_odoo: agenteEnOdoo,
+        visible_para_el_equipo: !esInvisibleParaElEquipo,
+        fecha_traspaso: a.fecha_modo_humano
+      };
+    });
+
+    const invisibles = detalle.filter(d => !d.visible_para_el_equipo);
+
+    res.json({
+      ok: true,
+      periodo_dias: dias,
+      total_atendidos_y_traspasados: detalle.length,
+      total_invisibles_para_el_equipo: invisibles.length,
+      total_visibles: detalle.length - invisibles.length,
+      detalle_invisibles: invisibles,
       detalle_completo: detalle
     });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
