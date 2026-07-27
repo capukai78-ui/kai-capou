@@ -45,7 +45,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-reporte-atendidos-semana'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-respaldo-mensajes-y-rango-fechas'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -272,6 +272,24 @@ asignacionAcruxSchema.index({ tenant_id: 1, contacto_id: 1 }, { unique: true });
 const AsignacionAcrux = mongoose.model('AsignacionAcrux', asignacionAcruxSchema);
 
 // ===== MODELO CONTACTO — memoria persistente del padre/madre =====
+// ===== RESPALDO DE MENSAJES DE ACRUXLAB =====
+// Copia propia, en nuestra base de datos, de cada mensaje de AcruxLab. Independiente de
+// Odoo por completo — si algo le pasa a los datos de Odoo (se pierden, se archivan, el
+// módulo falla), esta copia sigue existiendo. Se llena con /api/debug/respaldar-mensajes.
+const mensajeRespaldoSchema = new mongoose.Schema({
+  tenant_id: { type: mongoose.Schema.Types.ObjectId, required: true },
+  contacto_id_acrux: { type: Number, required: true, index: true }, // ID de la conversación en Odoo
+  numero: { type: String, index: true },
+  mensaje_id_odoo: { type: Number, required: true },
+  de: { type: String }, // 'colegio' o 'padre'
+  autor: { type: String, default: null },
+  texto: { type: String, default: '' },
+  fecha_mensaje: { type: Date },
+  respaldado_en: { type: Date, default: Date.now }
+});
+mensajeRespaldoSchema.index({ tenant_id: 1, mensaje_id_odoo: 1 }, { unique: true }); // no duplicar el mismo mensaje dos veces
+const MensajeRespaldo = mongoose.model('MensajeRespaldo', mensajeRespaldoSchema);
+
 const contactoSchema = new mongoose.Schema({
   tenant_id:      { type: mongoose.Schema.Types.ObjectId, ref: 'Tenant' },
   numero:         { type: String, required: true },
@@ -3384,6 +3402,35 @@ async function actualizarSegmentosReactivacion() {
 setTimeout(actualizarSegmentosReactivacion, 30 * 1000); // esperar 30s a que MongoDB esté listo
 setInterval(actualizarSegmentosReactivacion, 24 * 60 * 60 * 1000);
 
+// Respaldo automático diario de TODOS los mensajes de AcruxLab — para que nunca vuelva
+// a depender de que alguien lo corra a mano. No duplica lo que ya está guardado.
+async function respaldoAutomaticoDiario() {
+  try {
+    const tenant = await Tenant.findOne({ activo: true });
+    if (!tenant) return;
+    const todasLasConv = await odooCallLocal('acrux.chat.conversation', 'search_read', [[]], { fields: ['id'], limit: 5000 }).catch(() => []);
+    let guardados = 0;
+    for (const conv of (todasLasConv || [])) {
+      const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
+        [[['contact_id', '=', conv.id]]], { fields: ['id', 'text', 'from_me', 'date_message'], limit: 500, order: 'date_message asc' }
+      ).catch(() => []);
+      for (const m of mensajes) {
+        try {
+          await MensajeRespaldo.create({
+            tenant_id: tenant._id, contacto_id_acrux: conv.id, mensaje_id_odoo: m.id,
+            de: m.from_me ? 'colegio' : 'padre', texto: m.text || '',
+            fecha_mensaje: m.date_message ? new Date(m.date_message.replace(' ', 'T') + 'Z') : null
+          });
+          guardados++;
+        } catch (e) { /* ya existía, normal */ }
+      }
+    }
+    console.log(`💾 [Respaldo diario] ${guardados} mensajes nuevos guardados de ${(todasLasConv || []).length} conversaciones`);
+  } catch (e) { console.error('❌ [Respaldo diario] Error:', e.message); }
+}
+setInterval(respaldoAutomaticoDiario, 24 * 60 * 60 * 1000);
+setTimeout(respaldoAutomaticoDiario, 60 * 1000); // primera corrida 1 minuto después de arrancar
+
 // ===== MOTOR DE CONTACTO PROACTIVO — KAI revisa Odoo y contacta leads nuevos por WhatsApp =====
 // Corre cada 30 minutos. Busca leads en Odoo que tienen teléfono pero KAI nunca contactó.
 // Los contacta por WhatsApp, captura respuesta en flujo normal, asigna a Cindy o Vanessa.
@@ -5441,8 +5488,15 @@ app.get('/api/reportes/leads-excel', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   if (!XLSX) return res.status(500).json({ ok: false, error: 'Falta instalar la librería "xlsx" en el servidor (agrégala a package.json y vuelve a desplegar). El resto de KAI funciona normal.' });
   try {
-    const dias = parseInt(req.query.dias) || 7;
-    const desde = new Date(Date.now() - dias * 24 * 60 * 60 * 1000);
+    let desde, hasta;
+    if (req.query.desde && req.query.hasta) {
+      desde = new Date(req.query.desde + 'T00:00:00');
+      hasta = new Date(req.query.hasta + 'T23:59:59');
+    } else {
+      const dias = parseInt(req.query.dias) || 7;
+      desde = new Date(Date.now() - dias * 24 * 60 * 60 * 1000);
+      hasta = new Date();
+    }
 
     // Límite de tiempo para las consultas a Odoo — si Odoo no responde rápido, el
     // reporte sigue sin esos datos en vez de quedarse colgado hasta que Railway corte
@@ -5455,7 +5509,7 @@ app.get('/api/reportes/leads-excel', authMiddleware, async (req, res) => {
 
     const contactos = await Contacto.find({
       tenant_id: req.user.tenant_id,
-      primer_contacto: { $gte: desde },
+      primer_contacto: { $gte: desde, $lte: hasta },
       numero: { $nin: NUMEROS_DE_PRUEBA }
     }).sort({ primer_contacto: -1 }).limit(500).lean();
 
@@ -5514,7 +5568,10 @@ app.get('/api/reportes/leads-excel', authMiddleware, async (req, res) => {
       { wch: 18 }, { wch: 22 }, { wch: 18 }, { wch: 15 }, { wch: 24 }, { wch: 14 }, { wch: 10 },
       { wch: 22 }, { wch: 12 }, { wch: 16 }, { wch: 20 }, { wch: 10 }, { wch: 10 }, { wch: 50 }, { wch: 18 }, { wch: 20 }
     ];
-    XLSX.utils.book_append_sheet(libro, hoja, `Últimos ${dias} días`);
+    const etiquetaHoja = (req.query.desde && req.query.hasta)
+      ? `${req.query.desde} al ${req.query.hasta}`
+      : `Últimos ${parseInt(req.query.dias) || 7} días`;
+    XLSX.utils.book_append_sheet(libro, hoja, etiquetaHoja.substring(0, 31)); // Excel limita el nombre de hoja a 31 caracteres
 
     // Segunda hoja: auditoría histórica de leads perdidos (siempre a 45 días, sin
     // importar el período del reporte principal, para tener visibilidad completa desde
@@ -6659,6 +6716,153 @@ app.get('/api/debug/actividad-reciente-acrux', authMiddleware, async (req, res) 
 // agente que Odoo muestra HOY es una vendedora real y visible, o si sigue siendo
 // "Administrador" — que es lo que la deja invisible en el ChatRoom de cada vendedora.
 // GET /api/debug/reporte-atendidos-semana?dias=7
+// ===== REPORTE: TODOS LOS CONTACTOS DE UN RANGO DE FECHAS EXACTO, SIN EXCEPCIÓN =====
+// De SOLO LECTURA. A diferencia del reporte de "atendidos", este trae TODO — sin
+// filtrar por si se traspasó o no — para poder rastrear qué pasó con cada lead que
+// entró en el rango, esté como esté (bot, humano, sin responder, lo que sea).
+// GET /api/debug/reporte-rango-fechas?desde=2026-07-17&hasta=2026-07-24
+// Copia los mensajes de una o varias conversaciones de AcruxLab a NUESTRA base de
+// datos, para tener respaldo propio, independiente de Odoo. Se puede correr las veces
+// que se quiera — no duplica mensajes ya guardados (por mensaje_id_odoo único).
+// GET /api/debug/respaldar-mensajes?contactos=6081,8641,7536 (o ?todos=1 para respaldar
+// TODAS las conversaciones existentes en Odoo, en lote)
+app.get('/api/debug/respaldar-mensajes', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    let contactoIds;
+    if (req.query.todos === '1') {
+      const todasLasConv = await odooCallLocal('acrux.chat.conversation', 'search_read', [[]], { fields: ['id'], limit: 5000 }).catch(() => []);
+      contactoIds = (todasLasConv || []).map(c => c.id);
+    } else {
+      contactoIds = String(req.query.contactos || '').split(',').map(n => parseInt(n.trim())).filter(Boolean);
+    }
+    if (!contactoIds.length) return res.json({ ok: false, error: 'Falta ?contactos=6081,8641,... o ?todos=1' });
+
+    let totalGuardados = 0, totalYaExistian = 0, conversacionesProcesadas = 0;
+    const errores = [];
+
+    for (const contactoId of contactoIds) {
+      try {
+        const conv = await odooCallLocal('acrux.chat.conversation', 'read', [[contactoId], ['id', 'number']]);
+        const numero = conv?.[0]?.number ? String(conv[0].number).replace(/\D/g, '') : null;
+
+        const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
+          [[['contact_id', '=', contactoId]]],
+          { fields: ['id', 'text', 'from_me', 'date_message'], limit: 500, order: 'date_message asc' }
+        ).catch(() => []);
+
+        for (const m of mensajes) {
+          try {
+            await MensajeRespaldo.create({
+              tenant_id: req.user.tenant_id,
+              contacto_id_acrux: contactoId,
+              numero,
+              mensaje_id_odoo: m.id,
+              de: m.from_me ? 'colegio' : 'padre',
+              texto: m.text || '',
+              fecha_mensaje: m.date_message ? new Date(m.date_message.replace(' ', 'T') + 'Z') : null
+            });
+            totalGuardados++;
+          } catch (e) {
+            if (e.code === 11000) totalYaExistian++; // ya estaba respaldado, no es error real
+            else throw e;
+          }
+        }
+        conversacionesProcesadas++;
+      } catch (e) { errores.push({ contacto_id: contactoId, error: e.message }); }
+    }
+
+    res.json({ ok: true, conversaciones_procesadas: conversacionesProcesadas, mensajes_nuevos_guardados: totalGuardados, mensajes_que_ya_existian: totalYaExistian, errores });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Consulta el respaldo propio — funciona aunque Odoo esté caído o haya perdido datos.
+// GET /api/debug/ver-respaldo?numero=502... o ?contacto_id=6081
+app.get('/api/debug/ver-respaldo', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const filtro = { tenant_id: req.user.tenant_id };
+    if (req.query.numero) filtro.numero = String(req.query.numero).replace(/\D/g, '');
+    if (req.query.contacto_id) filtro.contacto_id_acrux = parseInt(req.query.contacto_id);
+    if (!filtro.numero && !filtro.contacto_id_acrux) return res.json({ ok: false, error: 'Falta ?numero= o ?contacto_id=' });
+
+    const mensajes = await MensajeRespaldo.find(filtro).sort({ fecha_mensaje: 1 }).limit(500).lean();
+    res.json({ ok: true, total: mensajes.length, mensajes: mensajes.map(m => ({ de: m.de, texto: m.texto, fecha: m.fecha_mensaje })) });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+app.get('/api/debug/reporte-rango-fechas', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const desde = new Date(req.query.desde + 'T00:00:00');
+    const hasta = new Date(req.query.hasta + 'T23:59:59');
+    if (isNaN(desde) || isNaN(hasta)) return res.json({ ok: false, error: 'Formato: ?desde=YYYY-MM-DD&hasta=YYYY-MM-DD' });
+
+    const contactos = await Contacto.find({
+      tenant_id: req.user.tenant_id,
+      primer_contacto: { $gte: desde, $lte: hasta },
+      numero: { $nin: NUMEROS_DE_PRUEBA }
+    }).sort({ primer_contacto: 1 }).lean();
+
+    if (!contactos.length) return res.json({ ok: true, total: 0, mensaje: `Ningún contacto entre ${req.query.desde} y ${req.query.hasta}` });
+
+    // Vendedor real en Odoo, de un solo golpe
+    const idsOdoo = contactos.filter(c => c.odoo_lead_id).map(c => c.odoo_lead_id);
+    let porLeadOdoo = {};
+    if (idsOdoo.length) {
+      const leadsOdoo = await odooCallLocal('crm.lead', 'read',
+        [idsOdoo, ['id', 'user_id', 'stage_id', 'type', 'active']], { context: { active_test: false } }
+      ).catch(() => []);
+      (leadsOdoo || []).forEach(l => {
+        porLeadOdoo[l.id] = { vendedor: l.user_id?.[1] || 'Sin asignar', etapa: l.stage_id?.[1] || '', tipo: l.type === 'opportunity' ? 'Oportunidad' : 'Lead', activo: l.active };
+      });
+    }
+
+    // Estado real de AsignacionAcrux (modo, agente) para cada uno
+    const asignaciones = await AsignacionAcrux.find({ tenant_id: req.user.tenant_id }).lean();
+    const asignPorContactoId = {};
+    asignaciones.forEach(a => { asignPorContactoId[a.contacto_id] = a; });
+
+    // Vincular por número -> conversación de AcruxLab, para saber el contacto_id de cada uno
+    const numeros = contactos.map(c => c.numero);
+    const conversaciones = await odooCallLocal('acrux.chat.conversation', 'search_read',
+      [[]], { fields: ['id', 'number'], limit: 5000 }
+    ).catch(() => []);
+    const convIdPorNumero = {};
+    (conversaciones || []).forEach(c => { const n = String(c.number || '').replace(/\D/g, ''); if (n) convIdPorNumero[n] = c.id; });
+
+    const detalle = contactos.map(c => {
+      const odoo = c.odoo_lead_id ? porLeadOdoo[c.odoo_lead_id] : null;
+      const convId = convIdPorNumero[c.numero];
+      const asign = convId ? asignPorContactoId[convId] : null;
+      return {
+        numero: c.numero,
+        nombre: c.nombre || '(sin nombre)',
+        nivel: c.nivel_interes || '',
+        canal: c.canal_origen || '',
+        primer_contacto: c.primer_contacto,
+        ultimo_contacto: c.ultimo_contacto,
+        total_conversaciones: c.total_conversaciones || 0,
+        vendedor_en_odoo: odoo?.vendedor || (c.odoo_lead_id ? 'lead sin datos' : 'sin lead vinculado'),
+        tipo_en_odoo: odoo?.tipo || '',
+        etapa_en_odoo: odoo?.etapa || '',
+        modo_en_kai: asign?.modo || 'sin registro',
+        vendedor_segun_kai: asign?.agente_nombre || null,
+        contacto_id_acrux: convId || null,
+        conversacion_encontrada_en_odoo: !!convId
+      };
+    });
+
+    res.json({
+      ok: true,
+      rango: { desde: req.query.desde, hasta: req.query.hasta },
+      total: detalle.length,
+      sin_conversacion_encontrada_en_odoo: detalle.filter(d => !d.conversacion_encontrada_en_odoo).length,
+      detalle
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/debug/reporte-atendidos-semana', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
