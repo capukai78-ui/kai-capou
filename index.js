@@ -45,7 +45,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-pausa-en-reparto-automatico-panel'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-comparar-respaldo-vs-odoo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -6870,6 +6870,57 @@ app.get('/api/debug/confirmar-y-marcar-sin-contacto', authMiddleware, async (req
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
+// ===== COMPARACIÓN: NUESTRO RESPALDO vs LO QUE EXISTE EN ODOO AHORA MISMO =====
+// De SOLO LECTURA. Responde directamente la pregunta "¿las conversaciones que Kai
+// atendió quedan SOLO en nuestro sistema, o también en AcruxLab?" — con números
+// exactos, no con impresiones. Para cada conversación que Kai tocó en el rango,
+// confirma si esa misma conversación EXISTE en Odoo ahora mismo.
+// GET /api/debug/comparar-respaldo-vs-odoo?desde=2026-07-17&hasta=2026-07-24
+app.get('/api/debug/comparar-respaldo-vs-odoo', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const desde = new Date(req.query.desde + 'T00:00:00');
+    const hasta = new Date(req.query.hasta + 'T23:59:59');
+    if (isNaN(desde) || isNaN(hasta)) return res.json({ ok: false, error: 'Formato: ?desde=YYYY-MM-DD&hasta=YYYY-MM-DD' });
+
+    // Todas las conversaciones donde Kai escribió algo (respaldo propio) en el rango
+    const contactoIds = await MensajeRespaldo.distinct('contacto_id_acrux', {
+      tenant_id: req.user.tenant_id,
+      de: 'colegio',
+      fecha_mensaje: { $gte: desde, $lte: hasta }
+    });
+
+    if (!contactoIds.length) return res.json({ ok: true, total: 0, mensaje: 'No hay mensajes de Kai respaldados en ese rango (revisa que el respaldo se haya corrido para esas fechas).' });
+
+    // Verificar, uno por uno, si esa conversación existe HOY en Odoo
+    const detalle = [];
+    for (const id of contactoIds) {
+      const conv = await odooCallLocal('acrux.chat.conversation', 'read', [[id], ['id', 'number', 'agent_id']]).catch(() => null);
+      const numeroDeMongo = await MensajeRespaldo.findOne({ contacto_id_acrux: id }).select('numero').lean();
+      detalle.push({
+        contacto_id: id,
+        numero: numeroDeMongo?.numero || null,
+        existe_en_odoo_ahora: !!(conv && conv.length),
+        agente_en_odoo: conv?.[0]?.agent_id?.[1] || null
+      });
+    }
+
+    const siExisten = detalle.filter(d => d.existe_en_odoo_ahora);
+    const noExisten = detalle.filter(d => !d.existe_en_odoo_ahora);
+
+    res.json({
+      ok: true,
+      rango: { desde: req.query.desde, hasta: req.query.hasta },
+      total_conversaciones_donde_kai_escribio: detalle.length,
+      existen_en_los_dos_lados: siExisten.length,
+      solo_en_nuestro_respaldo_no_en_odoo: noExisten.length,
+      porcentaje_visible_en_odoo: `${Math.round((siExisten.length / detalle.length) * 100)}%`,
+      detalle_de_los_que_faltan_en_odoo: noExisten,
+      detalle_completo: detalle
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/debug/ver-respaldo', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
@@ -6880,6 +6931,83 @@ app.get('/api/debug/ver-respaldo', authMiddleware, async (req, res) => {
 
     const mensajes = await MensajeRespaldo.find(filtro).sort({ fecha_mensaje: 1 }).limit(500).lean();
     res.json({ ok: true, total: mensajes.length, mensajes: mensajes.map(m => ({ de: m.de, texto: m.texto, fecha: m.fecha_mensaje })) });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// ===== COMPARACIÓN DIRECTA: MENSAJES EN ODOO VS. MENSAJES EN NUESTRO PROPIO SISTEMA =====
+// De SOLO LECTURA. Para confirmar (o descartar) con evidencia si las conversaciones
+// están de verdad en los dos lados o solo en uno. Para cada contacto del rango, cuenta
+// los mensajes reales que existen HOY en Odoo (acrux.chat.message) y los compara contra
+// los que tenemos en nuestro propio respaldo (MensajeRespaldo) y en el modelo de
+// WhatsApp directo (Conversacion). Si un número aparece con mensajes en KAI pero 0 en
+// Odoo, ahí SÍ habría evidencia real de que "solo Kai se quedó con la conversación".
+// GET /api/debug/comparar-odoo-vs-kai?desde=2026-07-17&hasta=2026-07-24
+app.get('/api/debug/comparar-odoo-vs-kai', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const desde = new Date(req.query.desde + 'T00:00:00');
+    const hasta = new Date(req.query.hasta + 'T23:59:59');
+    if (isNaN(desde) || isNaN(hasta)) return res.json({ ok: false, error: 'Formato: ?desde=YYYY-MM-DD&hasta=YYYY-MM-DD' });
+
+    const contactos = await Contacto.find({
+      tenant_id: req.user.tenant_id,
+      primer_contacto: { $gte: desde, $lte: hasta },
+      numero: { $nin: NUMEROS_DE_PRUEBA }
+    }).sort({ primer_contacto: 1 }).limit(500).lean();
+
+    if (!contactos.length) return res.json({ ok: true, total: 0, mensaje: `Ningún contacto entre ${req.query.desde} y ${req.query.hasta}` });
+
+    // Todas las conversaciones de AcruxLab, para encontrar el ID de cada número
+    const conversacionesOdoo = await odooCallLocal('acrux.chat.conversation', 'search_read',
+      [[]], { fields: ['id', 'number'], limit: 5000 }
+    ).catch(() => []);
+    const convIdPorNumero = {};
+    (conversacionesOdoo || []).forEach(c => { const n = String(c.number || '').replace(/\D/g, ''); if (n) convIdPorNumero[n] = c.id; });
+
+    const detalle = [];
+    for (const c of contactos) {
+      const convId = convIdPorNumero[c.numero];
+      let mensajesEnOdoo = 0;
+      if (convId) {
+        const msgs = await odooCallLocal('acrux.chat.message', 'search_read',
+          [[['contact_id', '=', convId]]], { fields: ['id'], limit: 1000 }
+        ).catch(() => []);
+        mensajesEnOdoo = (msgs || []).length;
+      }
+
+      const mensajesEnRespaldo = await MensajeRespaldo.countDocuments({ tenant_id: req.user.tenant_id, numero: c.numero });
+      const mensajesEnConversacionWA = await Conversacion.findOne({ tenant_id: req.user.tenant_id, numero: c.numero }).select('historial').lean();
+      const totalEnConversacionWA = mensajesEnConversacionWA?.historial?.length || 0;
+
+      const totalEnKai = mensajesEnRespaldo + totalEnConversacionWA;
+      let veredicto;
+      if (mensajesEnOdoo > 0 && totalEnKai > 0) veredicto = '✅ Existe en los dos lados';
+      else if (mensajesEnOdoo > 0 && totalEnKai === 0) veredicto = '✅ Existe en Odoo (aún no respaldado en KAI, no es un problema)';
+      else if (mensajesEnOdoo === 0 && totalEnKai > 0) veredicto = '⚠️ SOLO en KAI — esto es lo que reportan las vendedoras, revisar';
+      else veredicto = '⚠️ No se encontró en ningún lado';
+
+      detalle.push({
+        numero: c.numero,
+        nombre: c.nombre || '(sin nombre)',
+        canal: c.canal_origen || '',
+        primer_contacto: c.primer_contacto,
+        conversacion_id_odoo: convId || null,
+        mensajes_en_odoo: mensajesEnOdoo,
+        mensajes_en_kai: totalEnKai,
+        veredicto
+      });
+    }
+
+    res.json({
+      ok: true,
+      rango: { desde: req.query.desde, hasta: req.query.hasta },
+      total: detalle.length,
+      en_los_dos_lados: detalle.filter(d => d.veredicto.startsWith('✅ Existe en los dos')).length,
+      solo_en_odoo: detalle.filter(d => d.veredicto.includes('Existe en Odoo')).length,
+      solo_en_kai_confirmado: detalle.filter(d => d.veredicto.includes('SOLO en KAI')).length,
+      en_ningun_lado: detalle.filter(d => d.veredicto.includes('No se encontró')).length,
+      detalle
+    });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
