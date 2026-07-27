@@ -45,7 +45,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-confirmar-y-marcar-sin-contacto'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-incluir-archivadas-en-busqueda'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1041,7 +1041,7 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
 // /api/acrux/responder, extraída aquí para reutilizarla también desde el motor automático.
 async function enviarTextoAcruxLab(contactoId, texto, intento = 1) {
   try {
-    return await odooCallLocal(
+    const resultado = await odooCallLocal(
       'acrux.chat.conversation',
       'send_message',
       [[contactoId], {
@@ -1056,6 +1056,26 @@ async function enviarTextoAcruxLab(contactoId, texto, intento = 1) {
       }],
       { context: { lang: 'es_GT', tz: 'America/Guatemala', is_acrux_chat_room: true } }
     );
+
+    // Copia inmediata en nuestro propio respaldo — no se espera a que termine, para no
+    // atrasar la respuesta al padre. Regla fija: todo lo que Kai manda queda guardado en
+    // los dos lados (Odoo y nuestro sistema), en el mismo instante, no al día siguiente.
+    // Se usa un ID negativo con la hora exacta porque el ID real del mensaje en Odoo no
+    // viene en esta respuesta — el respaldo diario más tarde completa el dato real y no
+    // duplica (por número de conversación + texto + minuto es suficientemente único aquí).
+    Tenant.findOne({ activo: true }).then(tenant => {
+      if (!tenant) return;
+      MensajeRespaldo.create({
+        tenant_id: tenant._id,
+        contacto_id_acrux: contactoId,
+        mensaje_id_odoo: -Date.now(),
+        de: 'colegio',
+        texto,
+        fecha_mensaje: new Date()
+      }).catch(() => {}); // si falla el respaldo, no debe afectar el envío ya exitoso
+    }).catch(() => {});
+
+    return resultado;
   } catch (e) {
     // Odoo rechaza el envío. Puede ser porque un agente tiene tomada la conversación,
     // o porque quedó en un estado que no permite escribir (status 'new'). El mensaje
@@ -1191,13 +1211,25 @@ async function procesarNuevosMensajesAcruxLab() {
       // ÚLTIMO ("estaré pendiente") y contestaba una cortesía vacía, ignorando todo el
       // contexto. Ahora se juntan todos los que quedaron sin responder.
       const fechaUltimaRespuesta = [...msgs].reverse().find(m => m.from_me)?.date_message || null;
-      const sinResponder = msgs
-        .filter(m => !m.from_me && (!fechaUltimaRespuesta || m.date_message > fechaUltimaRespuesta))
-        .map(m => String(m.text || '').trim())
-        .filter(Boolean);
+      const mensajesSinResponderCrudos = msgs.filter(m => !m.from_me && (!fechaUltimaRespuesta || m.date_message > fechaUltimaRespuesta));
+      const sinResponder = mensajesSinResponderCrudos.map(m => String(m.text || '').trim()).filter(Boolean);
       const textoCompletoDelPadre = sinResponder.length > 1
         ? sinResponder.join('\n')
         : (ultimoInbound.text || '');
+
+      // Copia inmediata en nuestro propio respaldo de lo que el padre escribió — mismo
+      // instante, no espera al respaldo diario. Usa el ID real del mensaje de Odoo, así
+      // que si esta corrida se repite (cada 45 seg) no duplica nada.
+      Tenant.findOne({ activo: true }).then(tenant => {
+        if (!tenant) return;
+        mensajesSinResponderCrudos.forEach(m => {
+          MensajeRespaldo.create({
+            tenant_id: tenant._id, contacto_id_acrux: contactoId, numero: String(numero || '').replace(/\D/g, ''),
+            mensaje_id_odoo: m.id, de: 'padre', texto: m.text || '',
+            fecha_mensaje: m.date_message ? new Date(m.date_message.replace(' ', 'T') + 'Z') : null
+          }).catch(() => {}); // ya respaldado antes, o falla silencioso — no debe frenar la respuesta
+        });
+      }).catch(() => {});
 
       // ¿La conversación está TOMADA por un agente humano en el ChatRoom real de Odoo?
       // KAI no puede (ni debe) escribirle — la está atendiendo esa persona. Sincronizamos
@@ -6796,7 +6828,7 @@ app.get('/api/debug/confirmar-y-marcar-sin-contacto', authMiddleware, async (req
     for (const numero of numeros) {
       const ultimos8 = numero.replace(/\D/g, '').slice(-8);
       const conv = await odooCallLocal('acrux.chat.conversation', 'search_read',
-        [[['number', 'like', ultimos8]]], { fields: ['id'], limit: 1 }
+        [[['number', 'like', ultimos8]]], { fields: ['id', 'active'], limit: 1, context: { active_test: false } }
       ).catch(() => []);
 
       if (conv && conv.length) {
@@ -9340,10 +9372,13 @@ app.get('/api/debug/historial-completo', authMiddleware, async (req, res) => {
     if (!numero) return res.json({ ok: false, error: 'Falta ?numero=' });
     const ultimos8 = numero.slice(-8);
 
-    // TODAS las conversaciones de AcruxLab con este número (puede haber más de una)
+    // TODAS las conversaciones de AcruxLab con este número (puede haber más de una) —
+    // INCLUYENDO archivadas. Sin active_test:false, una conversación archivada se ve
+    // exactamente igual que si nunca hubiera existido, y eso llevó a una conclusión
+    // equivocada antes (se dijo "no existe" cuando en realidad podía estar archivada).
     const conversaciones = await odooCallLocal('acrux.chat.conversation', 'search_read',
       [[['number', 'like', ultimos8]]],
-      { fields: ['id', 'name', 'number', 'status', 'agent_id', 'create_date'], limit: 10 }
+      { fields: ['id', 'name', 'number', 'status', 'agent_id', 'create_date', 'active'], limit: 10, context: { active_test: false } }
     ) || [];
 
     const detalle = [];
