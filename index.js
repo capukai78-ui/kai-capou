@@ -45,7 +45,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-respaldo-en-segundo-plano'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-corregir-log-falso-positivo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -729,7 +729,7 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
   // números de prueba siguen funcionando exactamente igual, para poder seguir probando.
   if (KAI_PAUSADO_PARA_PRODUCCION && !esNumeroDePrueba(numero)) {
     console.log(`⏸️ [AcruxLab] KAI pausado en producción — no se responde a ${numero} (número real)`);
-    return { texto: null, handoff: false };
+    return { texto: null, handoff: false, motivo: 'kai_pausado' };
   }
 
   // ===== ¿ES UN PROVEEDOR OFRECIENDO PRODUCTOS/SERVICIOS, NO UN PADRE? =====
@@ -1336,7 +1336,14 @@ async function procesarNuevosMensajesAcruxLab() {
         if (resultado.texto) {
           await enviarTextoAcruxLab(contactoId, resultado.texto);
         }
-        console.log(`🤖 KAI respondió por AcruxLab a contacto ${contactoId}${resultado.handoff ? ' (con traspaso a humano)' : ''}${!resultado.texto ? ' (solo imagen)' : ''}`);
+        // Antes este log se imprimía SIEMPRE, aunque la pausa hubiera bloqueado todo —
+        // decía "(solo imagen)" incluso cuando no se mandó ni imagen ni texto. Ahora
+        // refleja lo que de verdad pasó, revisando el motivo real del resultado.
+        if (resultado.motivo === 'kai_pausado') {
+          console.log(`⏸️ [AcruxLab] Contacto ${contactoId} — NO se envió nada (pausado en producción)`);
+        } else {
+          console.log(`🤖 KAI respondió por AcruxLab a contacto ${contactoId}${resultado.handoff ? ' (con traspaso a humano)' : ''}${!resultado.texto ? ' (solo imagen)' : ''}`);
+        }
       } catch (e) {
         if (e.conversacionTomada) {
           // Un agente tomó la conversación justo antes de que KAI escribiera. No es un
