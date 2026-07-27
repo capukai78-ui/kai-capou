@@ -45,7 +45,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-respaldo-mensajes-y-rango-fechas'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-confirmar-y-marcar-sin-contacto'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -6778,6 +6778,61 @@ app.get('/api/debug/respaldar-mensajes', authMiddleware, async (req, res) => {
 
 // Consulta el respaldo propio — funciona aunque Odoo esté caído o haya perdido datos.
 // GET /api/debug/ver-respaldo?numero=502... o ?contacto_id=6081
+// ===== CONFIRMAR Y MARCAR CASOS SIN CONVERSACIÓN REAL EN ACRUXLAB =====
+// Para cada número de la lista: busca la conversación con el método individual
+// (confiable, no el masivo que puede fallar si hay más de 5000 conversaciones). Si
+// confirma que NO existe, deja una nota clara en el chatter del lead para que el
+// equipo le dé seguimiento MANUAL hoy mismo — no se le escribe nada automático,
+// no se toca el estado, no se asigna nada. Solo se avisa con evidencia.
+// GET /api/debug/confirmar-y-marcar-sin-contacto?numeros=502...,502...&aplicar=1
+app.get('/api/debug/confirmar-y-marcar-sin-contacto', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const numeros = String(req.query.numeros || '').split(',').map(n => n.trim()).filter(Boolean);
+    if (!numeros.length) return res.json({ ok: false, error: 'Falta ?numeros=502...,502...' });
+    const aplicar = req.query.aplicar === '1';
+
+    const resultado = [];
+    for (const numero of numeros) {
+      const ultimos8 = numero.replace(/\D/g, '').slice(-8);
+      const conv = await odooCallLocal('acrux.chat.conversation', 'search_read',
+        [[['number', 'like', ultimos8]]], { fields: ['id'], limit: 1 }
+      ).catch(() => []);
+
+      if (conv && conv.length) {
+        resultado.push({ numero, confirmado_sin_conversacion: false, accion: 'Sí tiene conversación — no se toca, no era un caso real' });
+        continue;
+      }
+
+      // Confirmado: no existe conversación real. Buscar el lead vinculado para dejar la nota.
+      const contacto = await Contacto.findOne({ tenant_id: req.user.tenant_id, numero: numero.replace(/\D/g, '') }).lean();
+      const item = { numero, nombre: contacto?.nombre || null, nivel: contacto?.nivel_interes || null, confirmado_sin_conversacion: true, lead_odoo_id: contacto?.odoo_lead_id || null };
+
+      if (contacto?.odoo_lead_id && aplicar) {
+        await odooCallLocal('crm.lead', 'message_post', [[contacto.odoo_lead_id]], {
+          body: `⚠️ <b>Revisión del 24/07</b>: se confirmó que este contacto NO tiene ninguna conversación real en AcruxLab, a pesar de que nuestro sistema lo marcó como "ya contactado" el ${contacto.ultimo_contacto ? new Date(contacto.ultimo_contacto).toLocaleDateString('es-GT') : ''}. Es muy probable que el mensaje nunca haya llegado de verdad. <b>Requiere seguimiento manual del equipo hoy mismo.</b>`
+        }).catch(e => { item.error_nota = e.message; });
+        item.accion = 'Nota dejada en el chatter del lead';
+      } else if (!contacto?.odoo_lead_id) {
+        item.accion = 'Sin lead vinculado — revisar a mano';
+      } else {
+        item.accion = 'Confirmado — vista previa (agrega &aplicar=1 para dejar la nota en Odoo)';
+      }
+      resultado.push(item);
+    }
+
+    const confirmados = resultado.filter(r => r.confirmado_sin_conversacion);
+    res.json({
+      ok: true,
+      modo: aplicar ? 'EJECUTADO — notas dejadas en Odoo' : 'VISTA PREVIA — agrega &aplicar=1 para dejar la nota',
+      total_revisados: resultado.length,
+      total_confirmados_sin_conversacion: confirmados.length,
+      lista_para_llamar_hoy: confirmados.map(c => ({ numero: c.numero, nombre: c.nombre, nivel: c.nivel })),
+      detalle: resultado
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/debug/ver-respaldo', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
@@ -6823,17 +6878,24 @@ app.get('/api/debug/reporte-rango-fechas', authMiddleware, async (req, res) => {
     const asignPorContactoId = {};
     asignaciones.forEach(a => { asignPorContactoId[a.contacto_id] = a; });
 
-    // Vincular por número -> conversación de AcruxLab, para saber el contacto_id de cada uno
-    const numeros = contactos.map(c => c.numero);
+    // Vincular por número -> conversación de AcruxLab, para saber el contacto_id de cada
+    // uno. Se compara por los ÚLTIMOS 8 DÍGITOS, no por el número completo — porque
+    // Odoo puede guardar el mismo número con espacios, guiones, o sin código de país
+    // (ya nos pasó antes con Nery Mejía: "+502 4214 0856" vs "50242140856").
     const conversaciones = await odooCallLocal('acrux.chat.conversation', 'search_read',
       [[]], { fields: ['id', 'number'], limit: 5000 }
     ).catch(() => []);
-    const convIdPorNumero = {};
-    (conversaciones || []).forEach(c => { const n = String(c.number || '').replace(/\D/g, ''); if (n) convIdPorNumero[n] = c.id; });
+    const convIdPorUltimos8 = {};
+    (conversaciones || []).forEach(c => {
+      const n = String(c.number || '').replace(/\D/g, '');
+      const ultimos8 = n.slice(-8);
+      if (ultimos8.length === 8) convIdPorUltimos8[ultimos8] = c.id;
+    });
 
     const detalle = contactos.map(c => {
       const odoo = c.odoo_lead_id ? porLeadOdoo[c.odoo_lead_id] : null;
-      const convId = convIdPorNumero[c.numero];
+      const ultimos8DelContacto = String(c.numero || '').replace(/\D/g, '').slice(-8);
+      const convId = convIdPorUltimos8[ultimos8DelContacto];
       const asign = convId ? asignPorContactoId[convId] : null;
       return {
         numero: c.numero,
