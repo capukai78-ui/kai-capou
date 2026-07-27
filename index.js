@@ -45,7 +45,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-corregir-log-falso-positivo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-datos-padre-en-panel-derecho'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -6473,6 +6473,17 @@ app.get('/api/acrux/conversaciones', authMiddleware, async (req, res) => {
       // Si falla la asignación automática, seguimos mostrando los chats sin asignar (no bloqueante)
     }
 
+    // Mismo orden visual que ya usan en el ChatRoom de Odoo: los que un humano ya está
+    // atendiendo (modo 'humano') se quedan arriba; los que siguen en la cola (modo 'bot',
+    // nadie los ha tomado todavía) bajan al final. Dentro de cada grupo, el más reciente
+    // primero — igual que antes.
+    conversaciones.sort((a, b) => {
+      const aHumano = a.modo === 'humano' ? 1 : 0;
+      const bHumano = b.modo === 'humano' ? 1 : 0;
+      if (aHumano !== bHumano) return bHumano - aHumano; // humano (1) antes que bot (0)
+      return (b.ultima_fecha || '').localeCompare(a.ultima_fecha || '');
+    });
+
     // Filtro por usuario: admin y viewer supervisan todo; vendedor solo ve lo suyo + lo sin atender
     // Verificamos el rol directo en la base de datos (no solo el del token) — así, si el
     // rol de alguien cambió después de que inició sesión, se respeta de inmediato sin
@@ -7459,6 +7470,32 @@ app.get('/api/debug/probar-sincronizar-agente', authMiddleware, async (req, res)
       agente_despues: despues[0].agent_id?.[1] || 'ninguno',
       status: despues[0].status
     });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Libera de inmediato una conversación que se haya quedado pegada a un usuario por
+// accidente (ej. el supervisor la abrió en Odoo y con solo pasar el mouse, Odoo se la
+// asignó). Pone el agente de vuelta al usuario de servicio de Kai, para que cualquier
+// vendedora la pueda ver y tomar de nuevo con normalidad.
+// POST /api/acrux/liberar  { contacto_id: 8657 }
+app.post('/api/acrux/liberar', authMiddleware, async (req, res) => {
+  try {
+    const { contacto_id } = req.body;
+    if (!contacto_id) return res.status(400).json({ ok: false, error: 'contacto_id es requerido' });
+
+    const uidServicio = await getOdooUID();
+    await odooCallLocal('acrux.chat.conversation', 'write', [[contacto_id], { agent_id: uidServicio }]).catch(e => {
+      throw new Error(`No se pudo liberar en Odoo: ${e.message}`);
+    });
+
+    // Si nuestro propio registro también quedó apuntando al supervisor por error, se
+    // regresa a bot para que el reparto normal (o la vendedora real) lo pueda tomar.
+    await AsignacionAcrux.updateOne(
+      { tenant_id: req.user.tenant_id, contacto_id },
+      { modo: 'bot', agente_id: null, agente_nombre: null }
+    ).catch(() => {});
+
+    res.json({ ok: true, mensaje: 'Conversación liberada — ya la puede ver y tomar cualquier vendedora' });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
