@@ -45,7 +45,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-comparar-respaldo-vs-odoo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-respaldo-en-segundo-plano'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -6767,49 +6767,64 @@ app.get('/api/debug/respaldar-mensajes', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
     let contactoIds;
-    if (req.query.todos === '1') {
+    if (req.query.desde && req.query.hasta) {
+      // Acotado por rango de fechas — mucho más rápido que "todos", evita el 502 por
+      // tardar demasiado. Filtra por cuándo se creó la conversación en Odoo.
+      const desdeStr = req.query.desde + ' 00:00:00';
+      const hastaStr = req.query.hasta + ' 23:59:59';
+      const conv = await odooCallLocal('acrux.chat.conversation', 'search_read',
+        [[['create_date', '>=', desdeStr], ['create_date', '<=', hastaStr]]], { fields: ['id'], limit: 2000 }
+      ).catch(() => []);
+      contactoIds = (conv || []).map(c => c.id);
+    } else if (req.query.todos === '1') {
       const todasLasConv = await odooCallLocal('acrux.chat.conversation', 'search_read', [[]], { fields: ['id'], limit: 5000 }).catch(() => []);
       contactoIds = (todasLasConv || []).map(c => c.id);
     } else {
       contactoIds = String(req.query.contactos || '').split(',').map(n => parseInt(n.trim())).filter(Boolean);
     }
-    if (!contactoIds.length) return res.json({ ok: false, error: 'Falta ?contactos=6081,8641,... o ?todos=1' });
+    if (!contactoIds.length) return res.json({ ok: false, error: 'Falta ?contactos=6081,8641,... o ?desde=YYYY-MM-DD&hasta=YYYY-MM-DD o ?todos=1' });
 
-    let totalGuardados = 0, totalYaExistian = 0, conversacionesProcesadas = 0;
-    const errores = [];
+    // Responde DE INMEDIATO — el trabajo sigue en segundo plano, para nunca toparse con
+    // el límite de tiempo de Railway (eso fue lo que causó el 502 la primera vez).
+    const tenantId = req.user.tenant_id; // se captura ahora, por si "req" ya no es válido más tarde
+    res.json({ ok: true, mensaje: `Respaldo iniciado en segundo plano para ${contactoIds.length} conversación(es). Revisa el avance en unos minutos con /api/debug/ver-respaldo, o mira los logs del servidor.`, total_conversaciones: contactoIds.length });
 
-    for (const contactoId of contactoIds) {
-      try {
-        const conv = await odooCallLocal('acrux.chat.conversation', 'read', [[contactoId], ['id', 'number']]);
-        const numero = conv?.[0]?.number ? String(conv[0].number).replace(/\D/g, '') : null;
+    (async () => {
+      let totalGuardados = 0, totalYaExistian = 0, conversacionesProcesadas = 0;
+      const errores = [];
 
-        const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
-          [[['contact_id', '=', contactoId]]],
-          { fields: ['id', 'text', 'from_me', 'date_message'], limit: 500, order: 'date_message asc' }
-        ).catch(() => []);
+      for (const contactoId of contactoIds) {
+        try {
+          const conv = await odooCallLocal('acrux.chat.conversation', 'read', [[contactoId], ['id', 'number']]);
+          const numero = conv?.[0]?.number ? String(conv[0].number).replace(/\D/g, '') : null;
 
-        for (const m of mensajes) {
-          try {
-            await MensajeRespaldo.create({
-              tenant_id: req.user.tenant_id,
-              contacto_id_acrux: contactoId,
-              numero,
-              mensaje_id_odoo: m.id,
-              de: m.from_me ? 'colegio' : 'padre',
-              texto: m.text || '',
-              fecha_mensaje: m.date_message ? new Date(m.date_message.replace(' ', 'T') + 'Z') : null
-            });
-            totalGuardados++;
-          } catch (e) {
-            if (e.code === 11000) totalYaExistian++; // ya estaba respaldado, no es error real
-            else throw e;
+          const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
+            [[['contact_id', '=', contactoId]]],
+            { fields: ['id', 'text', 'from_me', 'date_message'], limit: 500, order: 'date_message asc' }
+          ).catch(() => []);
+
+          for (const m of mensajes) {
+            try {
+              await MensajeRespaldo.create({
+                tenant_id: tenantId,
+                contacto_id_acrux: contactoId,
+                numero,
+                mensaje_id_odoo: m.id,
+                de: m.from_me ? 'colegio' : 'padre',
+                texto: m.text || '',
+                fecha_mensaje: m.date_message ? new Date(m.date_message.replace(' ', 'T') + 'Z') : null
+              });
+              totalGuardados++;
+            } catch (e) {
+              if (e.code === 11000) totalYaExistian++; // ya estaba respaldado, no es error real
+              else throw e;
+            }
           }
-        }
-        conversacionesProcesadas++;
-      } catch (e) { errores.push({ contacto_id: contactoId, error: e.message }); }
-    }
-
-    res.json({ ok: true, conversaciones_procesadas: conversacionesProcesadas, mensajes_nuevos_guardados: totalGuardados, mensajes_que_ya_existian: totalYaExistian, errores });
+          conversacionesProcesadas++;
+        } catch (e) { errores.push({ contacto_id: contactoId, error: e.message }); }
+      }
+      console.log(`💾 [Respaldo manual] Terminado — ${conversacionesProcesadas} conversaciones, ${totalGuardados} mensajes nuevos, ${totalYaExistian} ya existían, ${errores.length} errores`);
+    })().catch(e => console.error('❌ [Respaldo manual] Error en segundo plano:', e.message));
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
@@ -6918,6 +6933,18 @@ app.get('/api/debug/comparar-respaldo-vs-odoo', authMiddleware, async (req, res)
       detalle_de_los_que_faltan_en_odoo: noExisten,
       detalle_completo: detalle
     });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Cuenta cuántos mensajes ya se han respaldado — para revisar el avance del proceso en
+// segundo plano sin tener que esperar a que termine.
+// GET /api/debug/progreso-respaldo
+app.get('/api/debug/progreso-respaldo', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const total = await MensajeRespaldo.countDocuments({ tenant_id: req.user.tenant_id });
+    const conversacionesDistintas = (await MensajeRespaldo.distinct('contacto_id_acrux', { tenant_id: req.user.tenant_id })).length;
+    res.json({ ok: true, total_mensajes_respaldados: total, total_conversaciones_distintas: conversacionesDistintas });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
