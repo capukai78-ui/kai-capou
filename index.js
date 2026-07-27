@@ -45,7 +45,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-auditoria-oportunidades'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-pausa-en-reparto-automatico-panel'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -703,6 +703,11 @@ async function asegurarAsignacionesAcrux(tenantId, conversaciones) {
       } catch (e) { /* condición de carrera — no pasa nada, se toma en el próximo refresh */ }
       continue;
     }
+
+    // El reparto automático 1-1 para conversaciones genuinamente nuevas SÍ respeta la
+    // pausa — si Kai está detenido, no tiene sentido seguir repartiendo leads nuevos
+    // como si el sistema estuviera trabajando. Se quedan "sin asignar" hasta reactivar.
+    if (KAI_PAUSADO_PARA_PRODUCCION) continue;
 
     const agente = await asignarAgenteLibre(tenantId);
     if (!agente) continue; // nadie disponible — se queda sin asignar hasta que alguien lo esté
