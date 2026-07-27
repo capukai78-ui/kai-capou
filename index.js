@@ -45,7 +45,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-datos-padre-en-panel-derecho'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-dos-secciones-esperando-atendidos'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -6473,16 +6473,9 @@ app.get('/api/acrux/conversaciones', authMiddleware, async (req, res) => {
       // Si falla la asignación automática, seguimos mostrando los chats sin asignar (no bloqueante)
     }
 
-    // Mismo orden visual que ya usan en el ChatRoom de Odoo: los que un humano ya está
-    // atendiendo (modo 'humano') se quedan arriba; los que siguen en la cola (modo 'bot',
-    // nadie los ha tomado todavía) bajan al final. Dentro de cada grupo, el más reciente
-    // primero — igual que antes.
-    conversaciones.sort((a, b) => {
-      const aHumano = a.modo === 'humano' ? 1 : 0;
-      const bHumano = b.modo === 'humano' ? 1 : 0;
-      if (aHumano !== bHumano) return bHumano - aHumano; // humano (1) antes que bot (0)
-      return (b.ultima_fecha || '').localeCompare(a.ultima_fecha || '');
-    });
+    // El orden ya no depende de "modo" (bot/humano) — el criterio real que importa es
+    // si el padre está esperando respuesta o no. Eso lo separa el frontend en dos
+    // secciones visuales; aquí solo se mantiene el orden por actividad más reciente.
 
     // Filtro por usuario: admin y viewer supervisan todo; vendedor solo ve lo suyo + lo sin atender
     // Verificamos el rol directo en la base de datos (no solo el del token) — así, si el
