@@ -425,7 +425,7 @@ tr:hover td{background:var(--g4)}
           </div>
         </div>
         <div id="acrux-metricas-panel" style="display:none;background:var(--bg2);border:1px solid var(--acrux3);border-top:none;padding:18px"></div>
-        <div style="display:grid;grid-template-columns:280px 1fr 240px;gap:1px;background:var(--border2);border:1px solid var(--acrux3);border-radius:0 0 var(--r) var(--r);height:calc(100vh - 260px);overflow:hidden">
+        <div style="display:grid;grid-template-columns:280px 1fr 270px;gap:1px;background:var(--border2);border:1px solid var(--acrux3);border-radius:0 0 var(--r) var(--r);height:calc(100vh - 260px);overflow:hidden">
           <!-- Lista de conversaciones AcruxLab -->
           <div id="acrux-lista-scroll" style="background:var(--bg2);overflow-y:auto">
             <div style="position:sticky;top:0;background:var(--bg2);padding:10px 8px 6px;border-bottom:1px solid var(--border);z-index:2">
@@ -447,11 +447,11 @@ tr:hover td{background:var(--g4)}
                 <div style="display:flex;align-items:center;gap:8px">
                   <span id="acrux-chat-modo" style="font-size:10px;font-weight:700;padding:3px 10px;border-radius:10px"></span>
                   <button id="acrux-btn-tomar" onclick="tomarSeguimientoAcrux()" title="Para cuando ya lo estás trabajando por otro medio (ej. una llamada) y KAI no debe seguir escribiéndole aunque nadie le haya respondido en este chat" style="display:none;background:var(--bg3);border:1px solid var(--border);color:var(--text2);border-radius:8px;padding:6px 12px;font-size:11px;cursor:pointer">👤 Ya lo estoy trabajando</button>
+                  <button onclick="liberarAcruxLab()" title="Úsalo si esta conversación se te pegó por accidente en Odoo (ej. al pasar el mouse) — la libera para que cualquier vendedora la pueda ver y tomar de nuevo" style="background:var(--bg3);border:1px solid var(--border);color:var(--text2);border-radius:8px;padding:6px 12px;font-size:11px;cursor:pointer">🔓 Soltar</button>
                   <button id="acrux-btn-devolver" onclick="devolverAKaiAcrux()" style="display:none;background:var(--bg3);border:1px solid var(--border);color:var(--text2);border-radius:8px;padding:6px 12px;font-size:11px;cursor:pointer">✓ Devolver a KAI</button>
                 </div>
               </div>
             </div>
-            <div id="acrux-contacto-info" style="padding:0 18px"></div>
             <div id="acrux-mensajes" style="flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:10px">
               <div style="text-align:center;color:var(--text3);margin-top:40px;font-size:13px">Selecciona una conversación de la lista</div>
             </div>
@@ -475,7 +475,8 @@ tr:hover td{background:var(--g4)}
           </div>
           <!-- Panel de clasificación estilo vista de Sylvia (Prioridad / Etiquetas / Nota) -->
           <div style="background:var(--bg2);padding:16px;overflow-y:auto">
-            <div style="font-size:11px;font-weight:700;color:var(--text2);letter-spacing:.05em;margin-bottom:12px">CLASIFICAR (Odoo)</div>
+            <div id="acrux-contacto-info"></div>
+            <div style="font-size:11px;font-weight:700;color:var(--text2);letter-spacing:.05em;margin-bottom:12px;margin-top:14px">CLASIFICAR (Odoo)</div>
             <div id="acrux-resumen-kai" style="display:none;background:var(--bg3);border-left:3px solid var(--acrux,#4a90d9);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:12px;color:var(--text2);line-height:1.5"></div>
             <div id="acrux-lead-panel"><div style="font-size:11px;color:var(--text3)">Selecciona una conversación para ver su lead en Odoo.</div></div>
           </div>
@@ -1661,6 +1662,9 @@ function renderListaAcrux(conversaciones){
       <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:4px">
         <div style="font-weight:600;font-size:13px">${c.nombre || c.numero || 'Sin nombre'}</div>
         <div style="display:flex;align-items:center;gap:6px">
+          ${c.modo === 'humano'
+            ? `<span style="font-size:9px;font-weight:700;padding:2px 6px;border-radius:5px;background:var(--g3);color:var(--g)">🟢 Atendiendo</span>`
+            : `<span style="font-size:9px;font-weight:600;padding:2px 6px;border-radius:5px;background:var(--bg3);color:var(--text3)">🕐 En cola</span>`}
           <span style="font-size:9px;color:var(--text3)">${tiempoRelativo(c.ultima_fecha)}</span>
           ${c.no_leidos
             ? `<span style="font-size:9px;font-weight:700;padding:2px 6px;border-radius:5px;background:#FDE4E4;color:#D8503C">${c.no_leidos} nuevo${c.no_leidos>1?'s':''}</span>`
@@ -1950,6 +1954,22 @@ async function tomarSeguimientoAcrux(){
     }).then(r=>r.json());
     if(r.ok){ showToast(r.mensaje||'Marcado ✓','ok'); abrirAcruxChat(_acruxContactoActivo); }
     else { showToast(r.error||'No se pudo marcar','error'); }
+  } catch(e){ showToast('Error de conexión','error'); }
+}
+
+// Libera una conversación que se pegó por accidente (ej. el supervisor la abrió en
+// Odoo y con solo pasar el mouse, quedó asignada a su usuario). La deja libre para que
+// cualquier vendedora la vea y la tome de nuevo con normalidad.
+async function liberarAcruxLab(){
+  if(!_acruxContactoActivo) return;
+  try {
+    const r = await fetch(API+'/api/acrux/liberar',{
+      method:'POST',
+      headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'},
+      body: JSON.stringify({ contacto_id: _acruxContactoActivo })
+    }).then(r=>r.json());
+    if(r.ok){ showToast(r.mensaje||'Liberado ✓','ok'); abrirAcruxChat(_acruxContactoActivo); }
+    else { showToast(r.error||'No se pudo liberar','error'); }
   } catch(e){ showToast('Error de conexión','error'); }
 }
 
