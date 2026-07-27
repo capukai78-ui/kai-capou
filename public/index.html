@@ -1653,18 +1653,15 @@ function renderListaAcrux(conversaciones){
   const firma = JSON.stringify(conversaciones.map(c => [c.contacto_id, c.ultimo_de, c.no_leidos, c.agente, c.modo, _acruxContactoActivo]));
   if(lista.dataset.firma === firma) return;
   lista.dataset.firma = firma;
-  lista.innerHTML = conversaciones.map(c => {
+
+  const filaHtml = (c) => {
     // PENDIENTE = el último mensaje es del padre/madre y todavía nadie le ha contestado.
-    // Se marca bien visible para que la vendedora sepa de un vistazo a quién le debe respuesta.
     const pendiente = c.ultimo_de === 'padre';
     return `
     <div onclick="abrirAcruxChat(${c.contacto_id})" style="padding:12px;border-radius:10px;cursor:pointer;margin-bottom:0;border-bottom:1px solid var(--border);${pendiente?'border-left:3px solid #D8503C;':''}background:${_acruxContactoActivo===c.contacto_id?'var(--acrux2)':(pendiente?'rgba(216,80,60,.04)':'transparent')}" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='${_acruxContactoActivo===c.contacto_id?'var(--acrux2)':(pendiente?'rgba(216,80,60,.04)':'transparent')}'">
       <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:4px">
         <div style="font-weight:600;font-size:13px">${c.nombre || c.numero || 'Sin nombre'}</div>
         <div style="display:flex;align-items:center;gap:6px">
-          ${c.modo === 'humano'
-            ? `<span style="font-size:9px;font-weight:700;padding:2px 6px;border-radius:5px;background:var(--g3);color:var(--g)">🟢 Atendiendo</span>`
-            : `<span style="font-size:9px;font-weight:600;padding:2px 6px;border-radius:5px;background:var(--bg3);color:var(--text3)">🕐 En cola</span>`}
           <span style="font-size:9px;color:var(--text3)">${tiempoRelativo(c.ultima_fecha)}</span>
           ${c.no_leidos
             ? `<span style="font-size:9px;font-weight:700;padding:2px 6px;border-radius:5px;background:#FDE4E4;color:#D8503C">${c.no_leidos} nuevo${c.no_leidos>1?'s':''}</span>`
@@ -1677,7 +1674,24 @@ function renderListaAcrux(conversaciones){
       ${c.agente ? `<div style="font-size:9px;color:var(--acrux);margin-top:2px">Atendido por ${c.agente}${c.agente_fecha?' · '+tiempoRelativo(c.agente_fecha):''}</div>` : ''}
     </div>
   `;
-  }).join('');
+  };
+
+  // Dos secciones reales, como en el ChatRoom de Odoo: arriba, los que esperan
+  // respuesta (lo urgente, lo que todavía no se ha atendido); abajo, los que ya se
+  // respondieron o se cerraron. Según se van contestando, bajan solos de sección.
+  const esperando = conversaciones.filter(c => c.ultimo_de === 'padre');
+  const yaAtendidos = conversaciones.filter(c => c.ultimo_de !== 'padre');
+
+  let html = '';
+  if(esperando.length){
+    html += `<div style="padding:8px 4px 6px;font-size:10px;font-weight:700;color:#D8503C;letter-spacing:.04em;text-transform:uppercase">⏳ Esperando respuesta (${esperando.length})</div>`;
+    html += esperando.map(filaHtml).join('');
+  }
+  if(yaAtendidos.length){
+    html += `<div style="padding:14px 4px 6px;font-size:10px;font-weight:700;color:var(--text3);letter-spacing:.04em;text-transform:uppercase;border-top:1px solid var(--border);margin-top:${esperando.length?'6px':'0'}">✅ Ya respondidos / cerrados (${yaAtendidos.length})</div>`;
+    html += yaAtendidos.map(filaHtml).join('');
+  }
+  lista.innerHTML = html;
 }
 
 function filtrarListaAcrux(){
@@ -1769,9 +1783,9 @@ async function cargarInfoContactoAcrux(numero){
         contacto.correo ? `📧 ${contacto.correo}` : null,
       ].filter(Boolean);
       if(datos.length){
-        infoHtml = `<div style="background:var(--bg3);border-radius:10px;padding:10px 14px;margin-top:10px;font-size:11px;color:var(--text3)">
-          <div style="font-weight:600;color:var(--text2);margin-bottom:6px">Datos del padre/madre</div>
-          ${datos.map(d=>`<div>${d}</div>`).join('')}
+        infoHtml = `<div style="background:linear-gradient(135deg,#FFF4E0,#FFE8CC);border:1px solid #F5C77E;border-radius:10px;padding:12px 14px;margin-top:10px;font-size:11px;color:#7A4A00">
+          <div style="font-weight:700;color:#B8760A;margin-bottom:6px;font-size:11px">👨‍👩‍👧 Datos del padre/madre</div>
+          ${datos.map(d=>`<div style="margin-bottom:2px">${d}</div>`).join('')}
         </div>`;
       }
     }
