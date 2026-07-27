@@ -45,7 +45,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-quitar-campo-active-invalido'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-auditoria-oportunidades'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -6952,6 +6952,68 @@ app.get('/api/debug/reporte-rango-fechas', authMiddleware, async (req, res) => {
       rango: { desde: req.query.desde, hasta: req.query.hasta },
       total: detalle.length,
       sin_conversacion_encontrada_en_odoo: detalle.filter(d => !d.conversacion_encontrada_en_odoo).length,
+      detalle
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// ===== AUDITORÍA: QUÉ LE HIZO KAI A TODAS LAS OPORTUNIDADES =====
+// De SOLO LECTURA. Trae TODAS las Oportunidades (activas Y archivadas) y revisa, en el
+// chatter de cada una, si hay algún mensaje escrito por Kai (nuestras notas tienen
+// firmas reconocibles: 🌡️ cambio de calor, 📱 contacto, ♻️ duplicado, ⚠️ revisiones).
+// Así se sabe con certeza si Kai archivó algo, le cambió el vendedor, o solo dejó nota.
+// GET /api/debug/auditoria-oportunidades
+app.get('/api/debug/auditoria-oportunidades', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const oportunidades = await odooCallLocal('crm.lead', 'search_read',
+      [[['type', '=', 'opportunity']]],
+      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'user_id', 'stage_id', 'active', 'tag_ids', 'write_date'], limit: 500, context: { active_test: false } }
+    ) || [];
+
+    if (!oportunidades.length) return res.json({ ok: true, total: 0, mensaje: 'No hay ninguna Oportunidad en Odoo.' });
+
+    const idsTags = [...new Set(oportunidades.flatMap(o => o.tag_ids || []))];
+    let nombresTag = {};
+    if (idsTags.length) {
+      const tags = await odooCallLocal('crm.tag', 'read', [idsTags, ['id', 'name']]).catch(() => []);
+      (tags || []).forEach(t => { nombresTag[t.id] = t.name; });
+    }
+
+    const FIRMAS_DE_KAI = /🌡️|📱 KAI|♻️.*Registro repetido|⚠️.*Revisión del|KAI leyó el correo|Nivel de calor actualizado por KAI/;
+
+    const detalle = [];
+    for (const o of oportunidades) {
+      const mensajes = await odooCallLocal('mail.message', 'search_read',
+        [[['model', '=', 'crm.lead'], ['res_id', '=', o.id]]],
+        { fields: ['body', 'date', 'author_id'], limit: 50, order: 'date asc' }
+      ).catch(() => []);
+
+      const mensajesDeKai = mensajes.filter(m => FIRMAS_DE_KAI.test(m.body || '') || m.author_id?.[1] === 'Administrador');
+      const etiquetas = (o.tag_ids || []).map(t => nombresTag[t]).filter(Boolean);
+
+      detalle.push({
+        lead: o.id,
+        nombre: o.partner_name || o.contact_name || o.name,
+        telefono: o.phone || null,
+        vendedor_actual: o.user_id?.[1] || 'Sin asignar',
+        etapa: o.stage_id?.[1] || '',
+        activo: o.active,
+        etiquetas,
+        kai_le_escribio_algo: mensajesDeKai.length > 0,
+        cuantos_mensajes_de_kai: mensajesDeKai.length,
+        ultima_modificacion: o.write_date,
+        notas_de_kai: mensajesDeKai.map(m => ({ fecha: m.date, texto: (m.body || '').replace(/<[^>]+>/g, ' ').trim().substring(0, 200) }))
+      });
+    }
+
+    res.json({
+      ok: true,
+      total_oportunidades: detalle.length,
+      archivadas: detalle.filter(d => !d.activo).length,
+      activas: detalle.filter(d => d.activo).length,
+      con_alguna_nota_de_kai: detalle.filter(d => d.kai_le_escribio_algo).length,
+      sin_ninguna_nota_de_kai: detalle.filter(d => !d.kai_le_escribio_algo).length,
       detalle
     });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
