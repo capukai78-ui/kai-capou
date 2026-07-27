@@ -45,7 +45,7 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-incluir-archivadas-en-busqueda'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-quitar-campo-active-invalido'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -6828,7 +6828,7 @@ app.get('/api/debug/confirmar-y-marcar-sin-contacto', authMiddleware, async (req
     for (const numero of numeros) {
       const ultimos8 = numero.replace(/\D/g, '').slice(-8);
       const conv = await odooCallLocal('acrux.chat.conversation', 'search_read',
-        [[['number', 'like', ultimos8]]], { fields: ['id', 'active'], limit: 1, context: { active_test: false } }
+        [[['number', 'like', ultimos8]]], { fields: ['id'], limit: 1, context: { active_test: false } }
       ).catch(() => []);
 
       if (conv && conv.length) {
@@ -9378,7 +9378,7 @@ app.get('/api/debug/historial-completo', authMiddleware, async (req, res) => {
     // equivocada antes (se dijo "no existe" cuando en realidad podía estar archivada).
     const conversaciones = await odooCallLocal('acrux.chat.conversation', 'search_read',
       [[['number', 'like', ultimos8]]],
-      { fields: ['id', 'name', 'number', 'status', 'agent_id', 'create_date', 'active'], limit: 10, context: { active_test: false } }
+      { fields: ['id', 'name', 'number', 'status', 'agent_id', 'create_date'], limit: 10, context: { active_test: false } }
     ) || [];
 
     const detalle = [];
