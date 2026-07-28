@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-mostrar-imagen-real-en-panel'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-mas-formas-de-pedir-nivel'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -3438,12 +3438,27 @@ const SECUENCIA_IMAGENES_NO_INTERACTIVO = {
 
 const MENU_NIVEL_NI = '¡Hola! 👋 Bienvenido al Colegio Capouilliez.\n\n¿En qué nivel está interesado? Marque el número:\n1. Preprimaria\n2. Primaria\n3. Secundaria (Básico y Bachillerato en Ciencias y Letras)';
 
-function detectarNivelMenuNI(texto) {
+// Devuelve TODOS los niveles mencionados en el mensaje (puede ser más de uno — "1, 2 y
+// 3" es una respuesta real y predecible de un papá con varios hijos). Antes solo
+// devolvía el primero que encontraba y se detenía ahí.
+function detectarNivelesMenuNI(texto) {
   const t = (texto || '').trim().toLowerCase();
-  if (/^1\b/.test(t) || /preprimaria|jard[ií]n|infantil|k[ií]nder|p[aá]rvulos|preparatoria/.test(t)) return 'preprimaria';
-  if (/^2\b/.test(t) || /\bprimaria\b/.test(t)) return 'primaria';
-  if (/^3\b/.test(t) || /secundaria|b[aá]sico|bachillerato/.test(t)) return 'secundaria';
-  return null;
+  const detectados = [];
+
+  // "Todos", "los tres", etc. — pide los tres niveles de una vez.
+  if (/\btodos\b|\btodas\b|\blos tres\b|\blas tres\b/.test(t)) return ['preprimaria', 'primaria', 'secundaria'];
+
+  // Cada nivel se reconoce por: el número (en cualquier parte del mensaje, no solo al
+  // inicio — "Gracias, ahora el 2?" debe funcionar), un ordinal en palabras, o el
+  // nombre real del nivel/grado.
+  if (/\b1\b|\bprimero\b|\bprimera\b/.test(t) || /preprimaria|jard[ií]n|infantil|k[ií]nder|p[aá]rvulos|preparatoria/.test(t)) detectados.push('preprimaria');
+  if (/\b2\b|\bsegundo\b|\bsegunda\b/.test(t) || /\bprimaria\b/.test(t)) detectados.push('primaria');
+  if (/\b3\b|\btercero\b|\btercera\b/.test(t) || /secundaria|b[aá]sico|bachillerato/.test(t)) detectados.push('secundaria');
+  return detectados;
+}
+// Se deja esta versión (un solo nivel) por si algo más la usa — ahora es un simple atajo.
+function detectarNivelMenuNI(texto) {
+  return detectarNivelesMenuNI(texto)[0] || null;
 }
 
 // Busca y devuelve la imagen del banco para un filtro de la secuencia, sin enviarla —
@@ -3461,38 +3476,37 @@ async function buscarImagenSecuenciaNI(tenant, filtroBase) {
 async function manejarModoNoInteractivoAcrux(tenant, mensajeUsuario, conv, contactoId) {
   if (!conv.nivelesNoInteractivoEnviados) conv.nivelesNoInteractivoEnviados = [];
 
-  const nivel = detectarNivelMenuNI(mensajeUsuario);
+  const nivelesDetectados = detectarNivelesMenuNI(mensajeUsuario);
+  const nivelesNuevos = nivelesDetectados.filter(n => !conv.nivelesNoInteractivoEnviados.includes(n));
 
-  // No mencionó ningún nivel en este mensaje.
-  if (!nivel) {
+  // No mencionó ningún nivel nuevo (puede que no haya mencionado ninguno, o que ya se
+  // le hayan mandado todos los que menciona — ej. repite "1" dos veces).
+  if (!nivelesNuevos.length) {
     if (conv.nivelesNoInteractivoEnviados.length) return { texto: null, handoff: false }; // ya se le mandó al menos uno, queda con la asesora
     if (conv.noInteractivoSaludado) return { texto: null, handoff: false }; // ya se le preguntó, esperando que conteste
     conv.noInteractivoSaludado = true;
     return { texto: MENU_NIVEL_NI, handoff: false };
   }
 
-  // Mencionó un nivel que YA se le mandó antes en esta misma conversación — no se repite.
-  if (conv.nivelesNoInteractivoEnviados.includes(nivel)) {
-    return { texto: null, handoff: false };
+  // Uno o más niveles nuevos — se manda la secuencia completa de CADA UNO, en orden
+  // (un papá puede pedir varios de una vez: "1, 2 y 3" — eso es normal y predecible).
+  for (const nivel of nivelesNuevos) {
+    await enviarTextoAcruxLab(contactoId, MENSAJE_VIDEO_PROYECTO_NI);
+    for (const filtro of SECUENCIA_IMAGENES_NO_INTERACTIVO[nivel]) {
+      const img = await buscarImagenSecuenciaNI(tenant, filtro);
+      if (!img) { console.log(`⚠️ [No interactivo] No se encontró imagen en el banco para: ${JSON.stringify(filtro)}`); continue; }
+      try {
+        const adjunto = await subirImagenNuevaAcrux(img.imagen_base64, `${img.nombre}.jpg`, img.mime_type || 'image/jpeg', contactoId);
+        await odooCallLocal('acrux.chat.conversation', 'send_message', [[contactoId], {
+          text: construirDescripcionImagen(img), from_me: true, ttype: 'image', res_model: 'ir.attachment', res_id: adjunto.id,
+          id: -2, date_message: new Date().toISOString().replace('T', ' ').substring(0, 19), button_ids: []
+        }], { context: { lang: 'es_GT', tz: 'America/Guatemala', is_acrux_chat_room: true } });
+        console.log(`🖼️ [No interactivo] Imagen enviada: "${img.nombre}" → contacto ${contactoId}`);
+      } catch (e) { console.error(`❌ [No interactivo] Falló imagen "${img.nombre}": ${e.message}`); }
+      await new Promise(r => setTimeout(r, 1500));
+    }
+    conv.nivelesNoInteractivoEnviados.push(nivel);
   }
-
-  // Nivel nuevo — se manda la secuencia completa, sin importar si ya se había cerrado
-  // antes con otro nivel (para el caso de un papá con hijos en niveles distintos).
-  await enviarTextoAcruxLab(contactoId, MENSAJE_VIDEO_PROYECTO_NI);
-  for (const filtro of SECUENCIA_IMAGENES_NO_INTERACTIVO[nivel]) {
-    const img = await buscarImagenSecuenciaNI(tenant, filtro);
-    if (!img) { console.log(`⚠️ [No interactivo] No se encontró imagen en el banco para: ${JSON.stringify(filtro)}`); continue; }
-    try {
-      const adjunto = await subirImagenNuevaAcrux(img.imagen_base64, `${img.nombre}.jpg`, img.mime_type || 'image/jpeg', contactoId);
-      await odooCallLocal('acrux.chat.conversation', 'send_message', [[contactoId], {
-        text: construirDescripcionImagen(img), from_me: true, ttype: 'image', res_model: 'ir.attachment', res_id: adjunto.id,
-        id: -2, date_message: new Date().toISOString().replace('T', ' ').substring(0, 19), button_ids: []
-      }], { context: { lang: 'es_GT', tz: 'America/Guatemala', is_acrux_chat_room: true } });
-      console.log(`🖼️ [No interactivo] Imagen enviada: "${img.nombre}" → contacto ${contactoId}`);
-    } catch (e) { console.error(`❌ [No interactivo] Falló imagen "${img.nombre}": ${e.message}`); }
-    await new Promise(r => setTimeout(r, 1500));
-  }
-  conv.nivelesNoInteractivoEnviados.push(nivel);
 
   // ===== ASIGNACIÓN DE VENDEDORA — DESACTIVADA TEMPORALMENTE A PEDIDO =====
   // Poner modo:'humano' bloqueaba que Kai volviera a responder en mensajes siguientes
@@ -3534,9 +3548,10 @@ async function manejarModoNoInteractivoWhatsApp(tenant, mensajeUsuario, ctxSesio
   }
   conversacionDB.mensajes.push({ de: 'padre', texto: mensajeUsuario, fecha: new Date() });
 
-  const nivel = detectarNivelMenuNI(mensajeUsuario);
+  const nivelesDetectados = detectarNivelesMenuNI(mensajeUsuario);
+  const nivelesNuevos = nivelesDetectados.filter(n => !ctxSesion.nivelesNoInteractivoEnviados.includes(n));
 
-  if (!nivel) {
+  if (!nivelesNuevos.length) {
     if (ctxSesion.nivelesNoInteractivoEnviados.length) { await conversacionDB.save(); return ''; }
     if (ctxSesion.noInteractivoSaludado) { await conversacionDB.save(); return ''; }
     ctxSesion.noInteractivoSaludado = true;
@@ -3546,29 +3561,29 @@ async function manejarModoNoInteractivoWhatsApp(tenant, mensajeUsuario, ctxSesio
     return MENU_NIVEL_NI;
   }
 
-  if (ctxSesion.nivelesNoInteractivoEnviados.includes(nivel)) { await conversacionDB.save(); return ''; }
+  for (const nivel of nivelesNuevos) {
+    await enviarWhatsAppMeta(numeroOrigen, MENSAJE_VIDEO_PROYECTO_NI);
+    conversacionDB.mensajes.push({ de: 'bot', texto: MENSAJE_VIDEO_PROYECTO_NI, fecha: new Date() });
 
-  await enviarWhatsAppMeta(numeroOrigen, MENSAJE_VIDEO_PROYECTO_NI);
-  conversacionDB.mensajes.push({ de: 'bot', texto: MENSAJE_VIDEO_PROYECTO_NI, fecha: new Date() });
-
-  for (const filtro of SECUENCIA_IMAGENES_NO_INTERACTIVO[nivel]) {
-    const img = await buscarImagenSecuenciaNI(tenant, filtro);
-    if (!img) { console.log(`⚠️ [No interactivo][WhatsApp] No se encontró imagen para: ${JSON.stringify(filtro)}`); continue; }
-    const descripcion = construirDescripcionImagen(img);
-    try {
-      await enviarImagenDesdeDB(img, numeroOrigen, descripcion);
-      conversacionDB.mensajes.push({
-        de: 'bot', texto: `🖼️ ${descripcion}`,
-        imagen_base64: img.imagen_base64, imagen_mime: img.mime_type || 'image/jpeg',
-        fecha: new Date()
-      });
-    } catch (e) {
-      console.error(`❌ [No interactivo][WhatsApp] Falló imagen "${img.nombre}": ${e.message}`);
-      conversacionDB.mensajes.push({ de: 'bot', texto: `⚠️ (falló el envío de la imagen "${img.nombre}")`, fecha: new Date() });
+    for (const filtro of SECUENCIA_IMAGENES_NO_INTERACTIVO[nivel]) {
+      const img = await buscarImagenSecuenciaNI(tenant, filtro);
+      if (!img) { console.log(`⚠️ [No interactivo][WhatsApp] No se encontró imagen para: ${JSON.stringify(filtro)}`); continue; }
+      const descripcion = construirDescripcionImagen(img);
+      try {
+        await enviarImagenDesdeDB(img, numeroOrigen, descripcion);
+        conversacionDB.mensajes.push({
+          de: 'bot', texto: `🖼️ ${descripcion}`,
+          imagen_base64: img.imagen_base64, imagen_mime: img.mime_type || 'image/jpeg',
+          fecha: new Date()
+        });
+      } catch (e) {
+        console.error(`❌ [No interactivo][WhatsApp] Falló imagen "${img.nombre}": ${e.message}`);
+        conversacionDB.mensajes.push({ de: 'bot', texto: `⚠️ (falló el envío de la imagen "${img.nombre}")`, fecha: new Date() });
+      }
+      await new Promise(r => setTimeout(r, 1500));
     }
-    await new Promise(r => setTimeout(r, 1500));
+    ctxSesion.nivelesNoInteractivoEnviados.push(nivel);
   }
-  ctxSesion.nivelesNoInteractivoEnviados.push(nivel);
 
   conversacionDB.mensajes.push({ de: 'bot', texto: MENSAJE_CIERRE_NO_INTERACTIVO, fecha: new Date() });
   conversacionDB.ultimaActividad = new Date();
