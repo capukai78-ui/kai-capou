@@ -45,7 +45,34 @@ function esNumeroDePrueba(numero) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-dos-secciones-esperando-atendidos'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+// Consulta el nombre real del usuario de Instagram/Messenger vía la Graph API de Meta.
+// Antes se guardaba "null" a propósito y el contacto quedaba visible solo como
+// "fb_25568420539447877" o "Sin nombre" — esto intenta traer el nombre real que Meta
+// ya tiene disponible para cualquier persona que le haya escrito a la página.
+async function obtenerNombreFacebook(psid, token) {
+  if (!psid || !token) return null;
+  return new Promise((resolve) => {
+    const req = https.request({
+      hostname: 'graph.facebook.com',
+      path: `/v22.0/${psid}?fields=name&access_token=${token}`,
+      method: 'GET'
+    }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(data);
+          resolve(json?.name || null);
+        } catch (e) { resolve(null); }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.setTimeout(5000, () => { req.destroy(); resolve(null); });
+    req.end();
+  });
+}
+
+const VERSION_KAI = 'v2026.07.20-fusion-instagram-messenger'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -3602,7 +3629,7 @@ app.post('/webhook', async (req, res) => {
       mensajeUsuario = messaging.message.text;
       // Instagram no da número de teléfono directamente — usamos su PSID como identificador
       numeroOrigen = `ig_${idExterno}`;
-      nombreCliente = null;
+      nombreCliente = await obtenerNombreFacebook(idExterno, process.env.INSTAGRAM_PAGE_TOKEN || process.env.WHATSAPP_TOKEN) || 'IG — Orgánico';
 
     } else if (object === 'page') {
       const messaging = body.entry?.[0]?.messaging?.[0];
@@ -3611,7 +3638,7 @@ app.post('/webhook', async (req, res) => {
       idExterno = messaging.sender.id;
       mensajeUsuario = messaging.message.text;
       numeroOrigen = `fb_${idExterno}`;
-      nombreCliente = null;
+      nombreCliente = await obtenerNombreFacebook(idExterno, process.env.MESSENGER_PAGE_TOKEN || process.env.WHATSAPP_TOKEN) || 'FB — Orgánico';
 
     } else {
       return; // evento desconocido
@@ -6476,6 +6503,47 @@ app.get('/api/acrux/conversaciones', authMiddleware, async (req, res) => {
     // El orden ya no depende de "modo" (bot/humano) — el criterio real que importa es
     // si el padre está esperando respuesta o no. Eso lo separa el frontend en dos
     // secciones visuales; aquí solo se mantiene el orden por actividad más reciente.
+
+    // ===== FUSIÓN CON INSTAGRAM / MESSENGER =====
+    // Antes vivían en una pestaña aparte ("WhatsApp / IG / Messenger"). Ahora aparecen
+    // aquí mismo, junto al número oficial, para que las vendedoras tengan una sola
+    // bandeja — tal como se pidió. Son de solo lectura (no se les puede responder desde
+    // aquí, coincide con CANALES_SOLO_LECTURA), pero sí deben verse en la misma lista.
+    // El contacto_id de estos se marca con el prefijo "social_" (usando el _id de Mongo)
+    // para que el frontend sepa distinguirlos al abrir el chat.
+    try {
+      const socialConvs = await Conversacion.find({
+        tenant_id: req.user.tenant_id,
+        canal: { $in: ['instagram', 'messenger'] }
+      }).sort({ ultimaActividad: -1 }).limit(200).lean();
+
+      const socialMapeadas = socialConvs.map(c => {
+        const ultimo = (c.mensajes || [])[c.mensajes.length - 1];
+        return {
+          contacto_id: `social_${c._id}`,
+          nombre: c.nombre || (c.canal === 'instagram' ? 'IG — Orgánico' : 'FB — Orgánico'),
+          numero: c.numero,
+          canal: c.canal,
+          es_social: true,
+          solo_lectura: true,
+          total_mensajes: (c.mensajes || []).length,
+          no_leidos: 0,
+          ultimo_mensaje: ultimo ? String(ultimo.texto || '').substring(0, 120) : null,
+          ultima_fecha: c.ultimaActividad ? new Date(c.ultimaActividad).toISOString().replace('T', ' ').substring(0, 19) : null,
+          ultimo_de: ultimo?.de === 'padre' ? 'padre' : 'agente',
+          agente: c.agente_nombre || null,
+          agente_fecha: null,
+          etiquetas: [`Canal — ${c.canal === 'instagram' ? 'Instagram' : 'Messenger'}`],
+          prioridad: '0',
+          nota: null
+        };
+      });
+
+      conversaciones = [...conversaciones, ...socialMapeadas]
+        .sort((a, b) => (b.ultima_fecha || '').localeCompare(a.ultima_fecha || ''));
+    } catch (e) {
+      // Si falla traer lo de Instagram/Messenger, se sigue mostrando AcruxLab normal (no bloqueante)
+    }
 
     // Filtro por usuario: admin y viewer supervisan todo; vendedor solo ve lo suyo + lo sin atender
     // Verificamos el rol directo en la base de datos (no solo el del token) — así, si el
