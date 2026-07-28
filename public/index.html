@@ -1178,7 +1178,13 @@ function nav(page,el){
   if(page==='marketing'){loadMarketing(); iniciarAutoEscaneoLeads();}
   else { detenerAutoEscaneoLeads(); }
   if(page==='chatslive'){
-    cambiarClTab(typeof _clTabActual!=='undefined'?_clTabActual:'omni');
+    // La pestaña "WhatsApp / IG / Messenger" es principalmente de pruebas internas del
+    // equipo (números de prueba) — se oculta para las vendedoras, que solo deben ver
+    // una sola bandeja: el ChatRoom del número oficial (donde ahora también aparecen
+    // los contactos de Instagram/Messenger reales, mezclados ahí).
+    const tabOmni = document.getElementById('cl-tab-omni');
+    if(tabOmni) tabOmni.style.display = (ROLE==='admin') ? 'inline-flex' : 'none';
+    cambiarClTab(ROLE==='admin' ? (typeof _clTabActual!=='undefined'?_clTabActual:'omni') : 'acrux');
     const btnMetricas = document.getElementById('btn-metricas-acrux');
     if(btnMetricas) btnMetricas.style.display = (ROLE==='vendedor') ? 'none' : 'inline-flex';
   }
@@ -1827,9 +1833,40 @@ async function enviarImagenSugeridaAcrux(imagenId){
 async function abrirAcruxChat(contactoId){
   _acruxContactoActivo = contactoId;
   document.getElementById('acrux-chat-header').style.display='block';
-  document.getElementById('acrux-input-area').style.display='block';
   const mensajesEl = document.getElementById('acrux-mensajes');
   mensajesEl.innerHTML = '<div style="text-align:center;color:var(--text3);font-size:12px">Cargando...</div>';
+
+  // Instagram/Messenger — de solo lectura, vive en nuestra propia base de datos
+  // (Conversacion), no en Odoo. Se abre con el mismo endpoint que ya usa la vista omni.
+  if(String(contactoId).startsWith('social_')){
+    document.getElementById('acrux-input-area').style.display='none';
+    document.getElementById('acrux-lead-panel').innerHTML = '<div style="font-size:11px;color:var(--text3)">Canal de solo lectura — no aplica clasificación de Odoo.</div>';
+    document.getElementById('acrux-contacto-info').innerHTML = '';
+    const idReal = String(contactoId).replace('social_','');
+    try {
+      const r = await fetch(API+'/api/conversaciones/'+idReal,{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+      if(!r.ok){ mensajesEl.innerHTML = '<div style="text-align:center;color:var(--text3);font-size:12px">No se pudo cargar</div>'; return; }
+      const conv = r.conversacion;
+      document.getElementById('acrux-chat-nombre').textContent = conv.nombre || 'Sin nombre';
+      document.getElementById('acrux-chat-numero').textContent = (conv.canal==='instagram'?'📷 Instagram':'💬 Messenger') + ' · ' + (conv.numero||'');
+      const modoEl = document.getElementById('acrux-chat-modo');
+      modoEl.textContent = '👁 Solo lectura';
+      modoEl.style.background = 'var(--bg3)'; modoEl.style.color = 'var(--text3)';
+      document.getElementById('acrux-btn-devolver').style.display='none';
+      document.getElementById('acrux-btn-tomar').style.display='none';
+      mensajesEl.innerHTML = (conv.mensajes||[]).map(m=>{
+        const esPadre = m.de==='padre';
+        const align = esPadre ? 'flex-start' : 'flex-end';
+        const bg = esPadre ? 'var(--bg3)' : 'var(--g)';
+        const color = esPadre ? 'var(--text)' : '#0B1120';
+        return `<div style="display:flex;justify-content:${align}"><div style="max-width:70%;background:${bg};color:${color};padding:10px 14px;border-radius:12px;font-size:13px;line-height:1.4">${m.texto}<div style="font-size:9px;opacity:.6;margin-top:4px">${esPadre?'Padre/Madre':(m.de==='bot'?'KAI':'Tú')}</div></div></div>`;
+      }).join('');
+      mensajesEl.scrollTop = mensajesEl.scrollHeight;
+    } catch(e){ mensajesEl.innerHTML = '<div style="text-align:center;color:var(--text3);font-size:12px">Error al cargar</div>'; }
+    return;
+  }
+
+  document.getElementById('acrux-input-area').style.display='block';
   document.getElementById('acrux-lead-panel').innerHTML = '<div style="font-size:11px;color:var(--text3)">Buscando lead en Odoo...</div>';
 
   try {
