@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-clasificacion-con-reintento'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-tolerar-sin-permiso-tags'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -6473,8 +6473,13 @@ app.get('/api/acrux/conversaciones', authMiddleware, async (req, res) => {
         const idsTagsUsados = [...new Set(conversacionesOdoo.flatMap(c => c.tag_ids || []))];
         let nombresTag = {};
         if (idsTagsUsados.length) {
-          const tags = await odooCallLocal('acrux.chat.conversation.tag', 'read', [idsTagsUsados, ['id', 'name']]);
-          (tags || []).forEach(t => { nombresTag[t.id] = t.name; });
+          // Este modelo a veces da AccessError (falta de permiso en Odoo para el
+          // usuario de servicio) — no debe tumbar toda la lista de conversaciones por
+          // eso, solo se quedan sin nombre de etiqueta esta vez.
+          try {
+            const tags = await odooCallLocal('acrux.chat.conversation.tag', 'read', [idsTagsUsados, ['id', 'name']]);
+            (tags || []).forEach(t => { nombresTag[t.id] = t.name; });
+          } catch (e) { /* sin permiso en Odoo para este modelo — se sigue sin nombres de etiqueta */ }
         }
 
         conversacionesOdoo.forEach(co => {
@@ -6657,8 +6662,10 @@ app.get('/api/debug/acrux-campos-conversacion/:contactoId', authMiddleware, asyn
       const detalle = await odooCallLocal('acrux.chat.conversation', 'read', [[contactoId], []]);
       registroCompleto = detalle?.[0] || null;
       if (registroCompleto?.tag_ids?.length) {
-        const tags = await odooCallLocal('acrux.chat.conversation.tag', 'read', [registroCompleto.tag_ids, ['id', 'name', 'color']]);
-        etiquetasResueltas = tags || [];
+        try {
+          const tags = await odooCallLocal('acrux.chat.conversation.tag', 'read', [registroCompleto.tag_ids, ['id', 'name', 'color']]);
+          etiquetasResueltas = tags || [];
+        } catch (e) { /* sin permiso en Odoo para este modelo */ }
       }
     }
 
@@ -7759,8 +7766,10 @@ app.get('/api/acrux/clasificacion/:contactoId', authMiddleware, async (req, res)
 
     let etiquetas = [];
     if (conv.tag_ids && conv.tag_ids.length) {
-      const tags = await odooCallLocal('acrux.chat.conversation.tag', 'read', [conv.tag_ids, ['id', 'name']]);
-      etiquetas = (tags || []).map(t => t.name);
+      try {
+        const tags = await odooCallLocal('acrux.chat.conversation.tag', 'read', [conv.tag_ids, ['id', 'name']]);
+        etiquetas = (tags || []).map(t => t.name);
+      } catch (e) { /* sin permiso en Odoo para "Chat Conversation Tags" — se sigue sin nombres de etiqueta */ }
     }
 
     // partner_info trae texto libre tipo "Email: x\nTeléfono: y\nUbicación: z"
