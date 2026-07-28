@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-version-modulo-acrux'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-probar-solo-lectura'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -6907,6 +6907,32 @@ app.get('/api/acrux/conversaciones/:contactoId', authMiddleware, async (req, res
 // notarse — es la forma más directa de confirmar "¿cambiaron algo en Odoo?" con datos,
 // no con sospecha.
 // GET /api/debug/version-modulo-acrux
+// Prueba controlada: SOLO lee una conversación (ni un solo write), y compara el agente
+// antes y después — para confirmar si el simple hecho de leerla vía API (lo que hace
+// nuestro propio motor cada 45 segundos, sin que ningún humano abra nada) ya dispara el
+// mismo "auto-reclamo" que se vio al pasar el mouse en la interfaz de Odoo.
+// GET /api/debug/probar-solo-lectura?contacto_id=8688
+app.get('/api/debug/probar-solo-lectura', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const contactoId = parseInt(req.query.contacto_id);
+    if (!contactoId) return res.json({ ok: false, error: 'Falta ?contacto_id=' });
+
+    const antes = await odooCallLocal('acrux.chat.conversation', 'read', [[contactoId], ['id', 'agent_id']]);
+    // Una lectura más, simulando exactamente lo que hace el motor cada 45 segundos
+    // (search_read sobre mensajes recientes) — sin ningún write de por medio.
+    await odooCallLocal('acrux.chat.message', 'search_read', [[['contact_id', '=', contactoId]]], { fields: ['id'], limit: 5 });
+    const despues = await odooCallLocal('acrux.chat.conversation', 'read', [[contactoId], ['id', 'agent_id']]);
+
+    res.json({
+      ok: true,
+      agente_antes: antes?.[0]?.agent_id?.[1] || 'ninguno',
+      agente_despues: despues?.[0]?.agent_id?.[1] || 'ninguno',
+      cambio_solo_por_leer: (antes?.[0]?.agent_id?.[1] || null) !== (despues?.[0]?.agent_id?.[1] || null)
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/debug/version-modulo-acrux', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
