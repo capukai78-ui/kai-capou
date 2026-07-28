@@ -1315,9 +1315,12 @@ async function abrirChat(id){
       const bg = esPadre ? 'var(--bg3)' : esAgente ? 'var(--g)' : 'var(--bg4)';
       const color = esAgente ? '#0B1120' : 'var(--text)';
       const align = esPadre ? 'flex-start' : 'flex-end';
+      const imgHtml = m.imagen_base64
+        ? `<img src="data:${m.imagen_mime||'image/jpeg'};base64,${m.imagen_base64}" style="max-width:220px;border-radius:8px;margin-bottom:6px;display:block" onerror="this.style.display='none'">`
+        : '';
       return `<div style="display:flex;justify-content:${align}">
         <div style="max-width:70%;background:${bg};color:${color};padding:10px 14px;border-radius:12px;font-size:13px;line-height:1.4">
-          ${m.texto}
+          ${imgHtml}${m.texto}
           <div style="font-size:9px;opacity:.6;margin-top:4px">${esPadre?'Padre/Madre':esAgente?'Tú':'KAI'}</div>
         </div>
       </div>`;
