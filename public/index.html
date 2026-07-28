@@ -1864,7 +1864,9 @@ async function abrirAcruxChat(contactoId){
       modoEl.style.background = 'var(--bg3)'; modoEl.style.color = 'var(--text3)';
       document.getElementById('acrux-btn-devolver').style.display='none';
       document.getElementById('acrux-btn-tomar').style.display='none';
-      document.getElementById('acrux-btn-soltar').style.display='none';
+      const btnSoltarSocial = document.getElementById('acrux-btn-soltar');
+      btnSoltarSocial.textContent = '✅ Marcar revisado';
+      btnSoltarSocial.title = 'Instagram/Messenger es de solo lectura — esto lo saca de "Esperando respuesta" sin necesidad de contestar';
       mensajesEl.innerHTML = (conv.mensajes||[]).map(m=>{
         const esPadre = m.de==='padre';
         const align = esPadre ? 'flex-start' : 'flex-end';
@@ -1895,6 +1897,9 @@ async function abrirAcruxChat(contactoId){
       const btnDevolver = document.getElementById('acrux-btn-devolver');
       const btnTomar = document.getElementById('acrux-btn-tomar');
       document.getElementById('acrux-btn-soltar').style.display = 'inline-block'; // por si venía oculto de un chat social
+      const btnSoltarNormal = document.getElementById('acrux-btn-soltar');
+      btnSoltarNormal.textContent = '🔓 Soltar';
+      btnSoltarNormal.title = 'Úsalo si esta conversación se te pegó por accidente en Odoo (ej. al pasar el mouse) — la libera para que cualquier vendedora la pueda ver y tomar de nuevo';
       if(hilo.modo === 'humano'){
         modoEl.textContent = '👤 ' + (hilo.agente_asignado || 'Humano');
         modoEl.style.background = 'var(--g3)'; modoEl.style.color = 'var(--g)';
@@ -2026,7 +2031,16 @@ async function tomarSeguimientoAcrux(){
 async function liberarAcruxLab(){
   if(!_acruxContactoActivo) return;
   if(String(_acruxContactoActivo).startsWith('social_')){
-    showToast('Instagram/Messenger no tiene este botón — no existe en Odoo, vive en nuestro propio sistema','error');
+    const idReal = String(_acruxContactoActivo).replace('social_','');
+    try {
+      const r = await fetch(API+'/api/acrux/marcar-revisado-social',{
+        method:'POST',
+        headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'},
+        body: JSON.stringify({ conversacion_id: idReal })
+      }).then(r=>r.json());
+      if(r.ok){ showToast(r.mensaje||'Marcado ✓','ok'); loadAcruxLista(); }
+      else { showToast(r.error||'No se pudo marcar','error'); }
+    } catch(e){ showToast('Error de conexión','error'); }
     return;
   }
   try {
