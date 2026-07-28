@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-pedir-nivel-de-nuevo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-persistir-en-conversacion-whatsapp'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -3492,27 +3492,29 @@ async function manejarModoNoInteractivoAcrux(tenant, mensajeUsuario, conv, conta
   }
   conv.nivelesNoInteractivoEnviados.push(nivel);
 
-  // Traspaso real a una asesora. Los números de prueba NUNCA pasan por el reparto
-  // normal (a propósito, para no ensuciar Odoo), así que puede que no exista ningún
-  // registro todavía — se asigna una vendedora de verdad aquí, no se asume que ya hay una.
-  try {
-    const asignExistente = await AsignacionAcrux.findOne({ tenant_id: tenant._id, contacto_id: contactoId });
-    let agenteParaAsignar = null;
-    if (asignExistente?.agente_id) {
-      agenteParaAsignar = await UsuarioPanel.findById(asignExistente.agente_id);
-    } else {
-      agenteParaAsignar = await asignarAgenteLibre(tenant._id);
-    }
-    await AsignacionAcrux.findOneAndUpdate(
-      { tenant_id: tenant._id, contacto_id: contactoId },
-      {
-        modo: 'humano', fecha_modo_humano: new Date(),
-        ...(agenteParaAsignar ? { agente_id: agenteParaAsignar._id, agente_nombre: agenteParaAsignar.nombre } : {})
-      },
-      { upsert: true, setDefaultsOnInsert: true }
-    );
-    console.log(`👤 [No interactivo] Traspaso a ${agenteParaAsignar?.nombre || 'nadie disponible'} — contacto ${contactoId}`);
-  } catch (e) { console.error(`❌ [No interactivo] Falló asignar vendedor: ${e.message}`); }
+  // ===== ASIGNACIÓN DE VENDEDORA — DESACTIVADA TEMPORALMENTE A PEDIDO =====
+  // Poner modo:'humano' bloqueaba que Kai volviera a responder en mensajes siguientes
+  // (el propio sistema respeta cuando un humano ya tiene el chat, y no distinguía que
+  // era la propia prueba). Se deja pendiente hasta reactivarla a propósito, una vez que
+  // el resto del flujo esté confirmado.
+  // try {
+  //   const asignExistente = await AsignacionAcrux.findOne({ tenant_id: tenant._id, contacto_id: contactoId });
+  //   let agenteParaAsignar = null;
+  //   if (asignExistente?.agente_id) {
+  //     agenteParaAsignar = await UsuarioPanel.findById(asignExistente.agente_id);
+  //   } else {
+  //     agenteParaAsignar = await asignarAgenteLibre(tenant._id);
+  //   }
+  //   await AsignacionAcrux.findOneAndUpdate(
+  //     { tenant_id: tenant._id, contacto_id: contactoId },
+  //     {
+  //       modo: 'humano', fecha_modo_humano: new Date(),
+  //       ...(agenteParaAsignar ? { agente_id: agenteParaAsignar._id, agente_nombre: agenteParaAsignar.nombre } : {})
+  //     },
+  //     { upsert: true, setDefaultsOnInsert: true }
+  //   );
+  //   console.log(`👤 [No interactivo] Traspaso a ${agenteParaAsignar?.nombre || 'nadie disponible'} — contacto ${contactoId}`);
+  // } catch (e) { console.error(`❌ [No interactivo] Falló asignar vendedor: ${e.message}`); }
 
   return { texto: MENSAJE_CIERRE_NO_INTERACTIVO, handoff: true };
 }
@@ -3522,39 +3524,63 @@ async function manejarModoNoInteractivoAcrux(tenant, mensajeUsuario, conv, conta
 async function manejarModoNoInteractivoWhatsApp(tenant, mensajeUsuario, ctxSesion, numeroOrigen) {
   if (!ctxSesion.nivelesNoInteractivoEnviados) ctxSesion.nivelesNoInteractivoEnviados = [];
 
+  // El panel ("Chats en Vivo") lee de este modelo, no de la memoria en RAM — sin esto,
+  // lo que se manda por WhatsApp nunca queda visible ahí, aunque el padre sí lo reciba.
+  let conversacionDB = await Conversacion.findOne({ tenant_id: tenant._id, numero: numeroOrigen, estado: { $ne: 'cerrado' } });
+  if (!conversacionDB) {
+    conversacionDB = await Conversacion.create({ tenant_id: tenant._id, numero: numeroOrigen, canal: 'whatsapp', estado: 'bot', mensajes: [] });
+  }
+  conversacionDB.mensajes.push({ de: 'padre', texto: mensajeUsuario, fecha: new Date() });
+
   const nivel = detectarNivelMenuNI(mensajeUsuario);
 
   if (!nivel) {
-    if (ctxSesion.nivelesNoInteractivoEnviados.length) return '';
-    if (ctxSesion.noInteractivoSaludado) return '';
+    if (ctxSesion.nivelesNoInteractivoEnviados.length) { await conversacionDB.save(); return ''; }
+    if (ctxSesion.noInteractivoSaludado) { await conversacionDB.save(); return ''; }
     ctxSesion.noInteractivoSaludado = true;
+    conversacionDB.mensajes.push({ de: 'bot', texto: MENU_NIVEL_NI, fecha: new Date() });
+    conversacionDB.ultimaActividad = new Date();
+    await conversacionDB.save();
     return MENU_NIVEL_NI;
   }
 
-  if (ctxSesion.nivelesNoInteractivoEnviados.includes(nivel)) return '';
+  if (ctxSesion.nivelesNoInteractivoEnviados.includes(nivel)) { await conversacionDB.save(); return ''; }
 
   await enviarWhatsAppMeta(numeroOrigen, MENSAJE_VIDEO_PROYECTO_NI);
+  conversacionDB.mensajes.push({ de: 'bot', texto: MENSAJE_VIDEO_PROYECTO_NI, fecha: new Date() });
+
   for (const filtro of SECUENCIA_IMAGENES_NO_INTERACTIVO[nivel]) {
     const img = await buscarImagenSecuenciaNI(tenant, filtro);
     if (!img) { console.log(`⚠️ [No interactivo][WhatsApp] No se encontró imagen para: ${JSON.stringify(filtro)}`); continue; }
-    try { await enviarImagenDesdeDB(img, numeroOrigen, construirDescripcionImagen(img)); }
-    catch (e) { console.error(`❌ [No interactivo][WhatsApp] Falló imagen "${img.nombre}": ${e.message}`); }
+    const descripcion = construirDescripcionImagen(img);
+    try {
+      await enviarImagenDesdeDB(img, numeroOrigen, descripcion);
+      conversacionDB.mensajes.push({ de: 'bot', texto: `🖼️ ${descripcion} (imagen: ${img.nombre})`, fecha: new Date() });
+    } catch (e) {
+      console.error(`❌ [No interactivo][WhatsApp] Falló imagen "${img.nombre}": ${e.message}`);
+      conversacionDB.mensajes.push({ de: 'bot', texto: `⚠️ (falló el envío de la imagen "${img.nombre}")`, fecha: new Date() });
+    }
     await new Promise(r => setTimeout(r, 1500));
   }
   ctxSesion.nivelesNoInteractivoEnviados.push(nivel);
 
-  try {
-    const agenteParaAsignar = await asignarAgenteLibre(tenant._id);
-    await Conversacion.findOneAndUpdate(
-      { tenant_id: tenant._id, numero: numeroOrigen, estado: { $ne: 'cerrado' } },
-      {
-        estado: 'humano',
-        ...(agenteParaAsignar ? { agente_id: agenteParaAsignar._id, agente_nombre: agenteParaAsignar.nombre } : {})
-      },
-      { upsert: false }
-    );
-    console.log(`👤 [No interactivo][WhatsApp] Traspaso a ${agenteParaAsignar?.nombre || 'nadie disponible'} — ${numeroOrigen}`);
-  } catch (e) { console.error(`❌ [No interactivo][WhatsApp] Falló asignar vendedor: ${e.message}`); }
+  conversacionDB.mensajes.push({ de: 'bot', texto: MENSAJE_CIERRE_NO_INTERACTIVO, fecha: new Date() });
+  conversacionDB.ultimaActividad = new Date();
+  await conversacionDB.save();
+
+  // ===== ASIGNACIÓN DE VENDEDORA — DESACTIVADA TEMPORALMENTE, mismo motivo que en AcruxLab =====
+  // try {
+  //   const agenteParaAsignar = await asignarAgenteLibre(tenant._id);
+  //   await Conversacion.findOneAndUpdate(
+  //     { tenant_id: tenant._id, numero: numeroOrigen, estado: { $ne: 'cerrado' } },
+  //     {
+  //       estado: 'humano',
+  //       ...(agenteParaAsignar ? { agente_id: agenteParaAsignar._id, agente_nombre: agenteParaAsignar.nombre } : {})
+  //     },
+  //     { upsert: false }
+  //   );
+  //   console.log(`👤 [No interactivo][WhatsApp] Traspaso a ${agenteParaAsignar?.nombre || 'nadie disponible'} — ${numeroOrigen}`);
+  // } catch (e) { console.error(`❌ [No interactivo][WhatsApp] Falló asignar vendedor: ${e.message}`); }
 
   return MENSAJE_CIERRE_NO_INTERACTIVO;
 }
