@@ -447,7 +447,7 @@ tr:hover td{background:var(--g4)}
                 <div style="display:flex;align-items:center;gap:8px">
                   <span id="acrux-chat-modo" style="font-size:10px;font-weight:700;padding:3px 10px;border-radius:10px"></span>
                   <button id="acrux-btn-tomar" onclick="tomarSeguimientoAcrux()" title="Para cuando ya lo estás trabajando por otro medio (ej. una llamada) y KAI no debe seguir escribiéndole aunque nadie le haya respondido en este chat" style="display:none;background:var(--bg3);border:1px solid var(--border);color:var(--text2);border-radius:8px;padding:6px 12px;font-size:11px;cursor:pointer">👤 Ya lo estoy trabajando</button>
-                  <button onclick="liberarAcruxLab()" title="Úsalo si esta conversación se te pegó por accidente en Odoo (ej. al pasar el mouse) — la libera para que cualquier vendedora la pueda ver y tomar de nuevo" style="background:var(--bg3);border:1px solid var(--border);color:var(--text2);border-radius:8px;padding:6px 12px;font-size:11px;cursor:pointer">🔓 Soltar</button>
+                  <button id="acrux-btn-soltar" onclick="liberarAcruxLab()" title="Úsalo si esta conversación se te pegó por accidente en Odoo (ej. al pasar el mouse) — la libera para que cualquier vendedora la pueda ver y tomar de nuevo" style="background:var(--bg3);border:1px solid var(--border);color:var(--text2);border-radius:8px;padding:6px 12px;font-size:11px;cursor:pointer">🔓 Soltar</button>
                   <button id="acrux-btn-devolver" onclick="devolverAKaiAcrux()" style="display:none;background:var(--bg3);border:1px solid var(--border);color:var(--text2);border-radius:8px;padding:6px 12px;font-size:11px;cursor:pointer">✓ Devolver a KAI</button>
                 </div>
               </div>
@@ -1864,6 +1864,7 @@ async function abrirAcruxChat(contactoId){
       modoEl.style.background = 'var(--bg3)'; modoEl.style.color = 'var(--text3)';
       document.getElementById('acrux-btn-devolver').style.display='none';
       document.getElementById('acrux-btn-tomar').style.display='none';
+      document.getElementById('acrux-btn-soltar').style.display='none';
       mensajesEl.innerHTML = (conv.mensajes||[]).map(m=>{
         const esPadre = m.de==='padre';
         const align = esPadre ? 'flex-start' : 'flex-end';
@@ -1893,6 +1894,7 @@ async function abrirAcruxChat(contactoId){
       const modoEl = document.getElementById('acrux-chat-modo');
       const btnDevolver = document.getElementById('acrux-btn-devolver');
       const btnTomar = document.getElementById('acrux-btn-tomar');
+      document.getElementById('acrux-btn-soltar').style.display = 'inline-block'; // por si venía oculto de un chat social
       if(hilo.modo === 'humano'){
         modoEl.textContent = '👤 ' + (hilo.agente_asignado || 'Humano');
         modoEl.style.background = 'var(--g3)'; modoEl.style.color = 'var(--g)';
@@ -2023,6 +2025,10 @@ async function tomarSeguimientoAcrux(){
 // cualquier vendedora la vea y la tome de nuevo con normalidad.
 async function liberarAcruxLab(){
   if(!_acruxContactoActivo) return;
+  if(String(_acruxContactoActivo).startsWith('social_')){
+    showToast('Instagram/Messenger no tiene este botón — no existe en Odoo, vive en nuestro propio sistema','error');
+    return;
+  }
   try {
     const r = await fetch(API+'/api/acrux/liberar',{
       method:'POST',
