@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-mas-formas-de-pedir-nivel'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-version-modulo-acrux'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -6901,6 +6901,24 @@ app.get('/api/acrux/conversaciones/:contactoId', authMiddleware, async (req, res
 // Diagnóstico: ver los campos reales de acrux.chat.conversation (el modelo de la
 // conversación, no del mensaje ni del lead). Sospecha: las etiquetas tipo "Cindy"/
 // "Infantil" que se ven en el ChatRoom real viven aquí, no en crm.lead.
+// Revisa el módulo de AcruxLab (whatsapp_connector) directamente en Odoo — versión
+// instalada y fecha de la última actualización. Si alguien (el proveedor del módulo,
+// o el equipo de TI del colegio) actualizó AcruxLab recientemente, aquí debería
+// notarse — es la forma más directa de confirmar "¿cambiaron algo en Odoo?" con datos,
+// no con sospecha.
+// GET /api/debug/version-modulo-acrux
+app.get('/api/debug/version-modulo-acrux', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const modulos = await odooCallLocal('ir.module.module', 'search_read',
+      [[['name', 'like', 'whatsapp']]],
+      { fields: ['name', 'shortdesc', 'installed_version', 'latest_version', 'state', 'write_date'] }
+    ).catch(e => ({ error: e.message }));
+
+    res.json({ ok: true, modulos: modulos || [], nota: 'Si "write_date" es reciente, alguien tocó/actualizó el módulo hace poco.' });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/debug/acrux-campos-conversacion/:contactoId', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
