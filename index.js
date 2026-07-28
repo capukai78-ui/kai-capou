@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-solo-calientes-y-completar-nombres'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-soltar-en-sociales-tambien'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -276,7 +276,11 @@ const conversacionSchema = new mongoose.Schema({
     fecha:  { type: Date, default: Date.now }
   }],
   ultimaActividad: { type: Date, default: Date.now },
-  creado:        { type: Date, default: Date.now }
+  creado:        { type: Date, default: Date.now },
+  // Solo aplica a Instagram/Messenger (canal de solo lectura, no se puede responder).
+  // Equivalente a "Soltar" en Odoo: marca el lead como ya revisado, para que salga de
+  // "esperando respuesta" sin necesidad de contestar.
+  revisado_social: { type: Boolean, default: false }
 });
 const Conversacion = mongoose.model('Conversacion', conversacionSchema);
 
@@ -6555,7 +6559,8 @@ function esLeadRealSocial(texto) {
           no_leidos: 0,
           ultimo_mensaje: textoUltimo.substring(0, 120) || null,
           ultima_fecha: c.ultimaActividad ? new Date(c.ultimaActividad).toISOString().replace('T', ' ').substring(0, 19) : null,
-          ultimo_de: ultimo?.de === 'padre' ? 'padre' : 'agente',
+          ultimo_de: (ultimo?.de === 'padre' && !c.revisado_social) ? 'padre' : 'agente',
+          revisado_social: !!c.revisado_social,
           agente: c.agente_nombre || null,
           agente_fecha: null,
           etiquetas: [`Canal — ${c.canal === 'instagram' ? 'Instagram' : 'Messenger'}`],
@@ -7616,6 +7621,21 @@ app.get('/api/debug/probar-sincronizar-agente', authMiddleware, async (req, res)
 // asignó). Pone el agente de vuelta al usuario de servicio de Kai, para que cualquier
 // vendedora la pueda ver y tomar de nuevo con normalidad.
 // POST /api/acrux/liberar  { contacto_id: 8657 }
+// Equivalente de "Soltar" para Instagram/Messenger — no existen en Odoo, así que en vez
+// de liberar un agente, se marca como revisado para que salga de "esperando respuesta".
+// POST /api/acrux/marcar-revisado-social  { conversacion_id: "6a5774e..." }
+app.post('/api/acrux/marcar-revisado-social', authMiddleware, async (req, res) => {
+  try {
+    const { conversacion_id } = req.body;
+    if (!conversacion_id) return res.status(400).json({ ok: false, error: 'conversacion_id es requerido' });
+    await Conversacion.updateOne(
+      { _id: conversacion_id, tenant_id: req.user.tenant_id },
+      { revisado_social: true }
+    );
+    res.json({ ok: true, mensaje: 'Marcado como revisado — ya no aparece en "esperando respuesta"' });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.post('/api/acrux/liberar', authMiddleware, async (req, res) => {
   try {
     const { contacto_id } = req.body;
