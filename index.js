@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-tolerar-sin-permiso-tags'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-clasificar-leads-sociales-y-click-fix'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -6509,7 +6509,25 @@ app.get('/api/acrux/conversaciones', authMiddleware, async (req, res) => {
     // si el padre está esperando respuesta o no. Eso lo separa el frontend en dos
     // secciones visuales; aquí solo se mantiene el orden por actividad más reciente.
 
-    // ===== FUSIÓN CON INSTAGRAM / MESSENGER =====
+// Distingue un mensaje de Instagram/Messenger que parece un LEAD real (pregunta,
+// datos de contacto, mención de nivel/grado) de una simple reacción o comentario suelto
+// a una publicación (solo emojis, "gracias", "felicitaciones", un enlace sin contexto).
+// Esto es lo que antes hacía que TODO apareciera igual de urgente en "esperando
+// respuesta" — con esto, las reacciones bajan a su propia sección, sin mezclarse con
+// los leads de verdad.
+function esLeadRealSocial(texto) {
+  const t = (texto || '').trim();
+  if (!t) return false;
+  const tieneEmail = /@/.test(t);
+  const tieneNivel = /preprimaria|primaria|secundaria|bachillerato|kinder|kínder|párvulos|parvulos|jardín|jardin|infantil|preparatoria|grado|matr[ií]cula|inscripci[oó]n|admisi[oó]n|mensualidad|colegiatura|cuota|precio|informaci[oó]n/i.test(t);
+  const tieneTelefono = /\d{8,}/.test(t.replace(/\D/g, '').length >= 8 ? t.replace(/\D/g, '') : '');
+  // Si al quitar emojis y espacios casi no queda nada (solo un emoji, "🔥", "😍"), es reacción.
+  const soloEmojiOMuyCorto = t.replace(/[\p{Emoji}\s]/gu, '').length < 8;
+  const suficientesPalabras = t.split(/\s+/).filter(Boolean).length >= 4;
+  return tieneEmail || tieneNivel || tieneTelefono || (!soloEmojiOMuyCorto && suficientesPalabras);
+}
+
+// ===== FUSIÓN CON INSTAGRAM / MESSENGER =====
     // Antes vivían en una pestaña aparte ("WhatsApp / IG / Messenger"). Ahora aparecen
     // aquí mismo, junto al número oficial, para que las vendedoras tengan una sola
     // bandeja — tal como se pidió. Son de solo lectura (no se les puede responder desde
@@ -6524,6 +6542,7 @@ app.get('/api/acrux/conversaciones', authMiddleware, async (req, res) => {
 
       const socialMapeadas = socialConvs.map(c => {
         const ultimo = (c.mensajes || [])[c.mensajes.length - 1];
+        const textoUltimo = ultimo ? String(ultimo.texto || '') : '';
         return {
           contacto_id: `social_${c._id}`,
           nombre: c.nombre || (c.canal === 'instagram' ? 'IG — Orgánico' : 'FB — Orgánico'),
@@ -6531,9 +6550,10 @@ app.get('/api/acrux/conversaciones', authMiddleware, async (req, res) => {
           canal: c.canal,
           es_social: true,
           solo_lectura: true,
+          es_lead_real: esLeadRealSocial(textoUltimo),
           total_mensajes: (c.mensajes || []).length,
           no_leidos: 0,
-          ultimo_mensaje: ultimo ? String(ultimo.texto || '').substring(0, 120) : null,
+          ultimo_mensaje: textoUltimo.substring(0, 120) || null,
           ultima_fecha: c.ultimaActividad ? new Date(c.ultimaActividad).toISOString().replace('T', ' ').substring(0, 19) : null,
           ultimo_de: ultimo?.de === 'padre' ? 'padre' : 'agente',
           agente: c.agente_nombre || null,
