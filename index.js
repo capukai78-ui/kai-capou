@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-fusion-instagram-messenger'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-clasificacion-con-reintento'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7739,9 +7739,21 @@ app.get('/api/acrux/clasificacion/:contactoId', authMiddleware, async (req, res)
     const contactoId = parseInt(req.params.contactoId);
     if (!contactoId) return res.json({ ok: false, error: 'ID de contacto inválido' });
 
-    const detalle = await odooCallLocal('acrux.chat.conversation', 'read',
-      [[contactoId], ['id', 'name', 'number', 'number_format', 'priority', 'tag_ids', 'note', 'status', 'unanswered', 'last_activity', 'partner_info']]
-    );
+    // Se intenta primero con todos los campos; si Odoo da error de permisos en alguno
+    // (pasa con ciertos registros, ej. campos calculados que dependen de otro modelo al
+    // que no siempre hay acceso), se reintenta con un grupo básico que casi nunca falla,
+    // en vez de mostrarle un error crudo de Odoo a la vendedora.
+    let detalle;
+    try {
+      detalle = await odooCallLocal('acrux.chat.conversation', 'read',
+        [[contactoId], ['id', 'name', 'number', 'number_format', 'priority', 'tag_ids', 'note', 'status', 'unanswered', 'last_activity', 'partner_info']]
+      );
+    } catch (e) {
+      console.error(`⚠️ [Clasificación] Falló con todos los campos para #${contactoId}, reintentando básico: ${e.message}`);
+      detalle = await odooCallLocal('acrux.chat.conversation', 'read',
+        [[contactoId], ['id', 'name', 'number', 'priority', 'tag_ids', 'note', 'status']]
+      );
+    }
     const conv = detalle?.[0];
     if (!conv) return res.json({ ok: false, error: 'No se encontró la conversación en AcruxLab' });
 
