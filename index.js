@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-proteger-botones-en-social'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-solo-calientes-y-completar-nombres'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -6564,7 +6564,12 @@ function esLeadRealSocial(texto) {
         };
       });
 
-      conversaciones = [...conversaciones, ...socialMapeadas]
+      // Solo se trasladan los que parecen un lead real (con datos: correo, nivel,
+      // teléfono, o un mensaje con contenido) — las reacciones sueltas a publicaciones
+      // (emojis, "gracias", "felicidades") no interesan y no deben aparecer aquí.
+      const socialConDatos = socialMapeadas.filter(c => c.es_lead_real);
+
+      conversaciones = [...conversaciones, ...socialConDatos]
         .sort((a, b) => (b.ultima_fecha || '').localeCompare(a.ultima_fecha || ''));
     } catch (e) {
       // Si falla traer lo de Instagram/Messenger, se sigue mostrando AcruxLab normal (no bloqueante)
@@ -6997,6 +7002,51 @@ app.get('/api/debug/confirmar-y-marcar-sin-contacto', authMiddleware, async (req
 // exactos, no con impresiones. Para cada conversación que Kai tocó en el rango,
 // confirma si esa misma conversación EXISTE en Odoo ahora mismo.
 // GET /api/debug/comparar-respaldo-vs-odoo?desde=2026-07-17&hasta=2026-07-24
+// Completa el nombre real de los contactos de Instagram/Messenger que YA EXISTÍAN
+// antes de hoy (cuando se guardaba "null" a propósito) — consulta la Graph API de Meta
+// para cada uno que todavía no tenga un nombre real. De solo escritura sobre nuestra
+// propia base de datos (Mongo), nunca toca Odoo.
+// GET /api/debug/completar-nombres-sociales?aplicar=1
+app.get('/api/debug/completar-nombres-sociales', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const aplicar = req.query.aplicar === '1';
+    const sinNombreReal = await Conversacion.find({
+      tenant_id: req.user.tenant_id,
+      canal: { $in: ['instagram', 'messenger'] },
+      $or: [
+        { nombre: null },
+        { nombre: /^(IG|FB) — Orgánico$/ },
+        { nombre: /^(ig|fb)_/ }
+      ]
+    }).select('_id numero canal nombre').lean();
+
+    if (!sinNombreReal.length) return res.json({ ok: true, total: 0, mensaje: 'No hay ninguno pendiente — todos ya tienen nombre real o ya se intentó.' });
+
+    const detalle = [];
+    for (const c of sinNombreReal) {
+      const psid = String(c.numero || '').replace(/^(ig_|fb_)/, '');
+      const token = c.canal === 'instagram'
+        ? (process.env.INSTAGRAM_PAGE_TOKEN || process.env.WHATSAPP_TOKEN)
+        : (process.env.MESSENGER_PAGE_TOKEN || process.env.WHATSAPP_TOKEN);
+      const nombreReal = await obtenerNombreFacebook(psid, token);
+
+      if (nombreReal && aplicar) {
+        await Conversacion.updateOne({ _id: c._id }, { nombre: nombreReal });
+      }
+      detalle.push({ contacto_id: `social_${c._id}`, numero: c.numero, nombre_antes: c.nombre, nombre_encontrado: nombreReal || '(no disponible en Meta)' });
+    }
+
+    res.json({
+      ok: true,
+      modo: aplicar ? 'EJECUTADO' : 'VISTA PREVIA — agrega &aplicar=1 para guardar',
+      total_revisados: detalle.length,
+      total_con_nombre_encontrado: detalle.filter(d => d.nombre_encontrado !== '(no disponible en Meta)').length,
+      detalle
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/debug/comparar-respaldo-vs-odoo', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
