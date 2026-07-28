@@ -1656,7 +1656,7 @@ function renderListaAcrux(conversaciones){
 
   // Igual que en la otra lista: si nada cambió, no se redibuja — evita que las filas
   // "desaparezcan" bajo el mouse con cada refresco automático.
-  const firma = JSON.stringify(conversaciones.map(c => [c.contacto_id, c.ultimo_de, c.no_leidos, c.agente, c.modo, _acruxContactoActivo]));
+  const firma = JSON.stringify(conversaciones.map(c => [c.contacto_id, c.ultimo_de, c.no_leidos, c.agente, c.modo, c.es_lead_real, _acruxContactoActivo]));
   if(lista.dataset.firma === firma) return;
   lista.dataset.firma = firma;
 
@@ -1664,7 +1664,7 @@ function renderListaAcrux(conversaciones){
     // PENDIENTE = el último mensaje es del padre/madre y todavía nadie le ha contestado.
     const pendiente = c.ultimo_de === 'padre';
     return `
-    <div onclick="abrirAcruxChat(${c.contacto_id})" style="padding:12px;border-radius:10px;cursor:pointer;margin-bottom:0;border-bottom:1px solid var(--border);${pendiente?'border-left:3px solid #D8503C;':''}background:${_acruxContactoActivo===c.contacto_id?'var(--acrux2)':(pendiente?'rgba(216,80,60,.04)':'transparent')}" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='${_acruxContactoActivo===c.contacto_id?'var(--acrux2)':(pendiente?'rgba(216,80,60,.04)':'transparent')}'">
+    <div onclick="abrirAcruxChat('${c.contacto_id}')" style="padding:12px;border-radius:10px;cursor:pointer;margin-bottom:0;border-bottom:1px solid var(--border);${pendiente?'border-left:3px solid #D8503C;':''}background:${_acruxContactoActivo===c.contacto_id?'var(--acrux2)':(pendiente?'rgba(216,80,60,.04)':'transparent')}" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='${_acruxContactoActivo===c.contacto_id?'var(--acrux2)':(pendiente?'rgba(216,80,60,.04)':'transparent')}'">
       <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:4px">
         <div style="font-weight:600;font-size:13px">${c.nombre || c.numero || 'Sin nombre'}</div>
         <div style="display:flex;align-items:center;gap:6px">
@@ -1682,10 +1682,12 @@ function renderListaAcrux(conversaciones){
   `;
   };
 
-  // Dos secciones reales, como en el ChatRoom de Odoo: arriba, los que esperan
-  // respuesta (lo urgente, lo que todavía no se ha atendido); abajo, los que ya se
-  // respondieron o se cerraron. Según se van contestando, bajan solos de sección.
-  const esperando = conversaciones.filter(c => c.ultimo_de === 'padre');
+  // Tres secciones: leads reales esperando respuesta (arriba, lo urgente); reacciones o
+  // comentarios sueltos de Instagram/Messenger sin datos reales (aparte, para no
+  // mezclarlos con leads de verdad); y ya respondidos/cerrados (abajo).
+  const esReaccionSinDatos = c => c.es_social && c.es_lead_real === false;
+  const esperando = conversaciones.filter(c => c.ultimo_de === 'padre' && !esReaccionSinDatos(c));
+  const reacciones = conversaciones.filter(c => c.ultimo_de === 'padre' && esReaccionSinDatos(c));
   const yaAtendidos = conversaciones.filter(c => c.ultimo_de !== 'padre');
 
   let html = '';
@@ -1693,8 +1695,12 @@ function renderListaAcrux(conversaciones){
     html += `<div style="padding:8px 4px 6px;font-size:10px;font-weight:700;color:#D8503C;letter-spacing:.04em;text-transform:uppercase">⏳ Esperando respuesta (${esperando.length})</div>`;
     html += esperando.map(filaHtml).join('');
   }
+  if(reacciones.length){
+    html += `<div style="padding:14px 4px 6px;font-size:10px;font-weight:700;color:var(--text3);letter-spacing:.04em;text-transform:uppercase;border-top:1px solid var(--border);margin-top:6px">🔕 Reacciones / sin datos (${reacciones.length})</div>`;
+    html += reacciones.map(filaHtml).join('');
+  }
   if(yaAtendidos.length){
-    html += `<div style="padding:14px 4px 6px;font-size:10px;font-weight:700;color:var(--text3);letter-spacing:.04em;text-transform:uppercase;border-top:1px solid var(--border);margin-top:${esperando.length?'6px':'0'}">✅ Ya respondidos / cerrados (${yaAtendidos.length})</div>`;
+    html += `<div style="padding:14px 4px 6px;font-size:10px;font-weight:700;color:var(--text3);letter-spacing:.04em;text-transform:uppercase;border-top:1px solid var(--border);margin-top:${(esperando.length||reacciones.length)?'6px':'0'}">✅ Ya respondidos / cerrados (${yaAtendidos.length})</div>`;
     html += yaAtendidos.map(filaHtml).join('');
   }
   lista.innerHTML = html;
@@ -1831,6 +1837,10 @@ async function enviarImagenSugeridaAcrux(imagenId){
 }
 
 async function abrirAcruxChat(contactoId){
+  // Con comillas en el onclick, todo llega como texto — se regresa a número los IDs
+  // reales de AcruxLab (así siguen coincidiendo con los que manda el backend), y se
+  // deja como texto solo el prefijo "social_" de Instagram/Messenger.
+  if(!String(contactoId).startsWith('social_')) contactoId = parseInt(contactoId);
   _acruxContactoActivo = contactoId;
   document.getElementById('acrux-chat-header').style.display='block';
   const mensajesEl = document.getElementById('acrux-mensajes');
