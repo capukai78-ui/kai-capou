@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-soltar-en-sociales-tambien'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-modo-no-interactivo-pruebas'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -779,6 +779,13 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
   const conv = conversaciones.get(numero);
   conv.ultimaActividad = Date.now();
   const historial = conv.historial;
+
+  // ===== MODO NO INTERACTIVO — nuevo esquema, solo números de prueba por ahora =====
+  // Si está activo para este número, toma el control completo del mensaje — no cae al
+  // flujo conversacional normal en absoluto.
+  if (MODO_NO_INTERACTIVO_SOLO_PRUEBAS && esNumeroDePrueba(numero)) {
+    return await manejarModoNoInteractivoAcrux(tenant, mensajeUsuario, conv, contactoId);
+  }
 
   // Recuperar SOLO el nivel guardado (para las imágenes) — el resto de la memoria se
   // maneja más abajo, en el bloque de saludo, para no duplicar la inyección.
@@ -2923,6 +2930,11 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
   if (esNuevaSesionEnMemoria) conversaciones.set(numeroOrigen, { historial: [], ultimaActividad: Date.now() });
   const ctxSesion = conversaciones.get(numeroOrigen);
 
+  // ===== MODO NO INTERACTIVO — nuevo esquema, solo números de prueba por ahora =====
+  if (MODO_NO_INTERACTIVO_SOLO_PRUEBAS && esNumeroDePrueba(numeroOrigen)) {
+    return await manejarModoNoInteractivoWhatsApp(tenant, mensajeUsuario, ctxSesion, numeroOrigen);
+  }
+
   // Recuperar SOLO el nivel guardado (para las imágenes) — el resto de la memoria
   // (nombre, saludo de "qué gusto verte de vuelta", etc.) ya lo maneja más abajo la
   // sección "MEMORIA PERSISTENTE", no lo dupliques aquí o descuadra ese conteo.
@@ -3384,7 +3396,150 @@ async function enviarImagenDesdeDB(imagenDoc, numeroDestino, caption) {
 }
 
 // ===== CIERRE PROACTIVO POR INACTIVIDAD (1 HORA) =====
-const MENSAJE_CIERRE_INACTIVIDAD = 'Gracias por escribirnos 😊 No tuvimos respuesta de tu parte, así que pausamos esta conversación, pero seguimos disponibles cuando quieras continuar — solo escríbenos de nuevo.\n\nMientras tanto, conoce más del Colegio Capouilliez en https://www.capouilliez.edu.gt y síguenos en Instagram y Facebook para no perderte nuestro próximo Open House.';
+// ===== MODO NO INTERACTIVO — nuevo esquema, en prueba solo con números de prueba =====
+// A pedido explícito: Kai deja de "conversar" — solo saluda, pregunta el nivel, entrega
+// una secuencia FIJA de contenido (video + imágenes) y cierra pasando el caso a una
+// asesora. Sin preguntas de seguimiento, sin cálculos, sin negociar el tono.
+// Por ahora SOLO corre para los números de prueba — el resto del equipo sigue con el
+// flujo conversacional normal hasta que se decida activarlo para todos.
+const MODO_NO_INTERACTIVO_SOLO_PRUEBAS = true;
+
+const MENSAJE_VIDEO_PROYECTO_NI = 'Con gusto le presentamos nuestro proyecto educativo basado en excelencia y valores. https://youtu.be/tZbsAKo2_g4';
+
+const MENSAJE_CIERRE_NO_INTERACTIVO =
+  '¡Gracias por comunicarte con nosotros! 😊\n' +
+  'Una de nuestras asesoras de Admisiones continuará la conversación y con gusto te brindará información más detallada, además de resolver cualquier duda que tengas.\n' +
+  '¡Será un placer acompañarte en este proceso! 📚✨';
+
+// Cada nivel: la secuencia fija de imágenes a mandar, en orden, usando los mismos
+// filtros (categoría/nivel_educativo/nombre) que ya usa el sistema de imágenes normal —
+// así no se depende de adivinar nombres de archivo, se reutiliza el banco tal cual está.
+const SECUENCIA_IMAGENES_NO_INTERACTIVO = {
+  preprimaria: [
+    { categoria: 'programas', nombre_contiene: 'Preprimaria' },
+    { categoria: 'info_general', nombre_contiene: 'Horario' },
+    { categoria: 'cuotas', nivel_educativo: 'Preprimaria', nombre_contiene: 'Preprimaria' }
+  ],
+  primaria: [
+    { categoria: 'programas', nombre_contiene: '(?<!Pre)Primaria' },
+    { categoria: 'admision', nombre_contiene: 'Requisitos' },
+    { categoria: 'info_general', nombre_contiene: 'Horario' },
+    { categoria: 'cuotas', nivel_educativo: 'Primaria', nombre_contiene: '(?<!Pre)Primaria' }
+  ],
+  secundaria: [
+    { categoria: 'programas', nombre_contiene: 'Secundaria' },
+    { categoria: 'admision', nombre_contiene: 'Requisitos' },
+    { categoria: 'info_general', nombre_contiene: 'Horario' },
+    { categoria: 'cuotas', nivel_educativo: 'Secundaria', nombre_contiene: 'Secundaria' }
+  ]
+};
+
+const MENU_NIVEL_NI = '¡Hola! 👋 Bienvenido al Colegio Capouilliez.\n\n¿En qué nivel está interesado? Marque el número:\n1. Preprimaria\n2. Primaria\n3. Secundaria (Básico y Bachillerato en Ciencias y Letras)';
+
+function detectarNivelMenuNI(texto) {
+  const t = (texto || '').trim().toLowerCase();
+  if (/^1\b/.test(t) || /preprimaria|jard[ií]n|infantil|k[ií]nder|p[aá]rvulos|preparatoria/.test(t)) return 'preprimaria';
+  if (/^2\b/.test(t) || /\bprimaria\b/.test(t)) return 'primaria';
+  if (/^3\b/.test(t) || /secundaria|b[aá]sico|bachillerato/.test(t)) return 'secundaria';
+  return null;
+}
+
+// Busca y devuelve la imagen del banco para un filtro de la secuencia, sin enviarla —
+// el envío real lo hace cada canal a su manera (AcruxLab vs WhatsApp son distintos).
+async function buscarImagenSecuenciaNI(tenant, filtroBase) {
+  const filtro = { tenant_id: tenant._id, activo: true, categoria: filtroBase.categoria };
+  if (filtroBase.nivel_educativo) filtro.nivel_educativo = { $in: [filtroBase.nivel_educativo, 'Todos'] };
+  if (filtroBase.nombre_contiene) filtro.nombre = new RegExp(filtroBase.nombre_contiene, 'i');
+  return ImagenMarketing.findOne(filtro).sort({ prioridad: -1, creado: -1 });
+}
+
+// Maneja TODO el flujo no interactivo para AcruxLab: saluda, espera el nivel, entrega
+// la secuencia fija de imágenes, y cierra pasando el caso a una asesora — sin ninguna
+// otra interacción de por medio. Se usa `conv` (memoria en RAM) para el estado.
+async function manejarModoNoInteractivoAcrux(tenant, mensajeUsuario, conv, contactoId) {
+  if (conv.noInteractivoCerrado) {
+    return { texto: null, handoff: false }; // ya se cerró — no se interactúa más, queda con la asesora
+  }
+
+  if (!conv.noInteractivoNivel) {
+    const nivel = detectarNivelMenuNI(mensajeUsuario);
+    if (!nivel) {
+      if (conv.noInteractivoSaludado) return { texto: null, handoff: false }; // ya se le preguntó, esperando que conteste
+      conv.noInteractivoSaludado = true;
+      return { texto: MENU_NIVEL_NI, handoff: false };
+    }
+    conv.noInteractivoNivel = nivel;
+
+    // Secuencia fija: video (texto) + imágenes, en orden, con un respiro entre cada una.
+    await enviarTextoAcruxLab(contactoId, MENSAJE_VIDEO_PROYECTO_NI);
+    for (const filtro of SECUENCIA_IMAGENES_NO_INTERACTIVO[nivel]) {
+      const img = await buscarImagenSecuenciaNI(tenant, filtro);
+      if (!img) continue;
+      try {
+        const adjunto = await subirImagenNuevaAcrux(img.imagen_base64, `${img.nombre}.jpg`, img.mime_type || 'image/jpeg', contactoId);
+        await odooCallLocal('acrux.chat.conversation', 'send_message', [[contactoId], {
+          text: construirDescripcionImagen(img), from_me: true, ttype: 'image', res_model: 'ir.attachment', res_id: adjunto.id,
+          id: -2, date_message: new Date().toISOString().replace('T', ' ').substring(0, 19), button_ids: []
+        }], { context: { lang: 'es_GT', tz: 'America/Guatemala', is_acrux_chat_room: true } });
+      } catch (e) { console.error(`❌ [No interactivo] Falló imagen "${img.nombre}": ${e.message}`); }
+      await new Promise(r => setTimeout(r, 1500));
+    }
+    conv.noInteractivoCerrado = true;
+
+    // Traspaso real a una asesora — igual que en el flujo normal, con la vendedora que
+    // ya tuviera asignada desde el reparto 1 a 1 inicial.
+    try {
+      await AsignacionAcrux.findOneAndUpdate(
+        { tenant_id: tenant._id, contacto_id: contactoId },
+        { modo: 'humano', fecha_modo_humano: new Date() }
+      );
+    } catch (e) { /* no bloquea el cierre si falla */ }
+
+    return { texto: MENSAJE_CIERRE_NO_INTERACTIVO, handoff: true };
+  }
+
+  return { texto: null, handoff: false };
+}
+
+// Misma lógica que la versión de AcruxLab, pero mandando por WhatsApp/Meta directo.
+// Devuelve un texto (que el llamador envía normal) o '' para no mandar nada.
+async function manejarModoNoInteractivoWhatsApp(tenant, mensajeUsuario, ctxSesion, numeroOrigen) {
+  if (ctxSesion.noInteractivoCerrado) return '';
+
+  if (!ctxSesion.noInteractivoNivel) {
+    const nivel = detectarNivelMenuNI(mensajeUsuario);
+    if (!nivel) {
+      if (ctxSesion.noInteractivoSaludado) return '';
+      ctxSesion.noInteractivoSaludado = true;
+      return MENU_NIVEL_NI;
+    }
+    ctxSesion.noInteractivoNivel = nivel;
+
+    await enviarWhatsAppMeta(numeroOrigen, MENSAJE_VIDEO_PROYECTO_NI);
+    for (const filtro of SECUENCIA_IMAGENES_NO_INTERACTIVO[nivel]) {
+      const img = await buscarImagenSecuenciaNI(tenant, filtro);
+      if (!img) continue;
+      try { await enviarImagenDesdeDB(img, numeroOrigen, construirDescripcionImagen(img)); }
+      catch (e) { console.error(`❌ [No interactivo][WhatsApp] Falló imagen "${img.nombre}": ${e.message}`); }
+      await new Promise(r => setTimeout(r, 1500));
+    }
+    ctxSesion.noInteractivoCerrado = true;
+
+    try {
+      await Conversacion.findOneAndUpdate(
+        { tenant_id: tenant._id, numero: numeroOrigen, estado: { $ne: 'cerrado' } },
+        { estado: 'humano' },
+        { upsert: false }
+      );
+    } catch (e) { /* no bloquea el cierre si falla */ }
+
+    return MENSAJE_CIERRE_NO_INTERACTIVO;
+  }
+
+  return '';
+}
+
+
 const MINUTOS_CIERRE_INACTIVIDAD = 60; // 1 hora
 
 // Revisa cada 5 minutos las conversaciones activas con KAI (no las que ya están con un agente humano)
