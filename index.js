@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-clasificar-leads-sociales-y-click-fix'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-proteger-botones-en-social'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7570,6 +7570,9 @@ app.post('/api/acrux/liberar', authMiddleware, async (req, res) => {
   try {
     const { contacto_id } = req.body;
     if (!contacto_id) return res.status(400).json({ ok: false, error: 'contacto_id es requerido' });
+    if (String(contacto_id).startsWith('social_') || isNaN(Number(contacto_id))) {
+      return res.json({ ok: false, error: 'Esta conversación no existe en Odoo (es de Instagram/Messenger) — no aplica soltar aquí.' });
+    }
 
     const uidServicio = await getOdooUID();
     await odooCallLocal('acrux.chat.conversation', 'write', [[contacto_id], { agent_id: uidServicio }]).catch(e => {
@@ -7591,6 +7594,7 @@ app.post('/api/acrux/tomar-seguimiento', authMiddleware, async (req, res) => {
   try {
     const { contacto_id } = req.body;
     if (!contacto_id) return res.status(400).json({ ok: false, error: 'contacto_id es requerido' });
+    if (String(contacto_id).startsWith('social_')) return res.json({ ok: false, error: 'No aplica para Instagram/Messenger' });
     await AsignacionAcrux.findOneAndUpdate(
       { tenant_id: req.user.tenant_id, contacto_id },
       {
@@ -7610,6 +7614,7 @@ app.post('/api/acrux/devolver-a-kai', authMiddleware, async (req, res) => {
   try {
     const { contacto_id } = req.body;
     if (!contacto_id) return res.status(400).json({ ok: false, error: 'contacto_id es requerido' });
+    if (String(contacto_id).startsWith('social_')) return res.json({ ok: false, error: 'No aplica para Instagram/Messenger' });
     await AsignacionAcrux.findOneAndUpdate(
       { tenant_id: req.user.tenant_id, contacto_id },
       { modo: 'bot' }
