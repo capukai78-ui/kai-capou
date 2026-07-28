@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-modo-no-interactivo-pruebas'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-asignar-vendedor-y-diagnostico-imagen'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -3486,14 +3486,27 @@ async function manejarModoNoInteractivoAcrux(tenant, mensajeUsuario, conv, conta
     }
     conv.noInteractivoCerrado = true;
 
-    // Traspaso real a una asesora — igual que en el flujo normal, con la vendedora que
-    // ya tuviera asignada desde el reparto 1 a 1 inicial.
+    // Traspaso real a una asesora. Los números de prueba NUNCA pasan por el reparto
+    // normal (a propósito, para no ensuciar Odoo), así que puede que no exista ningún
+    // registro todavía — se asigna una vendedora de verdad aquí, no se asume que ya hay una.
     try {
+      const asignExistente = await AsignacionAcrux.findOne({ tenant_id: tenant._id, contacto_id: contactoId });
+      let agenteParaAsignar = null;
+      if (asignExistente?.agente_id) {
+        agenteParaAsignar = await UsuarioPanel.findById(asignExistente.agente_id);
+      } else {
+        agenteParaAsignar = await asignarAgenteLibre(tenant._id);
+      }
       await AsignacionAcrux.findOneAndUpdate(
         { tenant_id: tenant._id, contacto_id: contactoId },
-        { modo: 'humano', fecha_modo_humano: new Date() }
+        {
+          modo: 'humano', fecha_modo_humano: new Date(),
+          ...(agenteParaAsignar ? { agente_id: agenteParaAsignar._id, agente_nombre: agenteParaAsignar.nombre } : {})
+        },
+        { upsert: true, setDefaultsOnInsert: true }
       );
-    } catch (e) { /* no bloquea el cierre si falla */ }
+      console.log(`👤 [No interactivo] Traspaso a ${agenteParaAsignar?.nombre || 'nadie disponible'} — contacto ${contactoId}`);
+    } catch (e) { console.error(`❌ [No interactivo] Falló asignar vendedor: ${e.message}`); }
 
     return { texto: MENSAJE_CIERRE_NO_INTERACTIVO, handoff: true };
   }
@@ -3526,12 +3539,17 @@ async function manejarModoNoInteractivoWhatsApp(tenant, mensajeUsuario, ctxSesio
     ctxSesion.noInteractivoCerrado = true;
 
     try {
+      const agenteParaAsignar = await asignarAgenteLibre(tenant._id);
       await Conversacion.findOneAndUpdate(
         { tenant_id: tenant._id, numero: numeroOrigen, estado: { $ne: 'cerrado' } },
-        { estado: 'humano' },
+        {
+          estado: 'humano',
+          ...(agenteParaAsignar ? { agente_id: agenteParaAsignar._id, agente_nombre: agenteParaAsignar.nombre } : {})
+        },
         { upsert: false }
       );
-    } catch (e) { /* no bloquea el cierre si falla */ }
+      console.log(`👤 [No interactivo][WhatsApp] Traspaso a ${agenteParaAsignar?.nombre || 'nadie disponible'} — ${numeroOrigen}`);
+    } catch (e) { console.error(`❌ [No interactivo][WhatsApp] Falló asignar vendedor: ${e.message}`); }
 
     return MENSAJE_CIERRE_NO_INTERACTIVO;
   }
@@ -7255,6 +7273,38 @@ app.get('/api/debug/comparar-respaldo-vs-odoo', authMiddleware, async (req, res)
 // Cuenta cuántos mensajes ya se han respaldado — para revisar el avance del proceso en
 // segundo plano sin tener que esperar a que termine.
 // GET /api/debug/progreso-respaldo
+// Prueba directa: busca UNA imagen de la secuencia no interactiva y la intenta enviar
+// por AcruxLab, devolviendo el error real si falla — para diagnosticar sin tener que
+// repetir todo el flujo de conversación.
+// GET /api/debug/probar-imagen-no-interactivo?nivel=preprimaria&contacto_id=8657
+app.get('/api/debug/probar-imagen-no-interactivo', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const nivel = req.query.nivel;
+    const contactoId = parseInt(req.query.contacto_id);
+    if (!nivel || !SECUENCIA_IMAGENES_NO_INTERACTIVO[nivel]) return res.json({ ok: false, error: 'Falta ?nivel=preprimaria|primaria|secundaria' });
+    if (!contactoId) return res.json({ ok: false, error: 'Falta ?contacto_id= (una conversación real de AcruxLab)' });
+
+    const tenant = await Tenant.findOne({ activo: true });
+    const resultados = [];
+    for (const filtro of SECUENCIA_IMAGENES_NO_INTERACTIVO[nivel]) {
+      const img = await buscarImagenSecuenciaNI(tenant, filtro);
+      if (!img) { resultados.push({ filtro, encontrada: false }); continue; }
+      try {
+        const adjunto = await subirImagenNuevaAcrux(img.imagen_base64, `${img.nombre}.jpg`, img.mime_type || 'image/jpeg', contactoId);
+        await odooCallLocal('acrux.chat.conversation', 'send_message', [[contactoId], {
+          text: construirDescripcionImagen(img), from_me: true, ttype: 'image', res_model: 'ir.attachment', res_id: adjunto.id,
+          id: -2, date_message: new Date().toISOString().replace('T', ' ').substring(0, 19), button_ids: []
+        }], { context: { lang: 'es_GT', tz: 'America/Guatemala', is_acrux_chat_room: true } });
+        resultados.push({ filtro, encontrada: true, imagen: img.nombre, enviada: true });
+      } catch (e) {
+        resultados.push({ filtro, encontrada: true, imagen: img.nombre, enviada: false, error: e.message });
+      }
+    }
+    res.json({ ok: true, resultados });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/debug/progreso-respaldo', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
