@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-persistir-en-conversacion-whatsapp'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-mostrar-imagen-real-en-panel'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -273,6 +273,8 @@ const conversacionSchema = new mongoose.Schema({
   mensajes:      [{
     de:     { type: String, enum: ['padre', 'bot', 'agente'] },
     texto:  String,
+    imagen_base64: { type: String, default: null }, // solo si el mensaje incluye una imagen real (no solo descripción)
+    imagen_mime:   { type: String, default: null },
     fecha:  { type: Date, default: Date.now }
   }],
   ultimaActividad: { type: Date, default: Date.now },
@@ -3555,7 +3557,11 @@ async function manejarModoNoInteractivoWhatsApp(tenant, mensajeUsuario, ctxSesio
     const descripcion = construirDescripcionImagen(img);
     try {
       await enviarImagenDesdeDB(img, numeroOrigen, descripcion);
-      conversacionDB.mensajes.push({ de: 'bot', texto: `🖼️ ${descripcion} (imagen: ${img.nombre})`, fecha: new Date() });
+      conversacionDB.mensajes.push({
+        de: 'bot', texto: `🖼️ ${descripcion}`,
+        imagen_base64: img.imagen_base64, imagen_mime: img.mime_type || 'image/jpeg',
+        fecha: new Date()
+      });
     } catch (e) {
       console.error(`❌ [No interactivo][WhatsApp] Falló imagen "${img.nombre}": ${e.message}`);
       conversacionDB.mensajes.push({ de: 'bot', texto: `⚠️ (falló el envío de la imagen "${img.nombre}")`, fecha: new Date() });
