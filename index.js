@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-probar-solo-lectura'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-reporte-desempeno-vendedor'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7582,6 +7582,64 @@ app.get('/api/debug/reporte-rango-fechas', authMiddleware, async (req, res) => {
 // firmas reconocibles: 🌡️ cambio de calor, 📱 contacto, ♻️ duplicado, ⚠️ revisiones).
 // Así se sabe con certeza si Kai archivó algo, le cambió el vendedor, o solo dejó nota.
 // GET /api/debug/auditoria-oportunidades
+// ===== REPORTE DE DESEMPEÑO POR VENDEDOR =====
+// De SOLO LECTURA. Trae todos los leads/oportunidades de Odoo, agrupados por vendedor,
+// y cuenta cuántos llegaron a la etapa "Inscritos" — para medir conversión real, no
+// solo volumen de leads atendidos.
+// GET /api/reportes/desempeno-por-vendedor?desde=2026-07-01&hasta=2026-07-28
+app.get('/api/reportes/desempeno-por-vendedor', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const dominio = [];
+    if (req.query.desde) dominio.push(['create_date', '>=', req.query.desde + ' 00:00:00']);
+    if (req.query.hasta) dominio.push(['create_date', '<=', req.query.hasta + ' 23:59:59']);
+
+    const leads = await odooCallLocal('crm.lead', 'search_read',
+      [dominio],
+      { fields: ['id', 'name', 'partner_name', 'contact_name', 'user_id', 'stage_id', 'type', 'active', 'create_date'], limit: 3000, context: { active_test: false } }
+    ) || [];
+
+    if (!leads.length) return res.json({ ok: true, total: 0, mensaje: 'No hay leads en ese rango.' });
+
+    const porVendedor = {};
+    for (const l of leads) {
+      const vendedor = l.user_id?.[1] || 'Sin asignar';
+      if (!porVendedor[vendedor]) porVendedor[vendedor] = { vendedor, total: 0, inscritos: 0, oportunidades: 0, leads_simples: 0, archivados: 0, lista_inscritos: [] };
+      const grupo = porVendedor[vendedor];
+      grupo.total++;
+      if (l.type === 'opportunity') grupo.oportunidades++; else grupo.leads_simples++;
+      if (!l.active) grupo.archivados++;
+
+      const etapa = l.stage_id?.[1] || '';
+      const esInscrito = /inscrit/i.test(etapa);
+      if (esInscrito) {
+        grupo.inscritos++;
+        grupo.lista_inscritos.push({ id: l.id, nombre: l.partner_name || l.contact_name || l.name, etapa });
+      }
+    }
+
+    const resumen = Object.values(porVendedor)
+      .map(g => ({
+        vendedor: g.vendedor,
+        total_leads: g.total,
+        oportunidades: g.oportunidades,
+        leads_simples: g.leads_simples,
+        archivados: g.archivados,
+        inscritos: g.inscritos,
+        porcentaje_conversion: g.total ? `${Math.round((g.inscritos / g.total) * 100)}%` : '0%',
+        lista_inscritos: g.lista_inscritos
+      }))
+      .sort((a, b) => b.inscritos - a.inscritos);
+
+    res.json({
+      ok: true,
+      rango: { desde: req.query.desde || '(todo)', hasta: req.query.hasta || '(todo)' },
+      total_leads_revisados: leads.length,
+      resumen_por_vendedor: resumen
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/debug/auditoria-oportunidades', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
