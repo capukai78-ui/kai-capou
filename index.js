@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-telefono-y-etiquetas-en-bitacora'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-lead-crudo-por-id'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7632,6 +7632,24 @@ app.get('/api/reportes/estado-pipeline', authMiddleware, async (req, res) => {
 // de qué lado fue (el vendedor tardó en responder, o el padre tardó en contestar) — y
 // si el lead nació de Kai (formulario/orgánico), lo marca.
 // GET /api/reportes/bitacora-2-semanas?dias=14&limite=40&offset=0
+// Diagnóstico crudo de UN lead por su ID — para entender por qué no aparece al
+// buscarlo en Odoo (formato del teléfono, si está activo, y su etapa/vendedor exactos).
+// GET /api/debug/lead-crudo-por-id?lead_id=40188
+app.get('/api/debug/lead-crudo-por-id', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const leadId = parseInt(req.query.lead_id);
+    if (!leadId) return res.json({ ok: false, error: 'Falta ?lead_id=' });
+
+    const lead = await odooCallLocal('crm.lead', 'read',
+      [[leadId], ['id', 'name', 'partner_name', 'contact_name', 'phone', 'mobile', 'email_from', 'user_id', 'stage_id', 'type', 'active', 'team_id']],
+      { context: { active_test: false } }
+    );
+
+    res.json({ ok: true, lead: lead?.[0] || null });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/reportes/bitacora-2-semanas', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
