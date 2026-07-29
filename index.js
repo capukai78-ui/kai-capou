@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-fecha-real-por-mensaje-felicitacion'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-bitacora-2-semanas-demoras'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7622,6 +7622,121 @@ app.get('/api/reportes/estado-pipeline', authMiddleware, async (req, res) => {
       ok: true,
       total_en_pipeline: leads.length,
       resumen_por_etapa: resumen
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// ===== BITÁCORA DE LAS ÚLTIMAS 2 SEMANAS: DEMORAS Y ORIGEN =====
+// De SOLO LECTURA. Para cada Inscrito con movimiento reciente (write_date en el rango),
+// además de la cadena de traspasos, calcula el silencio más largo en la conversación y
+// de qué lado fue (el vendedor tardó en responder, o el padre tardó en contestar) — y
+// si el lead nació de Kai (formulario/orgánico), lo marca.
+// GET /api/reportes/bitacora-2-semanas?dias=14&limite=40&offset=0
+app.get('/api/reportes/bitacora-2-semanas', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const dias = parseInt(req.query.dias) || 14;
+    const limite = parseInt(req.query.limite) || 40;
+    const offset = parseInt(req.query.offset) || 0;
+    const desde = new Date(Date.now() - dias * 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').substring(0, 19);
+
+    const leads = await odooCallLocal('crm.lead', 'search_read',
+      [[['stage_id.name', 'like', 'Inscrit'], ['write_date', '>=', desde]]],
+      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'user_id', 'stage_id', 'create_date', 'date_closed', 'write_date'], limit: limite, offset, context: { active_test: false } }
+    ) || [];
+
+    if (!leads.length) return res.json({ ok: true, total: 0, mensaje: `No hay Inscritos con movimiento en los últimos ${dias} días.` });
+
+    const FIRMAS_DE_KAI = /🌡️|📱 KAI|♻️.*Registro repetido|Nivel de calor actualizado por KAI/;
+    const bitacora = [];
+
+    for (const lead of leads) {
+      const telLimpio = String(lead.phone || '').replace(/\D/g, '').slice(-8);
+      let cadenaAgentes = [];
+      let contactoIdAcrux = null;
+      let mensajesConv = [];
+
+      if (telLimpio) {
+        const conv = await odooCallLocal('acrux.chat.conversation', 'search_read',
+          [[['number', 'like', telLimpio]]], { fields: ['id'], limit: 1 }
+        ).catch(() => []);
+        if (conv && conv.length) {
+          contactoIdAcrux = conv[0].id;
+          mensajesConv = await odooCallLocal('acrux.chat.message', 'search_read',
+            [[['contact_id', '=', contactoIdAcrux]]],
+            { fields: ['text', 'from_me', 'date_message'], limit: 400, order: 'date_message asc' }
+          ).catch(() => []);
+          const vistos = new Set();
+          for (const m of mensajesConv) {
+            const match = String(m.text || '').match(/Start Conversation \(([^)]+)\)/);
+            if (match && !vistos.has(match[1])) { vistos.add(match[1]); cadenaAgentes.push(match[1]); }
+          }
+        }
+      }
+
+      // Buscar el silencio más largo entre mensajes REALES del padre/colegio (se
+      // ignoran los "Start/End Conversation", que son solo administrativos).
+      const reales = mensajesConv.filter(m => !/^(Start|End) Conversation/.test(m.text || ''));
+      let silencioMaxHoras = 0, deQuienEraLaEspera = null, fechaDelSilencio = null;
+      for (let i = 1; i < reales.length; i++) {
+        const horas = (new Date(reales[i].date_message.replace(' ', 'T') + 'Z') - new Date(reales[i - 1].date_message.replace(' ', 'T') + 'Z')) / (1000 * 60 * 60);
+        if (horas > silencioMaxHoras) {
+          silencioMaxHoras = horas;
+          // Si el mensaje ANTERIOR al silencio fue del padre, se estaba esperando al vendedor.
+          deQuienEraLaEspera = reales[i - 1].from_me ? 'esperando respuesta del padre' : 'esperando respuesta del vendedor';
+          fechaDelSilencio = reales[i - 1].date_message;
+        }
+      }
+
+      // ¿Este lead nació de Kai? Se busca en el chatter del propio lead (nota de contacto).
+      let creadoPorKai = false;
+      try {
+        const notas = await odooCallLocal('mail.message', 'search_read',
+          [[['model', '=', 'crm.lead'], ['res_id', '=', lead.id]]],
+          { fields: ['body'], limit: 30 }
+        ).catch(() => []);
+        creadoPorKai = (notas || []).some(n => FIRMAS_DE_KAI.test(n.body || ''));
+      } catch (e) { /* no bloquea */ }
+
+      const fechaCreacion = lead.create_date ? new Date(lead.create_date.replace(' ', 'T') + 'Z') : null;
+      let fechaInscripcion = lead.date_closed ? new Date(lead.date_closed.replace(' ', 'T') + 'Z') : null;
+      let fuenteFecha = fechaInscripcion ? 'date_closed' : null;
+      if (!fechaInscripcion) {
+        const msgFelicitacion = reales.filter(m => m.from_me).reverse().find(m => /felicidad|admitid|bienvenid.*familia|cupo/i.test(m.text || ''));
+        if (msgFelicitacion) { fechaInscripcion = new Date(msgFelicitacion.date_message.replace(' ', 'T') + 'Z'); fuenteFecha = 'mensaje de felicitación'; }
+      }
+      const diasHastaInscripcion = (fechaCreacion && fechaInscripcion) ? Math.round((fechaInscripcion - fechaCreacion) / (1000 * 60 * 60 * 24)) : null;
+
+      bitacora.push({
+        lead_id: lead.id,
+        nombre: lead.partner_name || lead.contact_name || lead.name,
+        vendedor_que_cerro: lead.user_id?.[1] || 'Sin asignar',
+        creado_por_kai: creadoPorKai,
+        fecha_creacion: lead.create_date || null,
+        fecha_inscripcion: fechaInscripcion ? fechaInscripcion.toISOString() : null,
+        fuente_fecha: fuenteFecha,
+        dias_hasta_inscripcion: diasHastaInscripcion,
+        cadena_de_traspasos: cadenaAgentes.length ? cadenaAgentes : ['(sin conversación en AcruxLab)'],
+        silencio_mas_largo_horas: Math.round(silencioMaxHoras),
+        silencio_mas_largo_dias: Math.round(silencioMaxHoras / 24 * 10) / 10,
+        de_quien_era_la_espera: deQuienEraLaEspera,
+        fecha_del_silencio: fechaDelSilencio
+      });
+    }
+
+    const creadosPorKai = bitacora.filter(b => b.creado_por_kai).length;
+    const esperandoVendedor = bitacora.filter(b => b.de_quien_era_la_espera === 'esperando respuesta del vendedor');
+    const esperandoPadre = bitacora.filter(b => b.de_quien_era_la_espera === 'esperando respuesta del padre');
+
+    res.json({
+      ok: true,
+      rango_dias: dias,
+      total_revisados: bitacora.length,
+      cuantos_nacieron_de_kai: creadosPorKai,
+      casos_donde_el_vendedor_tardo_mas: esperandoVendedor.length,
+      casos_donde_el_padre_tardo_mas: esperandoPadre.length,
+      promedio_horas_de_silencio_vendedor: esperandoVendedor.length ? Math.round(esperandoVendedor.reduce((a, b) => a + b.silencio_mas_largo_horas, 0) / esperandoVendedor.length) : null,
+      bitacora
     });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
