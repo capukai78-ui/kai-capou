@@ -1789,6 +1789,12 @@ async function cargarInfoContactoAcrux(numero){
     const imgs = r.imagenes_sugeridas || [];
 
     let infoHtml = '';
+    if(r.es_recontacto){
+      infoHtml += `<div style="background:linear-gradient(135deg,#E3F2FD,#D6EAF8);border:1px solid #7FB3D5;border-radius:10px;padding:10px 14px;margin-top:10px;font-size:11px;color:#1B4F72">
+        <div style="font-weight:700;color:#1B4F72;margin-bottom:2px">🔁 El papá pidió información de nuevo</div>
+        <div>Ya es contacto conocido — no se creó como lead nuevo, se asignó a quien ya lo atendía.</div>
+      </div>`;
+    }
     if(contacto){
       const datos = [
         contacto.nombre_alumno ? `👦 Alumno: ${contacto.nombre_alumno}` : null,
