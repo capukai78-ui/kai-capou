@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-reporte-desempeno-vendedor'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-bitacora-cadena-inscritos'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7587,6 +7587,85 @@ app.get('/api/debug/reporte-rango-fechas', authMiddleware, async (req, res) => {
 // y cuenta cuántos llegaron a la etapa "Inscritos" — para medir conversión real, no
 // solo volumen de leads atendidos.
 // GET /api/reportes/desempeno-por-vendedor?desde=2026-07-01&hasta=2026-07-28
+// ===== BITÁCORA: CADENA COMPLETA DE TRASPASOS POR LEAD INSCRITO =====
+// De SOLO LECTURA. Para cada lead que llegó a "Inscritos", reconstruye la cadena real
+// de quién lo atendió, en qué orden (Kai → Cindy/Vanessa → Sylvia, por ejemplo) usando
+// el propio historial de la conversación en AcruxLab ("Start Conversation (X)"). Así el
+// crédito no queda solo en quien cerró — se ve la cadena completa de cada quien.
+// GET /api/reportes/bitacora-inscritos?limite=200
+app.get('/api/reportes/bitacora-inscritos', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const limite = parseInt(req.query.limite) || 60; // moderado a propósito, para no toparse con el límite de tiempo de Railway
+    const offset = parseInt(req.query.offset) || 0;
+
+    const leadsInscritos = await odooCallLocal('crm.lead', 'search_read',
+      [[['stage_id.name', 'like', 'Inscrit']]],
+      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'user_id', 'stage_id'], limit: limite, offset, context: { active_test: false } }
+    ) || [];
+
+    if (!leadsInscritos.length) return res.json({ ok: true, total: 0, mensaje: 'No hay leads en etapa Inscritos.' });
+
+    const bitacora = [];
+    for (const lead of leadsInscritos) {
+      const telLimpio = String(lead.phone || '').replace(/\D/g, '').slice(-8);
+      let cadenaAgentes = [];
+      let contactoIdAcrux = null;
+
+      if (telLimpio) {
+        const conv = await odooCallLocal('acrux.chat.conversation', 'search_read',
+          [[['number', 'like', telLimpio]]], { fields: ['id'], limit: 1 }
+        ).catch(() => []);
+
+        if (conv && conv.length) {
+          contactoIdAcrux = conv[0].id;
+          const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
+            [[['contact_id', '=', contactoIdAcrux]]],
+            { fields: ['text', 'from_me', 'date_message'], limit: 300, order: 'date_message asc' }
+          ).catch(() => []);
+
+          // Extrae la secuencia real de "Start Conversation (Nombre)" en orden — esa
+          // es la cadena de quién lo tomó, uno tras otro.
+          const vistos = new Set();
+          for (const m of (mensajes || [])) {
+            const match = String(m.text || '').match(/Start Conversation \(([^)]+)\)/);
+            if (match && !vistos.has(match[1])) {
+              vistos.add(match[1]);
+              cadenaAgentes.push(match[1]);
+            }
+          }
+        }
+      }
+
+      bitacora.push({
+        lead_id: lead.id,
+        nombre: lead.partner_name || lead.contact_name || lead.name,
+        telefono: lead.phone || null,
+        vendedor_que_cerro: lead.user_id?.[1] || 'Sin asignar',
+        etapa: lead.stage_id?.[1] || '',
+        contacto_id_acrux: contactoIdAcrux,
+        cadena_de_traspasos: cadenaAgentes.length ? cadenaAgentes : ['(sin conversación en AcruxLab — llegó por otro medio o no se encontró coincidencia)']
+      });
+    }
+
+    // Resumen: a cuántos inscritos "les tocó la mano" cada vendedor, sin importar quién cerró.
+    const participacion = {};
+    for (const b of bitacora) {
+      for (const agente of b.cadena_de_traspasos) {
+        if (agente.startsWith('(sin conversación')) continue;
+        participacion[agente] = (participacion[agente] || 0) + 1;
+      }
+    }
+
+    res.json({
+      ok: true,
+      total_inscritos_revisados: bitacora.length,
+      participacion_en_la_cadena: participacion,
+      bitacora
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/reportes/desempeno-por-vendedor', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
