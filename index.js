@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-seguimiento-post-pausa'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-listado-completo-antes-despues'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7607,6 +7607,56 @@ app.get('/api/debug/reporte-rango-fechas', authMiddleware, async (req, res) => {
 // revisa si tienen vendedor real asignado y si existe alguna conversación/actividad —
 // para saber con certeza cuántos "entraron pero nadie los tocó".
 // GET /api/reportes/seguimiento-post-pausa?fecha_pausa=2026-07-24
+// ===== LISTADO COMPLETO, SIN RESUMIR — ambos periodos =====
+// De SOLO LECTURA. Trae CADA lead de la semana antes y la semana después de la pausa,
+// con su etapa y vendedor actuales — para tener constancia de que se revisó cada uno,
+// no solo un resumen de números.
+// GET /api/reportes/listado-completo-antes-despues?fecha_pausa=2026-07-24
+app.get('/api/reportes/listado-completo-antes-despues', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const fechaPausa = new Date((req.query.fecha_pausa || '2026-07-24') + 'T00:00:00Z');
+    const antesInicio = new Date(fechaPausa.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const despuesFin = new Date(fechaPausa.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const fmt = (d) => d.toISOString().replace('T', ' ').substring(0, 19);
+
+    const campos = ['id', 'name', 'partner_name', 'contact_name', 'phone', 'email_from', 'user_id', 'stage_id', 'type', 'create_date'];
+
+    const [antes, despues] = await Promise.all([
+      odooCallLocal('crm.lead', 'search_read',
+        [[['create_date', '>=', fmt(antesInicio)], ['create_date', '<', fmt(fechaPausa)]]],
+        { fields: campos, limit: 2000, context: { active_test: false } }
+      ),
+      odooCallLocal('crm.lead', 'search_read',
+        [[['create_date', '>=', fmt(fechaPausa)], ['create_date', '<', fmt(despuesFin)]]],
+        { fields: campos, limit: 2000, context: { active_test: false } }
+      )
+    ]);
+
+    const mapear = (leads, periodo) => (leads || []).map(l => ({
+      periodo,
+      lead_id: l.id,
+      link: `https://alba.capouilliez.edu.gt/web#id=${l.id}&model=crm.lead&view_type=form`,
+      nombre: l.partner_name || l.contact_name || l.name,
+      telefono: l.phone || null,
+      correo: l.email_from || null,
+      tipo: l.type === 'opportunity' ? 'Oportunidad' : 'Lead',
+      etapa: l.stage_id?.[1] || '',
+      vendedor: l.user_id?.[1] || 'Sin asignar',
+      creado: l.create_date
+    }));
+
+    res.json({
+      ok: true,
+      fecha_pausa: req.query.fecha_pausa || '2026-07-24',
+      total_antes: (antes || []).length,
+      total_despues: (despues || []).length,
+      listado_antes: mapear(antes, 'ANTES de pausar'),
+      listado_despues: mapear(despues, 'DESPUÉS de pausar')
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/reportes/seguimiento-post-pausa', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
@@ -7614,10 +7664,19 @@ app.get('/api/reportes/seguimiento-post-pausa', authMiddleware, async (req, res)
 
     const leads = await odooCallLocal('crm.lead', 'search_read',
       [[['create_date', '>=', fechaPausa]]],
-      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'user_id', 'stage_id', 'type', 'create_date'], limit: 300, context: { active_test: false } }
+      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'email_from', 'user_id', 'stage_id', 'type', 'create_date', 'tag_ids', 'source_id', 'medium_id'], limit: 300, context: { active_test: false } }
     ) || [];
 
     if (!leads.length) return res.json({ ok: true, total: 0, mensaje: 'No hay leads creados desde la fecha de pausa.' });
+
+    const idsTags = [...new Set(leads.flatMap(l => l.tag_ids || []))];
+    let nombresTag = {};
+    if (idsTags.length) {
+      try {
+        const tags = await odooCallLocal('crm.tag', 'read', [idsTags, ['id', 'name']]);
+        (tags || []).forEach(t => { nombresTag[t.id] = t.name; });
+      } catch (e) { /* sin permiso — se sigue sin nombres de etiqueta */ }
+    }
 
     const detalle = [];
     for (const l of leads) {
@@ -7642,22 +7701,37 @@ app.get('/api/reportes/seguimiento-post-pausa', authMiddleware, async (req, res)
 
       const vendedorReal = l.user_id?.[1] && l.user_id[1] !== 'Administrador' ? l.user_id[1] : null;
       const sinNingunSeguimiento = !tieneMensajeDelColegio && !vendedorReal;
+      const etiquetas = (l.tag_ids || []).map(id => nombresTag[id]).filter(Boolean);
+      const canalTag = etiquetas.find(e => e.startsWith('Canal —')) || null;
+
+      // ¿Parece un lead genuino? Tiene teléfono real, O correo real (no "N/A"/"No tiene"), O un
+      // nombre de persona reconocible (no "Lead KAI — Sin nombre"). Si no tiene NADA de eso,
+      // es más probable que sea ruido (reacción/comentario) que nunca debió pasar a Odoo.
+      const tieneCorreoReal = l.email_from && !/^(n\/?a|no tiene|--|sin correo)$/i.test(l.email_from.trim());
+      const nombreGenerico = /Sin nombre/i.test(l.name || '');
+      const pareceLeadGenuino = !!l.phone || tieneCorreoReal || !nombreGenerico;
 
       detalle.push({
         lead_id: l.id,
         link: `https://alba.capouilliez.edu.gt/web#id=${l.id}&model=crm.lead&view_type=form`,
         nombre: l.partner_name || l.contact_name || l.name,
         telefono: l.phone || null,
+        correo: l.email_from || null,
+        canal: canalTag,
+        etiquetas,
         etapa: l.stage_id?.[1] || '',
         vendedor: l.user_id?.[1] || 'Sin asignar',
         creado: l.create_date,
         tiene_conversacion_en_acrux: tieneConversacion,
         el_colegio_le_escribio_algo: tieneMensajeDelColegio,
-        sin_ningun_seguimiento: sinNingunSeguimiento
+        sin_ningun_seguimiento: sinNingunSeguimiento,
+        parece_lead_genuino: pareceLeadGenuino
       });
     }
 
     const sinSeguimiento = detalle.filter(d => d.sin_ningun_seguimiento);
+    const genuinosSinSeguimiento = sinSeguimiento.filter(d => d.parece_lead_genuino);
+    const ruidoSinSeguimiento = sinSeguimiento.filter(d => !d.parece_lead_genuino);
 
     res.json({
       ok: true,
@@ -7665,6 +7739,8 @@ app.get('/api/reportes/seguimiento-post-pausa', authMiddleware, async (req, res)
       total_leads_creados_desde_la_pausa: detalle.length,
       total_sin_ningun_seguimiento: sinSeguimiento.length,
       porcentaje_sin_seguimiento: `${Math.round((sinSeguimiento.length / detalle.length) * 100)}%`,
+      de_esos_parecen_leads_genuinos: genuinosSinSeguimiento.length,
+      de_esos_parecen_ruido_no_deberian_pasar_a_odoo: ruidoSinSeguimiento.length,
       lista_sin_seguimiento: sinSeguimiento,
       detalle_completo: detalle
     });
