@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-bitacora-2-semanas-demoras'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-telefono-y-etiquetas-en-bitacora'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7642,10 +7642,20 @@ app.get('/api/reportes/bitacora-2-semanas', authMiddleware, async (req, res) => 
 
     const leads = await odooCallLocal('crm.lead', 'search_read',
       [[['stage_id.name', 'like', 'Inscrit'], ['write_date', '>=', desde]]],
-      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'user_id', 'stage_id', 'create_date', 'date_closed', 'write_date'], limit: limite, offset, context: { active_test: false } }
+      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'user_id', 'stage_id', 'create_date', 'date_closed', 'write_date', 'tag_ids'], limit: limite, offset, context: { active_test: false } }
     ) || [];
 
     if (!leads.length) return res.json({ ok: true, total: 0, mensaje: `No hay Inscritos con movimiento en los últimos ${dias} días.` });
+
+    // Nombres reales de las etiquetas — de un solo golpe, no una consulta por lead.
+    const idsTags = [...new Set(leads.flatMap(l => l.tag_ids || []))];
+    let nombresTag = {};
+    if (idsTags.length) {
+      try {
+        const tags = await odooCallLocal('crm.tag', 'read', [idsTags, ['id', 'name']]);
+        (tags || []).forEach(t => { nombresTag[t.id] = t.name; });
+      } catch (e) { /* si falla, se sigue sin nombres de etiqueta */ }
+    }
 
     const FIRMAS_DE_KAI = /🌡️|📱 KAI|♻️.*Registro repetido|Nivel de calor actualizado por KAI/;
     const bitacora = [];
@@ -7710,6 +7720,8 @@ app.get('/api/reportes/bitacora-2-semanas', authMiddleware, async (req, res) => 
       bitacora.push({
         lead_id: lead.id,
         nombre: lead.partner_name || lead.contact_name || lead.name,
+        telefono: lead.phone || null,
+        etiquetas: (lead.tag_ids || []).map(id => nombresTag[id]).filter(Boolean),
         vendedor_que_cerro: lead.user_id?.[1] || 'Sin asignar',
         creado_por_kai: creadoPorKai,
         fecha_creacion: lead.create_date || null,
