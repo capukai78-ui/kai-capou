@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-fechas-y-pipeline'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-fecha-real-por-mensaje-felicitacion'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7644,6 +7644,7 @@ app.get('/api/reportes/bitacora-inscritos', authMiddleware, async (req, res) => 
       const telLimpio = String(lead.phone || '').replace(/\D/g, '').slice(-8);
       let cadenaAgentes = [];
       let contactoIdAcrux = null;
+      let mensajesConvGuardados = [];
 
       if (telLimpio) {
         const conv = await odooCallLocal('acrux.chat.conversation', 'search_read',
@@ -7656,6 +7657,7 @@ app.get('/api/reportes/bitacora-inscritos', authMiddleware, async (req, res) => 
             [[['contact_id', '=', contactoIdAcrux]]],
             { fields: ['text', 'from_me', 'date_message'], limit: 300, order: 'date_message asc' }
           ).catch(() => []);
+          mensajesConvGuardados = mensajes || [];
 
           // Extrae la secuencia real de "Start Conversation (Nombre)" en orden — esa
           // es la cadena de quién lo tomó, uno tras otro.
@@ -7671,7 +7673,29 @@ app.get('/api/reportes/bitacora-inscritos', authMiddleware, async (req, res) => 
       }
 
       const fechaCreacion = lead.create_date ? new Date(lead.create_date.replace(' ', 'T') + 'Z') : null;
-      const fechaInscripcion = lead.date_closed ? new Date(lead.date_closed.replace(' ', 'T') + 'Z') : (lead.write_date ? new Date(lead.write_date.replace(' ', 'T') + 'Z') : null);
+
+      // date_closed (cuando Odoo sí lo marca "ganado") es confiable. write_date NO lo
+      // es como respaldo — el 24 de julio corrimos correcciones masivas de vendedor que
+      // tocaron cientos de leads, y eso deja el write_date con la fecha de HOY, no la
+      // fecha real en que se inscribió la familia. Por eso se busca una fuente mejor:
+      // el propio mensaje de felicitación/admisión dentro de la conversación real.
+      let fechaInscripcion = lead.date_closed ? new Date(lead.date_closed.replace(' ', 'T') + 'Z') : null;
+      let fuenteFecha = fechaInscripcion ? 'date_closed (confiable)' : null;
+
+      if (!fechaInscripcion && mensajesConvGuardados.length) {
+        const msgFelicitacion = mensajesConvGuardados.filter(m => m.from_me).reverse().find(m => /felicidad|admitid|bienvenid.*familia|ha sido admitid|cupo/i.test(m.text || ''));
+        if (msgFelicitacion) {
+          fechaInscripcion = new Date(msgFelicitacion.date_message.replace(' ', 'T') + 'Z');
+          fuenteFecha = 'mensaje de felicitación en el chat (confiable)';
+        }
+      }
+
+      const esWriteDateContaminado = !fechaInscripcion && lead.write_date;
+      if (esWriteDateContaminado) {
+        fechaInscripcion = new Date(lead.write_date.replace(' ', 'T') + 'Z');
+        fuenteFecha = 'write_date — NO CONFIABLE (puede reflejar nuestras correcciones del 24 de julio, no la fecha real)';
+      }
+
       const diasHastaInscripcion = (fechaCreacion && fechaInscripcion) ? Math.round((fechaInscripcion - fechaCreacion) / (1000 * 60 * 60 * 24)) : null;
 
       bitacora.push({
@@ -7681,8 +7705,9 @@ app.get('/api/reportes/bitacora-inscritos', authMiddleware, async (req, res) => 
         vendedor_que_cerro: lead.user_id?.[1] || 'Sin asignar',
         etapa: lead.stage_id?.[1] || '',
         fecha_creacion: lead.create_date || null,
-        fecha_inscripcion: lead.date_closed || lead.write_date || null,
-        fecha_inscripcion_es_aproximada: !lead.date_closed, // si no hay date_closed, se usa write_date como aproximación
+        fecha_inscripcion: fechaInscripcion ? fechaInscripcion.toISOString() : null,
+        fuente_fecha_inscripcion: fuenteFecha,
+        dato_confiable: !esWriteDateContaminado,
         dias_hasta_inscripcion: diasHastaInscripcion,
         contacto_id_acrux: contactoIdAcrux,
         cadena_de_traspasos: cadenaAgentes.length ? cadenaAgentes : ['(sin conversación en AcruxLab — llegó por otro medio o no se encontró coincidencia)']
@@ -7700,7 +7725,8 @@ app.get('/api/reportes/bitacora-inscritos', authMiddleware, async (req, res) => 
 
     const fechasCreacion = bitacora.map(b => b.fecha_creacion).filter(Boolean).sort();
     const fechasInscripcion = bitacora.map(b => b.fecha_inscripcion).filter(Boolean).sort();
-    const diasValidos = bitacora.map(b => b.dias_hasta_inscripcion).filter(d => d !== null);
+    const diasValidos = bitacora.filter(b => b.dato_confiable).map(b => b.dias_hasta_inscripcion).filter(d => d !== null);
+    const totalNoConfiables = bitacora.filter(b => !b.dato_confiable).length;
 
     res.json({
       ok: true,
@@ -7708,6 +7734,8 @@ app.get('/api/reportes/bitacora-inscritos', authMiddleware, async (req, res) => 
       rango_de_creacion_del_lead: { desde: fechasCreacion[0] || null, hasta: fechasCreacion[fechasCreacion.length - 1] || null },
       rango_de_inscripcion: { desde: fechasInscripcion[0] || null, hasta: fechasInscripcion[fechasInscripcion.length - 1] || null },
       promedio_dias_hasta_inscripcion: diasValidos.length ? Math.round(diasValidos.reduce((a, b) => a + b, 0) / diasValidos.length) : null,
+      calculado_con_n_casos_confiables: diasValidos.length,
+      casos_sin_fecha_confiable: totalNoConfiables,
       participacion_en_la_cadena: participacion,
       bitacora
     });
