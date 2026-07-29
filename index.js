@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-listado-completo-antes-despues'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-recontacto-visible-en-panel'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -3762,6 +3762,16 @@ async function motorContactoProactivo() {
         if (telefono.length === 8) telefono = '502' + telefono;
         if (telefono.length < 10) {
           await odooCallLocal('crm.lead', 'write', [[lead.id], { tag_ids: [[4, tagSinWAId]] }]);
+          continue;
+        }
+
+        // Revisar duplicados contra TODA la base de Odoo antes de contactar — no solo
+        // dentro de este lote. Antes esto faltaba aquí también.
+        const existente = await buscarLeadExistente({ telefono }).catch(() => null);
+        if (existente && existente.id !== lead.id) {
+          await odooCallLocal('crm.lead', 'message_post', [[lead.id]], {
+            body: `♻️ <b>Registro repetido</b>: este papá ya existe como contacto (lead #${existente.id}).<br>No se le escribió, para no duplicar mensajes.`
+          }).catch(() => {});
           continue;
         }
 
@@ -9282,7 +9292,7 @@ app.post('/api/motor/proactivo/ejecutar', authMiddleware, async (req, res) => {
     const leads = incluirSinTelefono ? todos.slice(0, limite) : conTelefono.slice(0, limite);
 
     const resultados = [];
-    const numerosVistos = new Map();
+    const numerosVistos = new Map(); // sigue sirviendo para duplicados DENTRO del mismo lote
     for (const lead of leads) {
       const telLead = String(
         (lead.mobile && String(lead.mobile) !== 'false') ? lead.mobile
@@ -9290,6 +9300,8 @@ app.post('/api/motor/proactivo/ejecutar', authMiddleware, async (req, res) => {
       ).replace(/\D/g, '');
       if (telLead && telLead.length >= 8) {
         const clave = telLead.slice(-8);
+
+        // 1) ¿Ya se vio este número EN ESTE MISMO lote? (rápido, sin ir a Odoo otra vez)
         if (numerosVistos.has(clave)) {
           const idPrincipal = numerosVistos.get(clave);
           await odooCallLocal('crm.lead', 'message_post', [[lead.id]], {
@@ -9298,6 +9310,28 @@ app.post('/api/motor/proactivo/ejecutar', authMiddleware, async (req, res) => {
           resultados.push({ lead_id: lead.id, nombre: lead.partner_name || lead.contact_name || lead.name, ok: false, motivo: 'repetido_no_contactado', se_atiende_en_lead: idPrincipal });
           continue;
         }
+
+        // 2) ¿Ya existe en TODA la base de Odoo, de una corrida anterior (esto es lo que
+        // antes no se revisaba — el Map se reiniciaba vacío en cada ejecución, así que
+        // duplicados de corridas pasadas nunca se detectaban). Se excluye el propio lead.
+        const existente = await buscarLeadExistente({ telefono: telLead }).catch(() => null);
+        if (existente && existente.id !== lead.id) {
+          // Se asigna el duplicado a la MISMA vendedora que ya atendía a esta familia —
+          // no se deja sin asignar, para que quien ya la conoce vea que volvió a escribir.
+          const vendedorExistente = existente.user_id?.[0] && existente.user_id[1] !== 'Administrador' ? existente.user_id : null;
+          if (vendedorExistente) {
+            await odooCallLocal('crm.lead', 'write', [[lead.id], { user_id: vendedorExistente[0] }]).catch(() => {});
+          }
+          await odooCallLocal('crm.lead', 'message_post', [[lead.id]], {
+            body: `🔁 <b>El papá volvió a escribir pidiendo información</b> — ya es contacto conocido (lead original #${existente.id}, creado ${existente.create_date}).<br>` +
+                  (vendedorExistente ? `Se asignó a <b>${vendedorExistente[1]}</b>, quien ya lo atendía.<br>` : `No se encontró vendedora anterior — queda sin asignar.<br>`) +
+                  `No se creó como lead nuevo ni se le escribió por WhatsApp, para no duplicar mensajes.`
+          }).catch(() => {});
+          resultados.push({ lead_id: lead.id, nombre: lead.partner_name || lead.contact_name || lead.name, ok: false, motivo: 'repetido_no_contactado', se_atiende_en_lead: existente.id, asignado_a: vendedorExistente?.[1] || null });
+          numerosVistos.set(clave, existente.id);
+          continue;
+        }
+
         numerosVistos.set(clave, lead.id);
       }
       const contactar = CANAL_CONTACTO_PROACTIVO === 'acrux' ? contactarLeadPorAcruxLab : contactarLeadPorWhatsApp;
@@ -11712,6 +11746,20 @@ app.get('/api/acrux/contacto-info', authMiddleware, async (req, res) => {
 
     const contacto = await Contacto.findOne({ tenant_id: req.user.tenant_id, numero });
 
+    // ¿Es un recontacto (duplicado ya conocido)? Se revisa el chatter del lead vinculado
+    // buscando la nota que dejamos al detectar el duplicado — así el panel se lo muestra
+    // a la vendedora de inmediato, sin que tenga que ir a leer el chatter en Odoo.
+    let esRecontacto = false;
+    if (contacto?.odoo_lead_id) {
+      try {
+        const notas = await odooCallLocal('mail.message', 'search_read',
+          [[['model', '=', 'crm.lead'], ['res_id', '=', contacto.odoo_lead_id]]],
+          { fields: ['body'], limit: 20, order: 'date desc' }
+        );
+        esRecontacto = (notas || []).some(n => /El papá volvió a escribir pidiendo información/i.test(n.body || ''));
+      } catch (e) { /* no bloquea si falla */ }
+    }
+
     let imagenesSugeridas = [];
     if (contacto?.nivel_interes) {
       // Se incluye el base64 (nombre, categoria, mime_type e imagen) para que el
@@ -11728,7 +11776,7 @@ app.get('/api/acrux/contacto-info', authMiddleware, async (req, res) => {
       }).select('nombre categoria nivel_educativo mime_type imagen_base64').limit(4);
     }
 
-    res.json({ ok: true, contacto, imagenes_sugeridas: imagenesSugeridas });
+    res.json({ ok: true, contacto, es_recontacto: esRecontacto, imagenes_sugeridas: imagenesSugeridas });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
