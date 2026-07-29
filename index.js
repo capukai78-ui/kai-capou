@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-lead-crudo-por-id'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-comparar-pausa-y-discrepancias-vendedora'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7597,6 +7597,95 @@ app.get('/api/debug/reporte-rango-fechas', authMiddleware, async (req, res) => {
 // De SOLO LECTURA. Agrupa por etapa todo lo que no es "Inscritos" ni una etapa de
 // descarte, para ver dónde se está "atascando" cada caso — qué falta para cerrar.
 // GET /api/reportes/estado-pipeline
+// ===== COMPARACIÓN: LEADS/OPORTUNIDADES NUEVOS ANTES vs DESPUÉS DE LA PAUSA =====
+// De SOLO LECTURA. Compara cuántos leads NUEVOS se crearon en Odoo en la semana antes
+// de pausar Kai (24/07) contra la semana después — para mostrar si la caída de
+// oportunidades coincide con la fecha exacta de la pausa.
+// GET /api/reportes/comparar-antes-despues-pausa?fecha_pausa=2026-07-24
+app.get('/api/reportes/comparar-antes-despues-pausa', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const fechaPausa = new Date((req.query.fecha_pausa || '2026-07-24') + 'T00:00:00Z');
+    const antesInicio = new Date(fechaPausa.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const despuesFin = new Date(fechaPausa.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+    const fmt = (d) => d.toISOString().replace('T', ' ').substring(0, 19);
+
+    const [antes, despues] = await Promise.all([
+      odooCallLocal('crm.lead', 'search_read',
+        [[['create_date', '>=', fmt(antesInicio)], ['create_date', '<', fmt(fechaPausa)]]],
+        { fields: ['id', 'type', 'stage_id'], limit: 2000, context: { active_test: false } }
+      ),
+      odooCallLocal('crm.lead', 'search_read',
+        [[['create_date', '>=', fmt(fechaPausa)], ['create_date', '<', fmt(despuesFin)]]],
+        { fields: ['id', 'type', 'stage_id'], limit: 2000, context: { active_test: false } }
+      )
+    ]);
+
+    const resumenDe = (leads) => ({
+      total: (leads || []).length,
+      oportunidades: (leads || []).filter(l => l.type === 'opportunity').length,
+      leads_simples: (leads || []).filter(l => l.type === 'lead').length,
+      inscritos: (leads || []).filter(l => /inscrit/i.test(l.stage_id?.[1] || '')).length
+    });
+
+    res.json({
+      ok: true,
+      fecha_pausa: req.query.fecha_pausa || '2026-07-24',
+      semana_antes_de_pausar: { desde: fmt(antesInicio), hasta: req.query.fecha_pausa || '2026-07-24', ...resumenDe(antes) },
+      semana_despues_de_pausar: { desde: req.query.fecha_pausa || '2026-07-24', hasta: fmt(despuesFin), ...resumenDe(despues) }
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// ===== ¿POR QUÉ NO LE APARECEN COSAS A UNA VENDEDORA ESPECÍFICA? =====
+// De SOLO LECTURA. Compara, para una vendedora puntual, todo lo que NUESTRO sistema
+// (AsignacionAcrux) dice que es suyo, contra lo que Odoo realmente muestra como agente
+// en cada conversación — para encontrar discrepancias exactas, no genéricas.
+// GET /api/debug/discrepancias-vendedora?nombre=Sylvia Flores
+app.get('/api/debug/discrepancias-vendedora', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const nombre = req.query.nombre;
+    if (!nombre) return res.json({ ok: false, error: 'Falta ?nombre=' });
+
+    const asignaciones = await AsignacionAcrux.find({ tenant_id: req.user.tenant_id, agente_nombre: nombre }).lean();
+    if (!asignaciones.length) return res.json({ ok: true, total: 0, mensaje: `Nuestro sistema no tiene ninguna conversación asignada a "${nombre}".` });
+
+    const ids = asignaciones.map(a => a.contacto_id);
+    const conversacionesOdoo = await odooCallLocal('acrux.chat.conversation', 'read',
+      [ids, ['id', 'number', 'agent_id', 'status']]
+    ).catch(() => []);
+    const porId = {};
+    (conversacionesOdoo || []).forEach(c => { porId[c.id] = c; });
+
+    const detalle = asignaciones.map(a => {
+      const conv = porId[a.contacto_id];
+      const agenteReal = conv?.agent_id?.[1] || '(no existe en Odoo)';
+      return {
+        contacto_id: a.contacto_id,
+        numero: conv?.number || null,
+        modo_en_nuestro_sistema: a.modo,
+        agente_segun_nuestro_sistema: a.agente_nombre,
+        agente_segun_odoo_ahora: agenteReal,
+        coincide: agenteReal === nombre,
+        status_odoo: conv?.status || null
+      };
+    });
+
+    const noCoinciden = detalle.filter(d => !d.coincide);
+
+    res.json({
+      ok: true,
+      vendedora: nombre,
+      total_asignadas_en_nuestro_sistema: detalle.length,
+      total_que_NO_coinciden_en_odoo: noCoinciden.length,
+      detalle_no_coincidencias: noCoinciden,
+      detalle_completo: detalle
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/reportes/estado-pipeline', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
