@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-bitacora-cadena-inscritos'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-fechas-y-pipeline'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7593,6 +7593,39 @@ app.get('/api/debug/reporte-rango-fechas', authMiddleware, async (req, res) => {
 // el propio historial de la conversación en AcruxLab ("Start Conversation (X)"). Así el
 // crédito no queda solo en quien cerró — se ve la cadena completa de cada quien.
 // GET /api/reportes/bitacora-inscritos?limite=200
+// ===== ESTADO DEL PIPELINE — leads/Oportunidades que TODAVÍA no cierran =====
+// De SOLO LECTURA. Agrupa por etapa todo lo que no es "Inscritos" ni una etapa de
+// descarte, para ver dónde se está "atascando" cada caso — qué falta para cerrar.
+// GET /api/reportes/estado-pipeline
+app.get('/api/reportes/estado-pipeline', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const leads = await odooCallLocal('crm.lead', 'search_read',
+      [[['stage_id.name', 'not like', 'Inscrit'], ['active', '=', true]]],
+      { fields: ['id', 'name', 'partner_name', 'contact_name', 'user_id', 'stage_id', 'type', 'create_date'], limit: 2000 }
+    ) || [];
+
+    const porEtapa = {};
+    for (const l of leads) {
+      const etapa = l.stage_id?.[1] || '(sin etapa)';
+      if (!porEtapa[etapa]) porEtapa[etapa] = { etapa, total: 0, oportunidades: 0, leads_simples: 0, ejemplos: [] };
+      porEtapa[etapa].total++;
+      if (l.type === 'opportunity') porEtapa[etapa].oportunidades++; else porEtapa[etapa].leads_simples++;
+      if (porEtapa[etapa].ejemplos.length < 5) {
+        porEtapa[etapa].ejemplos.push({ id: l.id, nombre: l.partner_name || l.contact_name || l.name, vendedor: l.user_id?.[1] || 'Sin asignar', dias_en_el_pipeline: l.create_date ? Math.round((Date.now() - new Date(l.create_date.replace(' ', 'T') + 'Z')) / (1000 * 60 * 60 * 24)) : null });
+      }
+    }
+
+    const resumen = Object.values(porEtapa).sort((a, b) => b.total - a.total);
+
+    res.json({
+      ok: true,
+      total_en_pipeline: leads.length,
+      resumen_por_etapa: resumen
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/reportes/bitacora-inscritos', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
@@ -7601,7 +7634,7 @@ app.get('/api/reportes/bitacora-inscritos', authMiddleware, async (req, res) => 
 
     const leadsInscritos = await odooCallLocal('crm.lead', 'search_read',
       [[['stage_id.name', 'like', 'Inscrit']]],
-      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'user_id', 'stage_id'], limit: limite, offset, context: { active_test: false } }
+      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'user_id', 'stage_id', 'create_date', 'date_closed', 'write_date'], limit: limite, offset, context: { active_test: false } }
     ) || [];
 
     if (!leadsInscritos.length) return res.json({ ok: true, total: 0, mensaje: 'No hay leads en etapa Inscritos.' });
@@ -7637,12 +7670,20 @@ app.get('/api/reportes/bitacora-inscritos', authMiddleware, async (req, res) => 
         }
       }
 
+      const fechaCreacion = lead.create_date ? new Date(lead.create_date.replace(' ', 'T') + 'Z') : null;
+      const fechaInscripcion = lead.date_closed ? new Date(lead.date_closed.replace(' ', 'T') + 'Z') : (lead.write_date ? new Date(lead.write_date.replace(' ', 'T') + 'Z') : null);
+      const diasHastaInscripcion = (fechaCreacion && fechaInscripcion) ? Math.round((fechaInscripcion - fechaCreacion) / (1000 * 60 * 60 * 24)) : null;
+
       bitacora.push({
         lead_id: lead.id,
         nombre: lead.partner_name || lead.contact_name || lead.name,
         telefono: lead.phone || null,
         vendedor_que_cerro: lead.user_id?.[1] || 'Sin asignar',
         etapa: lead.stage_id?.[1] || '',
+        fecha_creacion: lead.create_date || null,
+        fecha_inscripcion: lead.date_closed || lead.write_date || null,
+        fecha_inscripcion_es_aproximada: !lead.date_closed, // si no hay date_closed, se usa write_date como aproximación
+        dias_hasta_inscripcion: diasHastaInscripcion,
         contacto_id_acrux: contactoIdAcrux,
         cadena_de_traspasos: cadenaAgentes.length ? cadenaAgentes : ['(sin conversación en AcruxLab — llegó por otro medio o no se encontró coincidencia)']
       });
@@ -7657,9 +7698,16 @@ app.get('/api/reportes/bitacora-inscritos', authMiddleware, async (req, res) => 
       }
     }
 
+    const fechasCreacion = bitacora.map(b => b.fecha_creacion).filter(Boolean).sort();
+    const fechasInscripcion = bitacora.map(b => b.fecha_inscripcion).filter(Boolean).sort();
+    const diasValidos = bitacora.map(b => b.dias_hasta_inscripcion).filter(d => d !== null);
+
     res.json({
       ok: true,
       total_inscritos_revisados: bitacora.length,
+      rango_de_creacion_del_lead: { desde: fechasCreacion[0] || null, hasta: fechasCreacion[fechasCreacion.length - 1] || null },
+      rango_de_inscripcion: { desde: fechasInscripcion[0] || null, hasta: fechasInscripcion[fechasInscripcion.length - 1] || null },
+      promedio_dias_hasta_inscripcion: diasValidos.length ? Math.round(diasValidos.reduce((a, b) => a + b, 0) / diasValidos.length) : null,
       participacion_en_la_cadena: participacion,
       bitacora
     });
