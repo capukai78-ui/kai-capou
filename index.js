@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-comparar-pausa-y-discrepancias-vendedora'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-seguimiento-post-pausa'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7602,6 +7602,75 @@ app.get('/api/debug/reporte-rango-fechas', authMiddleware, async (req, res) => {
 // de pausar Kai (24/07) contra la semana después — para mostrar si la caída de
 // oportunidades coincide con la fecha exacta de la pausa.
 // GET /api/reportes/comparar-antes-despues-pausa?fecha_pausa=2026-07-24
+// ===== SEGUIMIENTO REAL DE LOS LEADS CREADOS DESPUÉS DE LA PAUSA =====
+// De SOLO LECTURA. Trae, uno por uno, los leads creados desde la fecha de pausa, y
+// revisa si tienen vendedor real asignado y si existe alguna conversación/actividad —
+// para saber con certeza cuántos "entraron pero nadie los tocó".
+// GET /api/reportes/seguimiento-post-pausa?fecha_pausa=2026-07-24
+app.get('/api/reportes/seguimiento-post-pausa', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const fechaPausa = (req.query.fecha_pausa || '2026-07-24') + ' 00:00:00';
+
+    const leads = await odooCallLocal('crm.lead', 'search_read',
+      [[['create_date', '>=', fechaPausa]]],
+      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'user_id', 'stage_id', 'type', 'create_date'], limit: 300, context: { active_test: false } }
+    ) || [];
+
+    if (!leads.length) return res.json({ ok: true, total: 0, mensaje: 'No hay leads creados desde la fecha de pausa.' });
+
+    const detalle = [];
+    for (const l of leads) {
+      const telLimpio = String(l.phone || '').replace(/\D/g, '').slice(-8);
+      let tieneConversacion = false;
+      let tieneMensajeDelColegio = false;
+      let ultimaActividad = null;
+
+      if (telLimpio) {
+        const conv = await odooCallLocal('acrux.chat.conversation', 'search_read',
+          [[['number', 'like', telLimpio]]], { fields: ['id'], limit: 1 }
+        ).catch(() => []);
+        if (conv && conv.length) {
+          tieneConversacion = true;
+          const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
+            [[['contact_id', '=', conv[0].id]]], { fields: ['from_me', 'date_message'], limit: 50, order: 'date_message desc' }
+          ).catch(() => []);
+          tieneMensajeDelColegio = (mensajes || []).some(m => m.from_me);
+          ultimaActividad = mensajes?.[0]?.date_message || null;
+        }
+      }
+
+      const vendedorReal = l.user_id?.[1] && l.user_id[1] !== 'Administrador' ? l.user_id[1] : null;
+      const sinNingunSeguimiento = !tieneMensajeDelColegio && !vendedorReal;
+
+      detalle.push({
+        lead_id: l.id,
+        link: `https://alba.capouilliez.edu.gt/web#id=${l.id}&model=crm.lead&view_type=form`,
+        nombre: l.partner_name || l.contact_name || l.name,
+        telefono: l.phone || null,
+        etapa: l.stage_id?.[1] || '',
+        vendedor: l.user_id?.[1] || 'Sin asignar',
+        creado: l.create_date,
+        tiene_conversacion_en_acrux: tieneConversacion,
+        el_colegio_le_escribio_algo: tieneMensajeDelColegio,
+        sin_ningun_seguimiento: sinNingunSeguimiento
+      });
+    }
+
+    const sinSeguimiento = detalle.filter(d => d.sin_ningun_seguimiento);
+
+    res.json({
+      ok: true,
+      fecha_pausa: req.query.fecha_pausa || '2026-07-24',
+      total_leads_creados_desde_la_pausa: detalle.length,
+      total_sin_ningun_seguimiento: sinSeguimiento.length,
+      porcentaje_sin_seguimiento: `${Math.round((sinSeguimiento.length / detalle.length) * 100)}%`,
+      lista_sin_seguimiento: sinSeguimiento,
+      detalle_completo: detalle
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/reportes/comparar-antes-despues-pausa', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
