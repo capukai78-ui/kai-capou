@@ -1389,6 +1389,7 @@ async function abrirChat(id){
 // ===== ACRUXLAB / CHATROOM — Número oficial (Fase 1: solo lectura) =====
 let _clTabActual = 'omni';
 let _acruxContactoActivo = null;
+let _acruxEsChatSocial = false; // true cuando el chat abierto es Instagram/Messenger fusionado, no un contacto real de AcruxLab
 let _acruxPollInterval = null;
 
 function cambiarClTab(tab){
@@ -1918,11 +1919,13 @@ async function abrirAcruxChat(contactoId){
   const mensajesEl = document.getElementById('acrux-mensajes');
   mensajesEl.innerHTML = '<div style="text-align:center;color:var(--text3);font-size:12px">Cargando...</div>';
 
-  // Instagram/Messenger — de solo lectura, vive en nuestra propia base de datos
-  // (Conversacion), no en Odoo. Se abre con el mismo endpoint que ya usa la vista omni.
+  // Instagram/Messenger — Kai (el bot) no interviene aquí, pero una vendedora SÍ puede
+  // responder manualmente. Antes se ocultaba la caja de escritura por error — se
+  // corrige para usar el mismo endpoint que ya funciona en la vista normal de chats.
   if(String(contactoId).startsWith('social_')){
-    document.getElementById('acrux-input-area').style.display='none';
-    document.getElementById('acrux-lead-panel').innerHTML = '<div style="font-size:11px;color:var(--text3)">Canal de solo lectura — no aplica clasificación de Odoo.</div>';
+    document.getElementById('acrux-input-area').style.display='block';
+    _acruxEsChatSocial = true; // usado por enviarMensajeAcrux() para saber a qué endpoint mandar
+    document.getElementById('acrux-lead-panel').innerHTML = '<div style="font-size:11px;color:var(--text3)">Canal de solo lectura para Kai — la respuesta manual sí se envía de verdad por Instagram/Messenger.</div>';
     document.getElementById('acrux-contacto-info').innerHTML = '';
     const idReal = String(contactoId).replace('social_','');
     try {
@@ -1932,13 +1935,13 @@ async function abrirAcruxChat(contactoId){
       document.getElementById('acrux-chat-nombre').textContent = conv.nombre || 'Sin nombre';
       document.getElementById('acrux-chat-numero').textContent = (conv.canal==='instagram'?'📷 Instagram':'💬 Messenger') + ' · ' + (conv.numero||'');
       const modoEl = document.getElementById('acrux-chat-modo');
-      modoEl.textContent = '👁 Solo lectura';
-      modoEl.style.background = 'var(--bg3)'; modoEl.style.color = 'var(--text3)';
+      modoEl.textContent = conv.agente_nombre ? ('👤 ' + conv.agente_nombre) : '🕐 Sin tomar';
+      modoEl.style.background = conv.agente_nombre ? 'var(--g3)' : 'var(--bg3)'; modoEl.style.color = conv.agente_nombre ? 'var(--g)' : 'var(--text3)';
       document.getElementById('acrux-btn-devolver').style.display='none';
       document.getElementById('acrux-btn-tomar').style.display='none';
       const btnSoltarSocial = document.getElementById('acrux-btn-soltar');
       btnSoltarSocial.textContent = '✅ Marcar revisado';
-      btnSoltarSocial.title = 'Instagram/Messenger es de solo lectura — esto lo saca de "Esperando respuesta" sin necesidad de contestar';
+      btnSoltarSocial.title = 'Marca este contacto como revisado, para que salga de "Esperando respuesta" sin necesidad de escribirle';
       mensajesEl.innerHTML = (conv.mensajes||[]).map(m=>{
         const esPadre = m.de==='padre';
         const align = esPadre ? 'flex-start' : 'flex-end';
@@ -1952,6 +1955,7 @@ async function abrirAcruxChat(contactoId){
   }
 
   document.getElementById('acrux-input-area').style.display='block';
+  _acruxEsChatSocial = false;
   document.getElementById('acrux-lead-panel').innerHTML = '<div style="font-size:11px;color:var(--text3)">Buscando lead en Odoo...</div>';
 
   try {
@@ -2172,17 +2176,29 @@ async function enviarMensajeAcrux(){
   input.value = '';
   input.disabled = true;
   try {
-    const r = await fetch(API+'/api/acrux/responder',{
-      method:'POST',
-      headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'},
-      body: JSON.stringify({
-        contacto_id: _acruxContactoActivo,
-        mensaje,
-        imagen_base64: _acruxImagenBase64 || undefined,
-        imagen_mime: _acruxImagenMime || undefined,
-        imagen_nombre: _acruxImagenNombre || undefined
-      })
-    }).then(r=>r.json());
+    // Instagram/Messenger fusionados en esta vista usan el endpoint real de "Chats en
+    // Vivo" — Kai no responde ahí solo, pero una vendedora sí puede escribir de verdad.
+    const r = _acruxEsChatSocial
+      ? await fetch(API+'/api/conversaciones/'+String(_acruxContactoActivo).replace('social_','')+'/responder',{
+          method:'POST',
+          headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'},
+          body: JSON.stringify({
+            mensaje,
+            imagen_base64: _acruxImagenBase64 || undefined,
+            imagen_mime: _acruxImagenMime || undefined
+          })
+        }).then(r=>r.json())
+      : await fetch(API+'/api/acrux/responder',{
+          method:'POST',
+          headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'},
+          body: JSON.stringify({
+            contacto_id: _acruxContactoActivo,
+            mensaje,
+            imagen_base64: _acruxImagenBase64 || undefined,
+            imagen_mime: _acruxImagenMime || undefined,
+            imagen_nombre: _acruxImagenNombre || undefined
+          })
+        }).then(r=>r.json());
     if(r.ok){
       showToast(r.aviso || 'Enviado — confirma que llegó de verdad ✓','ok');
       quitarImagenAcrux();
