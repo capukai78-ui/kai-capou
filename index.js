@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-recontacto-visible-en-panel'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-salud-del-sistema'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -6922,6 +6922,72 @@ app.get('/api/acrux/conversaciones/:contactoId', authMiddleware, async (req, res
 // nuestro propio motor cada 45 segundos, sin que ningún humano abra nada) ya dispara el
 // mismo "auto-reclamo" que se vio al pasar el mouse en la interfaz de Odoo.
 // GET /api/debug/probar-solo-lectura?contacto_id=8688
+// ===== CHEQUEO DE SALUD DEL SISTEMA =====
+// De SOLO LECTURA. Revisa de un vistazo: si Odoo responde, si los tokens de cada canal
+// están configurados en Railway, y si ha entrado actividad real (mensajes) en las
+// últimas horas por cada canal — para saber rápido si algo está desconectado de verdad,
+// o si solo es la pausa haciendo lo que debe.
+// GET /api/debug/salud-del-sistema
+app.get('/api/debug/salud-del-sistema', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  const resultado = { ok: true, revisado_a_las: new Date().toISOString() };
+
+  // 1) ¿Responde Odoo?
+  try {
+    const uid = await getOdooUID();
+    resultado.odoo = { conectado: !!uid, uid: uid || null };
+  } catch (e) { resultado.odoo = { conectado: false, error: e.message }; }
+
+  // 2) ¿Responde MongoDB?
+  resultado.mongodb = { conectado: mongoose.connection.readyState === 1, estado: mongoose.connection.readyState };
+
+  // 3) ¿Están configurados los tokens de cada canal? (sin revelar el valor, solo si existen)
+  resultado.tokens_configurados = {
+    whatsapp_meta: !!process.env.WHATSAPP_TOKEN,
+    instagram: !!(process.env.INSTAGRAM_PAGE_TOKEN || process.env.WHATSAPP_TOKEN),
+    messenger: !!(process.env.MESSENGER_PAGE_TOKEN || process.env.WHATSAPP_TOKEN)
+  };
+
+  // 4) Bandera de pausa, para contexto
+  resultado.kai_pausado = KAI_PAUSADO_PARA_PRODUCCION;
+  resultado.sincronizar_agente_activo = SINCRONIZAR_AGENTE_EN_ODOO_ACTIVO;
+
+  // 5) Actividad real reciente por canal (últimas 24 horas)
+  try {
+    const desde24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const conversacionesRecientes = await Conversacion.find({
+      tenant_id: req.user.tenant_id, ultimaActividad: { $gte: desde24h }
+    }).select('canal').lean();
+    const porCanal = {};
+    conversacionesRecientes.forEach(c => { porCanal[c.canal || 'whatsapp'] = (porCanal[c.canal || 'whatsapp'] || 0) + 1; });
+    resultado.actividad_ultimas_24h_whatsapp_directo_instagram_messenger = porCanal;
+  } catch (e) { resultado.actividad_ultimas_24h_whatsapp_directo_instagram_messenger = { error: e.message }; }
+
+  // 6) Actividad real reciente en AcruxLab (últimas 24 horas)
+  try {
+    const desde24hStr = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').substring(0, 19);
+    const mensajesAcrux = await odooCallLocal('acrux.chat.message', 'search_read',
+      [[['date_message', '>=', desde24hStr]]], { fields: ['from_me'], limit: 500 }
+    ).catch(() => []);
+    resultado.actividad_ultimas_24h_acrux = {
+      total_mensajes: (mensajesAcrux || []).length,
+      del_padre: (mensajesAcrux || []).filter(m => !m.from_me).length,
+      del_colegio: (mensajesAcrux || []).filter(m => m.from_me).length
+    };
+  } catch (e) { resultado.actividad_ultimas_24h_acrux = { error: e.message }; }
+
+  // 7) Leads nuevos en Odoo en las últimas 24 horas (cualquier canal)
+  try {
+    const desde24hStr = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').substring(0, 19);
+    const leadsRecientes = await odooCallLocal('crm.lead', 'search_read',
+      [[['create_date', '>=', desde24hStr]]], { fields: ['id'], limit: 500, context: { active_test: false } }
+    ).catch(() => []);
+    resultado.leads_nuevos_ultimas_24h = (leadsRecientes || []).length;
+  } catch (e) { resultado.leads_nuevos_ultimas_24h = { error: e.message }; }
+
+  res.json(resultado);
+});
+
 app.get('/api/debug/probar-solo-lectura', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
