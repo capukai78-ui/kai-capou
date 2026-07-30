@@ -420,10 +420,12 @@ tr:hover td{background:var(--g4)}
             <span id="cl-vista-usuario" style="background:var(--bg4);color:var(--text2);font-size:9px;font-weight:700;padding:2px 8px;border-radius:10px"></span>
           </div>
           <div style="display:flex;gap:8px">
+            <button class="rpill" id="btn-conexiones" onclick="abrirEstadoConexiones()">🔌 Conexiones</button>
             <button class="rpill" id="btn-metricas-acrux" onclick="abrirMetricasAcrux()">📊 Métricas</button>
             <button class="rpill" onclick="loadAcruxLista()">↻ Actualizar</button>
           </div>
         </div>
+        <div id="banner-conexiones" style="display:none;padding:10px 18px;font-size:12px;font-weight:600"></div>
         <div id="acrux-metricas-panel" style="display:none;background:var(--bg2);border:1px solid var(--acrux3);border-top:none;padding:18px"></div>
         <div style="display:grid;grid-template-columns:280px 1fr 270px;gap:1px;background:var(--border2);border:1px solid var(--acrux3);border-radius:0 0 var(--r) var(--r);height:calc(100vh - 260px);overflow:hidden">
           <!-- Lista de conversaciones AcruxLab -->
@@ -1496,6 +1498,77 @@ function generarAlertaGerencial(g, agentes){
 let _metricasChartConv = null;
 let _metricasChartTiempo = null;
 let _metricasPeriodoDias = 7;
+
+// ===== ESTADO DE CONEXIONES — visible para todo el equipo =====
+async function revisarBannerConexiones(){
+  try {
+    const r = await fetch(API+'/api/estado-conexiones',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+    if(!r.ok) return;
+    const banner = document.getElementById('banner-conexiones');
+    if(!banner) return;
+
+    if(!r.todo_bien){
+      const caidas = r.conexiones.filter(c=>!c.conectado).map(c=>c.conexion).join(', ');
+      const esMeta = r.conexiones.some(c=>!c.conectado && ['WhatsApp','Instagram','Messenger'].includes(c.conexion));
+      banner.style.display='block';
+      banner.style.background='#FDE4E4'; banner.style.color='#8B0000';
+      banner.innerHTML = `🔴 <b>Conexión caída:</b> ${caidas}` +
+        (esMeta ? ` — <a href="https://alba.capouilliez.edu.gt/web#action=621&model=facebook.pragtech.social.media&view_type=kanban&cids=1&menu_id=345" target="_blank" style="color:#8B0000;text-decoration:underline;font-weight:700">reconectar aquí</a>`
+                : ` — revisar Odoo directamente.`);
+    } else if(r.hay_cambios_recientes){
+      banner.style.display='block';
+      banner.style.background='#E2EFDA'; banner.style.color='#1E5B2E';
+      banner.innerHTML = `✅ <b>Todo reconectado</b> — una conexión que estaba caída ya volvió a funcionar.`;
+      setTimeout(()=>{ if(banner) banner.style.display='none'; }, 30000);
+    } else if(r.hay_proximos_a_vencer){
+      const proximos = r.conexiones.filter(c=>c.proximo_a_vencer).map(c=>`${c.conexion} (${c.dias_restantes}d)`).join(', ');
+      banner.style.display='block';
+      banner.style.background='#FFF2CC'; banner.style.color='#7D5A00';
+      banner.innerHTML = `⚠️ <b>Vence pronto:</b> ${proximos} — <a href="https://alba.capouilliez.edu.gt/web#action=621&model=facebook.pragtech.social.media&view_type=kanban&cids=1&menu_id=345" target="_blank" style="color:#7D5A00;text-decoration:underline;font-weight:700">reconectar antes de que se caiga</a>`;
+    } else {
+      banner.style.display='none';
+    }
+  } catch(e){ /* no bloquea el resto del panel si falla */ }
+}
+
+async function abrirEstadoConexiones(){
+  try {
+    const r = await fetch(API+'/api/estado-conexiones',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+    if(!r.ok){ showToast('No se pudo revisar el estado','error'); return; }
+    const LINK_RECONECTAR_FACEBOOK = 'https://alba.capouilliez.edu.gt/web#action=621&model=facebook.pragtech.social.media&view_type=kanban&cids=1&menu_id=345';
+    const hayMetaCaido = r.conexiones.some(c => ['WhatsApp','Instagram','Messenger'].includes(c.conexion) && !c.conectado);
+    const filas = r.conexiones.map(c => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid var(--border)">
+        <div style="font-weight:600;font-size:13px">${c.conexion}</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          ${c.cambio_reciente ? '<span style="font-size:9px;color:var(--text3)">(cambió hace poco)</span>' : ''}
+          <span style="font-size:12px;font-weight:700;color:${c.conectado?'#1E5B2E':'#8B0000'}">${c.conectado?'🟢 Conectado':'🔴 Desconectado'}</span>
+        </div>
+      </div>
+      ${c.dias_restantes !== null ? `<div style="padding:0 14px 8px;font-size:10px;color:${c.proximo_a_vencer?'#7D5A00':'var(--text3)'};font-weight:${c.proximo_a_vencer?'700':'400'}">${c.proximo_a_vencer?'⚠️ ':''}Vence en ${c.dias_restantes} día(s)</div>` : ''}
+      ${c.error ? `<div style="padding:0 14px 8px;font-size:10px;color:var(--text3)">${c.error}</div>` : ''}
+    `).join('');
+    const html = `<div style="position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:9999;display:flex;align-items:center;justify-content:center" onclick="if(event.target===this)this.remove()">
+      <div style="background:var(--bg1);border-radius:14px;width:420px;max-width:90vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+        <div style="padding:16px 18px;border-bottom:1px solid var(--border);font-weight:700;font-size:14px">🔌 Estado de Conexiones</div>
+        <div>${filas}</div>
+        ${hayMetaCaido ? `<div style="padding:12px 18px;background:#FDE4E4;border-top:1px solid #F5B7B1">
+          <div style="font-size:11px;color:#8B0000;font-weight:600;margin-bottom:6px">Para reconectar Facebook/Instagram/Messenger:</div>
+          <a href="${LINK_RECONECTAR_FACEBOOK}" target="_blank" style="font-size:11px;color:#1F4E78;font-weight:700;text-decoration:underline">Abrir Odoo — Pragtech Facebook Social Media →</a>
+          <div style="font-size:10px;color:var(--text3);margin-top:4px">Entra con la clave de marketing y dale "Reconectar" al usuario de Facebook.</div>
+        </div>` : ''}
+        <div style="padding:12px 18px;font-size:10px;color:var(--text3)">Se revisa solo cada 10 minutos.</div>
+      </div>
+    </div>`;
+    const div = document.createElement('div');
+    div.innerHTML = html;
+    document.body.appendChild(div.firstElementChild);
+  } catch(e){ showToast('Error de conexión','error'); }
+}
+
+// Revisa el banner al cargar el panel, y luego cada 5 minutos mientras esté abierto
+revisarBannerConexiones();
+setInterval(revisarBannerConexiones, 5 * 60 * 1000);
 
 async function abrirMetricasAcrux(){
   const panel = document.getElementById('acrux-metricas-panel');
