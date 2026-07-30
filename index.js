@@ -54,7 +54,7 @@ async function obtenerNombreFacebook(psid, token) {
   return new Promise((resolve) => {
     const req = https.request({
       hostname: 'graph.facebook.com',
-      path: `/v22.0/${psid}?fields=name&access_token=${token}`,
+      path: `/v22.0/${psid}?fields=name&access_token=${encodeURIComponent(token)}`,
       method: 'GET'
     }, (res) => {
       let data = '';
@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-diagnostico-token-seguro'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-codificar-token-en-url'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -3731,7 +3731,7 @@ async function probarConexionMeta(token) {
     // mensajes pero no tienen ese permiso específico.
     const req = https.request({
       hostname: 'graph.facebook.com',
-      path: `/v22.0/debug_token?input_token=${token}&access_token=${token}`,
+      path: `/v22.0/debug_token?input_token=${encodeURIComponent(token)}&access_token=${encodeURIComponent(token)}`,
       method: 'GET'
     }, (res) => {
       let data = '';
@@ -3768,7 +3768,7 @@ async function diasRestantesToken(token) {
   return new Promise((resolve) => {
     const req = https.request({
       hostname: 'graph.facebook.com',
-      path: `/v22.0/debug_token?input_token=${token}&access_token=${token}`,
+      path: `/v22.0/debug_token?input_token=${encodeURIComponent(token)}&access_token=${encodeURIComponent(token)}`,
       method: 'GET'
     }, (res) => {
       let data = '';
