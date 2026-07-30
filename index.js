@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-monitorear-mongodb-tambien'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-unir-instagram-messenger'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -3789,21 +3789,17 @@ async function revisarConexionesYAvisarCambios() {
     const mongoConectado = mongoose.connection.readyState === 1;
     chequeos.push(['mongodb', mongoConectado, mongoConectado ? null : 'Sin conexión activa a la base de datos', null]);
 
-    // Meta (un solo token cubre WhatsApp/Instagram/Messenger si comparten el mismo).
-    // Además de si responde, se consulta cuántos días le quedan antes de vencer.
+    // Meta — WhatsApp es un token aparte. Instagram y Messenger comparten el mismo token
+    // de la página de Facebook, así que se revisan juntos como una sola conexión.
     const rWA = await probarConexionMeta(process.env.WHATSAPP_TOKEN);
     const diasWA = rWA.ok ? await diasRestantesToken(process.env.WHATSAPP_TOKEN) : null;
     chequeos.push(['whatsapp_meta', rWA.ok, rWA.error || null, diasWA]);
 
-    if (process.env.INSTAGRAM_PAGE_TOKEN) {
-      const rIG = await probarConexionMeta(process.env.INSTAGRAM_PAGE_TOKEN);
-      const diasIG = rIG.ok ? await diasRestantesToken(process.env.INSTAGRAM_PAGE_TOKEN) : null;
-      chequeos.push(['instagram', rIG.ok, rIG.error || null, diasIG]);
-    }
-    if (process.env.MESSENGER_PAGE_TOKEN) {
-      const rFB = await probarConexionMeta(process.env.MESSENGER_PAGE_TOKEN);
-      const diasFB = rFB.ok ? await diasRestantesToken(process.env.MESSENGER_PAGE_TOKEN) : null;
-      chequeos.push(['messenger', rFB.ok, rFB.error || null, diasFB]);
+    const tokenFacebook = process.env.INSTAGRAM_PAGE_TOKEN || process.env.MESSENGER_PAGE_TOKEN;
+    if (tokenFacebook) {
+      const rFB = await probarConexionMeta(tokenFacebook);
+      const diasFB = rFB.ok ? await diasRestantesToken(tokenFacebook) : null;
+      chequeos.push(['facebook', rFB.ok, rFB.error || null, diasFB]);
     }
 
     for (const [conexion, conectado, error, infoExpiracion] of chequeos) {
@@ -7062,11 +7058,24 @@ app.get('/api/acrux/conversaciones/:contactoId', authMiddleware, async (req, res
 // si algo cambió de estado recientemente (se cayó o se recuperó), para poder mostrar
 // una advertencia visible en el panel sin que nadie tenga que revisarlo manualmente.
 // GET /api/estado-conexiones
+// Fuerza la revisión de conexiones AHORA MISMO, sin esperar el ciclo de 10 minutos —
+// útil justo después de reconectar algo, para confirmar de inmediato si ya sirvió.
+// POST /api/estado-conexiones/revisar-ahora
+app.post('/api/estado-conexiones/revisar-ahora', authMiddleware, async (req, res) => {
+  try {
+    await revisarConexionesYAvisarCambios();
+    res.json({ ok: true, mensaje: 'Revisado — consulta /api/estado-conexiones para ver el resultado actualizado' });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/estado-conexiones', authMiddleware, async (req, res) => {
   try {
+    // Se excluyen "instagram"/"messenger" como filas separadas — ya se unieron en una
+    // sola conexión "facebook", esos registros viejos quedan obsoletos.
+    await EstadoConexion.deleteMany({ tenant_id: req.user.tenant_id, conexion: { $in: ['instagram', 'messenger'] } }).catch(() => {});
     const estados = await EstadoConexion.find({ tenant_id: req.user.tenant_id }).lean();
     const haceUnaHora = new Date(Date.now() - 60 * 60 * 1000);
-    const nombres = { odoo: 'Odoo', mongodb: 'Base de datos (Mongo)', whatsapp_meta: 'WhatsApp', instagram: 'Instagram', messenger: 'Messenger' };
+    const nombres = { odoo: 'Odoo', mongodb: 'Base de datos (Mongo)', whatsapp_meta: 'WhatsApp', facebook: 'Facebook (Instagram + Messenger)' };
 
     const detalle = estados.map(e => ({
       conexion: nombres[e.conexion] || e.conexion,
