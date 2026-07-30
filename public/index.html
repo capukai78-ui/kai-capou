@@ -1509,12 +1509,9 @@ async function revisarBannerConexiones(){
 
     if(!r.todo_bien){
       const caidas = r.conexiones.filter(c=>!c.conectado).map(c=>c.conexion).join(', ');
-      const esMeta = r.conexiones.some(c=>!c.conectado && ['WhatsApp','Facebook (Instagram + Messenger)'].includes(c.conexion));
       banner.style.display='block';
       banner.style.background='#FDE4E4'; banner.style.color='#8B0000';
-      banner.innerHTML = `🔴 <b>Conexión caída:</b> ${caidas}` +
-        (esMeta ? ` — <a href="https://alba.capouilliez.edu.gt/web#action=621&model=facebook.pragtech.social.media&view_type=kanban&cids=1&menu_id=345" target="_blank" style="color:#8B0000;text-decoration:underline;font-weight:700">reconectar aquí</a>`
-                : ` — revisar Odoo directamente.`);
+      banner.innerHTML = `🔴 <b>Conexión caída:</b> ${caidas}`;
     } else if(r.hay_cambios_recientes){
       banner.style.display='block';
       banner.style.background='#E2EFDA'; banner.style.color='#1E5B2E';
@@ -1524,7 +1521,7 @@ async function revisarBannerConexiones(){
       const proximos = r.conexiones.filter(c=>c.proximo_a_vencer).map(c=>`${c.conexion} (${c.dias_restantes}d)`).join(', ');
       banner.style.display='block';
       banner.style.background='#FFF2CC'; banner.style.color='#7D5A00';
-      banner.innerHTML = `⚠️ <b>Vence pronto:</b> ${proximos} — <a href="https://alba.capouilliez.edu.gt/web#action=621&model=facebook.pragtech.social.media&view_type=kanban&cids=1&menu_id=345" target="_blank" style="color:#7D5A00;text-decoration:underline;font-weight:700">reconectar antes de que se caiga</a>`;
+      banner.innerHTML = `⚠️ <b>Vence pronto:</b> ${proximos}`;
     } else {
       banner.style.display='none';
     }
@@ -1535,8 +1532,6 @@ async function abrirEstadoConexiones(){
   try {
     const r = await fetch(API+'/api/estado-conexiones',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
     if(!r.ok){ showToast('No se pudo revisar el estado','error'); return; }
-    const LINK_RECONECTAR_FACEBOOK = 'https://alba.capouilliez.edu.gt/web#action=621&model=facebook.pragtech.social.media&view_type=kanban&cids=1&menu_id=345';
-    const hayMetaCaido = r.conexiones.some(c => ['WhatsApp','Facebook (Instagram + Messenger)'].includes(c.conexion) && !c.conectado);
     const filas = r.conexiones.map(c => `
       <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid var(--border)">
         <div style="font-weight:600;font-size:13px">${c.conexion}</div>
@@ -1552,11 +1547,6 @@ async function abrirEstadoConexiones(){
       <div style="background:var(--bg1);border-radius:14px;width:420px;max-width:90vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
         <div style="padding:16px 18px;border-bottom:1px solid var(--border);font-weight:700;font-size:14px">🔌 Estado de Conexiones</div>
         <div>${filas}</div>
-        ${hayMetaCaido ? `<div style="padding:12px 18px;background:#FDE4E4;border-top:1px solid #F5B7B1">
-          <div style="font-size:11px;color:#8B0000;font-weight:600;margin-bottom:6px">Para reconectar Facebook/Instagram/Messenger:</div>
-          <a href="${LINK_RECONECTAR_FACEBOOK}" target="_blank" style="font-size:11px;color:#1F4E78;font-weight:700;text-decoration:underline">Abrir Odoo — Pragtech Facebook Social Media →</a>
-          <div style="font-size:10px;color:var(--text3);margin-top:4px">Entra con la clave de marketing y dale "Reconectar" al usuario de Facebook.</div>
-        </div>` : ''}
         <div style="padding:12px 18px;font-size:10px;color:var(--text3)">Se revisa solo cada 10 minutos.</div>
       </div>
     </div>`;
