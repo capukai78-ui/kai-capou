@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-separar-instagram-messenger-de-nuevo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-usar-debug-token-en-vez-de-me'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -3725,16 +3725,24 @@ setInterval(actualizarSegmentosReactivacion, 24 * 60 * 60 * 1000);
 async function probarConexionMeta(token) {
   if (!token) return { ok: false, error: 'Token no configurado' };
   return new Promise((resolve) => {
+    // /debug_token revisa el token en sí (¿es válido?, ¿para qué app?, ¿qué permisos
+    // tiene?) sin necesitar que el token tenga permiso para llamar a /me — eso fue lo
+    // que causaba falsos "desconectado" con tokens que sí funcionan para mandar
+    // mensajes pero no tienen ese permiso específico.
     const req = https.request({
-      hostname: 'graph.facebook.com', path: `/v22.0/me?access_token=${token}`, method: 'GET'
+      hostname: 'graph.facebook.com',
+      path: `/v22.0/debug_token?input_token=${token}&access_token=${token}`,
+      method: 'GET'
     }, (res) => {
       let data = '';
       res.on('data', (c) => { data += c; });
       res.on('end', () => {
         try {
           const json = JSON.parse(data);
-          if (json.error) resolve({ ok: false, error: json.error.message });
-          else resolve({ ok: true });
+          if (json.error) return resolve({ ok: false, error: json.error.message });
+          if (json?.data?.is_valid === false) return resolve({ ok: false, error: json.data.error?.message || 'Token marcado como inválido por Meta' });
+          if (json?.data?.is_valid === true) return resolve({ ok: true });
+          resolve({ ok: false, error: 'Meta no devolvió un resultado claro' });
         } catch (e) { resolve({ ok: false, error: 'Respuesta inválida de Meta' }); }
       });
     });
