@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-distinguir-permiso-vs-token-invalido'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-diagnostico-token-seguro'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7088,6 +7088,32 @@ app.post('/api/estado-conexiones/revisar-ahora', authMiddleware, async (req, res
     await revisarConexionesYAvisarCambios();
     res.json({ ok: true, mensaje: 'Revisado — consulta /api/estado-conexiones para ver el resultado actualizado' });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Revisa CÓMO quedó guardado el token en Railway, sin revelar su valor real — solo su
+// longitud y si tiene espacios/saltos de línea de más al principio o al final, que es
+// la causa más común de "Cannot parse access token" cuando el token en sí se ve bien.
+// GET /api/debug/diagnostico-token?variable=INSTAGRAM_PAGE_TOKEN
+app.get('/api/debug/diagnostico-token', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  const nombreVar = req.query.variable;
+  const permitidas = ['INSTAGRAM_PAGE_TOKEN', 'MESSENGER_PAGE_TOKEN', 'WHATSAPP_TOKEN'];
+  if (!permitidas.includes(nombreVar)) return res.json({ ok: false, error: `Solo se permite: ${permitidas.join(', ')}` });
+
+  const valor = process.env[nombreVar];
+  if (!valor) return res.json({ ok: true, existe: false, mensaje: 'La variable no tiene ningún valor guardado (está vacía o no existe).' });
+
+  res.json({
+    ok: true,
+    existe: true,
+    longitud_total: valor.length,
+    tiene_espacio_al_inicio: valor[0] === ' ',
+    tiene_espacio_al_final: valor[valor.length - 1] === ' ',
+    tiene_salto_de_linea: /[\r\n]/.test(valor),
+    tiene_comillas: valor.includes('"') || valor.includes("'"),
+    primeros_5_caracteres: valor.substring(0, 5) + '...',
+    ultimos_5_caracteres: '...' + valor.substring(valor.length - 5)
+  });
 });
 
 app.get('/api/estado-conexiones', authMiddleware, async (req, res) => {
