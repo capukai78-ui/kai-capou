@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-alerta-preventiva-vencimiento'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-monitorear-mongodb-tambien'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -3785,6 +3785,10 @@ async function revisarConexionesYAvisarCambios() {
     try { await getOdooUID(); chequeos.push(['odoo', true, null, null]); }
     catch (e) { chequeos.push(['odoo', false, e.message, null]); }
 
+    // MongoDB (nuestra propia base de datos)
+    const mongoConectado = mongoose.connection.readyState === 1;
+    chequeos.push(['mongodb', mongoConectado, mongoConectado ? null : 'Sin conexión activa a la base de datos', null]);
+
     // Meta (un solo token cubre WhatsApp/Instagram/Messenger si comparten el mismo).
     // Además de si responde, se consulta cuántos días le quedan antes de vencer.
     const rWA = await probarConexionMeta(process.env.WHATSAPP_TOKEN);
@@ -7062,7 +7066,7 @@ app.get('/api/estado-conexiones', authMiddleware, async (req, res) => {
   try {
     const estados = await EstadoConexion.find({ tenant_id: req.user.tenant_id }).lean();
     const haceUnaHora = new Date(Date.now() - 60 * 60 * 1000);
-    const nombres = { odoo: 'Odoo', whatsapp_meta: 'WhatsApp', instagram: 'Instagram', messenger: 'Messenger' };
+    const nombres = { odoo: 'Odoo', mongodb: 'Base de datos (Mongo)', whatsapp_meta: 'WhatsApp', instagram: 'Instagram', messenger: 'Messenger' };
 
     const detalle = estados.map(e => ({
       conexion: nombres[e.conexion] || e.conexion,
