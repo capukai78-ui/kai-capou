@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-unir-instagram-messenger'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-solo-monitoreo-sin-reconectar'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7077,7 +7077,8 @@ app.get('/api/estado-conexiones', authMiddleware, async (req, res) => {
     const haceUnaHora = new Date(Date.now() - 60 * 60 * 1000);
     const nombres = { odoo: 'Odoo', mongodb: 'Base de datos (Mongo)', whatsapp_meta: 'WhatsApp', facebook: 'Facebook (Instagram + Messenger)' };
 
-    const detalle = estados.map(e => ({
+    let detalleCompleto = estados.map(e => ({
+      conexion_clave: e.conexion,
       conexion: nombres[e.conexion] || e.conexion,
       conectado: e.conectado,
       error: e.ultimo_error,
@@ -7088,6 +7089,13 @@ app.get('/api/estado-conexiones', authMiddleware, async (req, res) => {
       fecha_expira: e.fecha_expira || null,
       proximo_a_vencer: e.dias_restantes !== null && e.dias_restantes !== undefined && e.dias_restantes <= 7
     }));
+
+    // Solo el admin ve las 4 conexiones completas (Odoo, Mongo, WhatsApp, Facebook).
+    // El resto del equipo (vendedoras) solo ve Facebook — que es lo que les interesa
+    // para saber si están entrando leads de Instagram/Messenger.
+    const detalle = req.user.role === 'admin'
+      ? detalleCompleto
+      : detalleCompleto.filter(d => d.conexion_clave === 'facebook');
 
     res.json({
       ok: true,
