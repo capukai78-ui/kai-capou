@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-codificar-token-en-url'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-detectar-token-instagram-login'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -3724,6 +3724,34 @@ setInterval(actualizarSegmentosReactivacion, 24 * 60 * 60 * 1000);
 // recuperó), lo guarda como un cambio real — eso es lo que se muestra como advertencia.
 async function probarConexionMeta(token) {
   if (!token) return { ok: false, error: 'Token no configurado' };
+
+  // Los tokens que empiezan con "IG" son de la API nueva "Instagram con Instagram
+  // Login" (login directo, sin pasar por una página de Facebook) — esos se validan en
+  // un servidor distinto (graph.instagram.com), no en graph.facebook.com. Probar un
+  // token de este tipo contra el servidor equivocado siempre da "Cannot parse".
+  if (/^IG/i.test(token)) {
+    return new Promise((resolve) => {
+      const req = https.request({
+        hostname: 'graph.instagram.com',
+        path: `/me?fields=id,username&access_token=${encodeURIComponent(token)}`,
+        method: 'GET'
+      }, (res) => {
+        let data = '';
+        res.on('data', (c) => { data += c; });
+        res.on('end', () => {
+          try {
+            const json = JSON.parse(data);
+            if (json.error) return resolve({ ok: false, error: json.error.message });
+            resolve({ ok: true });
+          } catch (e) { resolve({ ok: false, error: 'Respuesta inválida de Instagram' }); }
+        });
+      });
+      req.on('error', (e) => resolve({ ok: false, error: e.message }));
+      req.setTimeout(6000, () => { req.destroy(); resolve({ ok: false, error: 'Tiempo de espera agotado' }); });
+      req.end();
+    });
+  }
+
   return new Promise((resolve) => {
     // /debug_token revisa el token en sí (¿es válido?, ¿para qué app?, ¿qué permisos
     // tiene?) sin necesitar que el token tenga permiso para llamar a /me — eso fue lo
@@ -3765,6 +3793,7 @@ async function probarConexionMeta(token) {
 // (/debug_token), pasando el mismo token para revisarse a sí mismo.
 async function diasRestantesToken(token) {
   if (!token) return null;
+  if (/^IG/i.test(token)) return null; // los tokens de Instagram Login no se consultan en graph.facebook.com
   return new Promise((resolve) => {
     const req = https.request({
       hostname: 'graph.facebook.com',
