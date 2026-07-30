@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-solo-monitoreo-sin-reconectar'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-separar-instagram-messenger-de-nuevo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -3789,17 +3789,23 @@ async function revisarConexionesYAvisarCambios() {
     const mongoConectado = mongoose.connection.readyState === 1;
     chequeos.push(['mongodb', mongoConectado, mongoConectado ? null : 'Sin conexión activa a la base de datos', null]);
 
-    // Meta — WhatsApp es un token aparte. Instagram y Messenger comparten el mismo token
-    // de la página de Facebook, así que se revisan juntos como una sola conexión.
+    // WhatsApp, Instagram y Messenger son tokens INDEPENDIENTES entre sí — se
+    // comprobó con un caso real que pueden fallar por separado (Messenger funcionando
+    // bien mientras Instagram estaba roto), así que cada uno se prueba por su cuenta,
+    // sin asumir que comparten nada.
     const rWA = await probarConexionMeta(process.env.WHATSAPP_TOKEN);
     const diasWA = rWA.ok ? await diasRestantesToken(process.env.WHATSAPP_TOKEN) : null;
     chequeos.push(['whatsapp_meta', rWA.ok, rWA.error || null, diasWA]);
 
-    const tokenFacebook = process.env.INSTAGRAM_PAGE_TOKEN || process.env.MESSENGER_PAGE_TOKEN;
-    if (tokenFacebook) {
-      const rFB = await probarConexionMeta(tokenFacebook);
-      const diasFB = rFB.ok ? await diasRestantesToken(tokenFacebook) : null;
-      chequeos.push(['facebook', rFB.ok, rFB.error || null, diasFB]);
+    if (process.env.INSTAGRAM_PAGE_TOKEN) {
+      const rIG = await probarConexionMeta(process.env.INSTAGRAM_PAGE_TOKEN);
+      const diasIG = rIG.ok ? await diasRestantesToken(process.env.INSTAGRAM_PAGE_TOKEN) : null;
+      chequeos.push(['instagram', rIG.ok, rIG.error || null, diasIG]);
+    }
+    if (process.env.MESSENGER_PAGE_TOKEN) {
+      const rFB = await probarConexionMeta(process.env.MESSENGER_PAGE_TOKEN);
+      const diasFB = rFB.ok ? await diasRestantesToken(process.env.MESSENGER_PAGE_TOKEN) : null;
+      chequeos.push(['messenger', rFB.ok, rFB.error || null, diasFB]);
     }
 
     for (const [conexion, conectado, error, infoExpiracion] of chequeos) {
@@ -7070,12 +7076,13 @@ app.post('/api/estado-conexiones/revisar-ahora', authMiddleware, async (req, res
 
 app.get('/api/estado-conexiones', authMiddleware, async (req, res) => {
   try {
-    // Se excluyen "instagram"/"messenger" como filas separadas — ya se unieron en una
-    // sola conexión "facebook", esos registros viejos quedan obsoletos.
-    await EstadoConexion.deleteMany({ tenant_id: req.user.tenant_id, conexion: { $in: ['instagram', 'messenger'] } }).catch(() => {});
+    // Se excluye el registro viejo "facebook" (cuando estaban unidos) — ya se
+    // confirmó con un caso real que Instagram y Messenger fallan por separado, así
+    // que se volvió a dividir en dos conexiones independientes.
+    await EstadoConexion.deleteMany({ tenant_id: req.user.tenant_id, conexion: 'facebook' }).catch(() => {});
     const estados = await EstadoConexion.find({ tenant_id: req.user.tenant_id }).lean();
     const haceUnaHora = new Date(Date.now() - 60 * 60 * 1000);
-    const nombres = { odoo: 'Odoo', mongodb: 'Base de datos (Mongo)', whatsapp_meta: 'WhatsApp', facebook: 'Facebook (Instagram + Messenger)' };
+    const nombres = { odoo: 'Odoo', mongodb: 'Base de datos (Mongo)', whatsapp_meta: 'WhatsApp', instagram: 'Instagram', messenger: 'Messenger' };
 
     let detalleCompleto = estados.map(e => ({
       conexion_clave: e.conexion,
@@ -7095,7 +7102,7 @@ app.get('/api/estado-conexiones', authMiddleware, async (req, res) => {
     // para saber si están entrando leads de Instagram/Messenger.
     const detalle = req.user.role === 'admin'
       ? detalleCompleto
-      : detalleCompleto.filter(d => d.conexion_clave === 'facebook');
+      : detalleCompleto.filter(d => ['instagram', 'messenger'].includes(d.conexion_clave));
 
     res.json({
       ok: true,
