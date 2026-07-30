@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-salud-del-sistema'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-alerta-preventiva-vencimiento'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -259,6 +259,23 @@ const usuarioPanelSchema = new mongoose.Schema({
 });
 
 // ===== MODELO CONVERSACIÓN — para handoff a humano =====
+// ===== ESTADO DE CONEXIONES =====
+// Guarda el último estado conocido de cada conexión (Odoo, tokens de Meta, Mongo) para
+// poder detectar CAMBIOS de estado (se cayó / se recuperó) y avisar a todo el equipo,
+// no solo al momento de revisar manualmente.
+const estadoConexionSchema = new mongoose.Schema({
+  tenant_id:      { type: mongoose.Schema.Types.ObjectId, ref: 'Tenant' },
+  conexion:       { type: String, required: true }, // 'odoo' | 'whatsapp_meta' | 'instagram' | 'messenger'
+  conectado:      { type: Boolean, required: true },
+  ultimo_cambio:  { type: Date, default: Date.now }, // cuándo cambió de estado por última vez
+  ultima_revision: { type: Date, default: Date.now },
+  ultimo_error:   { type: String, default: null },
+  dias_restantes: { type: Number, default: null }, // null = no aplica o no se pudo saber
+  fecha_expira:   { type: Date, default: null }
+});
+estadoConexionSchema.index({ tenant_id: 1, conexion: 1 }, { unique: true });
+const EstadoConexion = mongoose.model('EstadoConexion', estadoConexionSchema);
+
 const conversacionSchema = new mongoose.Schema({
   tenant_id:     { type: mongoose.Schema.Types.ObjectId, ref: 'Tenant' },
   numero:        { type: String, required: true },
@@ -3701,6 +3718,115 @@ setInterval(actualizarSegmentosReactivacion, 24 * 60 * 60 * 1000);
 
 // Respaldo automático diario de TODOS los mensajes de AcruxLab — para que nunca vuelva
 // a depender de que alguien lo corra a mano. No duplica lo que ya está guardado.
+// ===== REVISIÓN PERIÓDICA DE CONEXIONES =====
+// Prueba de verdad cada conexión (no solo "¿existe la variable?", sino "¿Meta/Odoo la
+// acepta ahora mismo?"), y si el estado cambió desde la última revisión (se cayó, o se
+// recuperó), lo guarda como un cambio real — eso es lo que se muestra como advertencia.
+async function probarConexionMeta(token) {
+  if (!token) return { ok: false, error: 'Token no configurado' };
+  return new Promise((resolve) => {
+    const req = https.request({
+      hostname: 'graph.facebook.com', path: `/v22.0/me?access_token=${token}`, method: 'GET'
+    }, (res) => {
+      let data = '';
+      res.on('data', (c) => { data += c; });
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(data);
+          if (json.error) resolve({ ok: false, error: json.error.message });
+          else resolve({ ok: true });
+        } catch (e) { resolve({ ok: false, error: 'Respuesta inválida de Meta' }); }
+      });
+    });
+    req.on('error', (e) => resolve({ ok: false, error: e.message }));
+    req.setTimeout(6000, () => { req.destroy(); resolve({ ok: false, error: 'Tiempo de espera agotado' }); });
+    req.end();
+  });
+}
+
+// Le pregunta a Meta directamente cuánto le queda de vida al token — así avisamos ANTES
+// de que se caiga, no solo después. Usa el propio endpoint de diagnóstico de Meta
+// (/debug_token), pasando el mismo token para revisarse a sí mismo.
+async function diasRestantesToken(token) {
+  if (!token) return null;
+  return new Promise((resolve) => {
+    const req = https.request({
+      hostname: 'graph.facebook.com',
+      path: `/v22.0/debug_token?input_token=${token}&access_token=${token}`,
+      method: 'GET'
+    }, (res) => {
+      let data = '';
+      res.on('data', (c) => { data += c; });
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(data);
+          const expiraEn = json?.data?.expires_at; // 0 = nunca vence, según Meta
+          if (expiraEn === 0) return resolve({ nunca_vence: true });
+          if (!expiraEn) return resolve(null);
+          const dias = Math.round((expiraEn * 1000 - Date.now()) / (1000 * 60 * 60 * 24));
+          resolve({ nunca_vence: false, dias_restantes: dias, fecha_expira: new Date(expiraEn * 1000).toISOString() });
+        } catch (e) { resolve(null); }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.setTimeout(6000, () => { req.destroy(); resolve(null); });
+    req.end();
+  });
+}
+
+async function revisarConexionesYAvisarCambios() {
+  try {
+    const tenant = await Tenant.findOne({ activo: true });
+    if (!tenant) return;
+
+    const chequeos = [];
+
+    // Odoo
+    try { await getOdooUID(); chequeos.push(['odoo', true, null, null]); }
+    catch (e) { chequeos.push(['odoo', false, e.message, null]); }
+
+    // Meta (un solo token cubre WhatsApp/Instagram/Messenger si comparten el mismo).
+    // Además de si responde, se consulta cuántos días le quedan antes de vencer.
+    const rWA = await probarConexionMeta(process.env.WHATSAPP_TOKEN);
+    const diasWA = rWA.ok ? await diasRestantesToken(process.env.WHATSAPP_TOKEN) : null;
+    chequeos.push(['whatsapp_meta', rWA.ok, rWA.error || null, diasWA]);
+
+    if (process.env.INSTAGRAM_PAGE_TOKEN) {
+      const rIG = await probarConexionMeta(process.env.INSTAGRAM_PAGE_TOKEN);
+      const diasIG = rIG.ok ? await diasRestantesToken(process.env.INSTAGRAM_PAGE_TOKEN) : null;
+      chequeos.push(['instagram', rIG.ok, rIG.error || null, diasIG]);
+    }
+    if (process.env.MESSENGER_PAGE_TOKEN) {
+      const rFB = await probarConexionMeta(process.env.MESSENGER_PAGE_TOKEN);
+      const diasFB = rFB.ok ? await diasRestantesToken(process.env.MESSENGER_PAGE_TOKEN) : null;
+      chequeos.push(['messenger', rFB.ok, rFB.error || null, diasFB]);
+    }
+
+    for (const [conexion, conectado, error, infoExpiracion] of chequeos) {
+      const anterior = await EstadoConexion.findOne({ tenant_id: tenant._id, conexion });
+      const cambioDeEstado = !anterior || anterior.conectado !== conectado;
+      const diasRestantes = infoExpiracion && !infoExpiracion.nunca_vence ? infoExpiracion.dias_restantes : null;
+      const fechaExpira = infoExpiracion && !infoExpiracion.nunca_vence ? infoExpiracion.fecha_expira : null;
+
+      await EstadoConexion.findOneAndUpdate(
+        { tenant_id: tenant._id, conexion },
+        { conectado, ultima_revision: new Date(), ultimo_error: error, dias_restantes: diasRestantes, fecha_expira: fechaExpira, ...(cambioDeEstado ? { ultimo_cambio: new Date() } : {}) },
+        { upsert: true }
+      );
+      if (cambioDeEstado) {
+        console.log(conectado
+          ? `✅ [Conexiones] "${conexion}" SE RECONECTÓ (antes estaba caída)`
+          : `🔴 [Conexiones] "${conexion}" SE DESCONECTÓ — ${error}`);
+      }
+      if (diasRestantes !== null && diasRestantes <= 7) {
+        console.log(`⚠️ [Conexiones] "${conexion}" vence en ${diasRestantes} día(s) — hay que reconectar pronto para no perder el servicio.`);
+      }
+    }
+  } catch (e) { console.error('❌ [Conexiones] Error revisando estado:', e.message); }
+}
+setInterval(revisarConexionesYAvisarCambios, 10 * 60 * 1000); // cada 10 minutos
+setTimeout(revisarConexionesYAvisarCambios, 15 * 1000); // primera revisión poco después de arrancar
+
 async function respaldoAutomaticoDiario() {
   try {
     const tenant = await Tenant.findOne({ activo: true });
@@ -6928,6 +7054,38 @@ app.get('/api/acrux/conversaciones/:contactoId', authMiddleware, async (req, res
 // últimas horas por cada canal — para saber rápido si algo está desconectado de verdad,
 // o si solo es la pausa haciendo lo que debe.
 // GET /api/debug/salud-del-sistema
+// Estado de conexiones — visible para TODO el equipo, no solo administradores. Muestra
+// si algo cambió de estado recientemente (se cayó o se recuperó), para poder mostrar
+// una advertencia visible en el panel sin que nadie tenga que revisarlo manualmente.
+// GET /api/estado-conexiones
+app.get('/api/estado-conexiones', authMiddleware, async (req, res) => {
+  try {
+    const estados = await EstadoConexion.find({ tenant_id: req.user.tenant_id }).lean();
+    const haceUnaHora = new Date(Date.now() - 60 * 60 * 1000);
+    const nombres = { odoo: 'Odoo', whatsapp_meta: 'WhatsApp', instagram: 'Instagram', messenger: 'Messenger' };
+
+    const detalle = estados.map(e => ({
+      conexion: nombres[e.conexion] || e.conexion,
+      conectado: e.conectado,
+      error: e.ultimo_error,
+      cambio_reciente: e.ultimo_cambio && new Date(e.ultimo_cambio) > haceUnaHora,
+      ultimo_cambio: e.ultimo_cambio,
+      ultima_revision: e.ultima_revision,
+      dias_restantes: e.dias_restantes ?? null,
+      fecha_expira: e.fecha_expira || null,
+      proximo_a_vencer: e.dias_restantes !== null && e.dias_restantes !== undefined && e.dias_restantes <= 7
+    }));
+
+    res.json({
+      ok: true,
+      todo_bien: detalle.every(d => d.conectado),
+      hay_cambios_recientes: detalle.some(d => d.cambio_reciente),
+      hay_proximos_a_vencer: detalle.some(d => d.proximo_a_vencer),
+      conexiones: detalle
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/debug/salud-del-sistema', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   const resultado = { ok: true, revisado_a_las: new Date().toISOString() };
