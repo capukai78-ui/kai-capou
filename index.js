@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-detectar-token-instagram-login'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-habilitar-escritura-social-en-acrux'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -2423,9 +2423,13 @@ function enviarMensajeInstagram(recipientId, texto) {
       recipient: { id: recipientId },
       message: { text: texto }
     });
+    // Los tokens de "Instagram con Instagram Login" (empiezan con "IG") viven en un
+    // servidor distinto al de Facebook — usar graph.facebook.com con ese tipo de token
+    // siempre falla con "Cannot parse access token", aunque el token sea válido.
+    const esTokenInstagramLogin = /^IG/i.test(TOKEN_PAGE || '');
     const req2 = https.request({
-      hostname: 'graph.facebook.com',
-      path: `/v22.0/me/messages?access_token=${TOKEN_PAGE}`,
+      hostname: esTokenInstagramLogin ? 'graph.instagram.com' : 'graph.facebook.com',
+      path: `/v22.0/me/messages?access_token=${encodeURIComponent(TOKEN_PAGE || '')}`,
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
     }, (r) => { const chunks=[]; r.on('data',c=>chunks.push(c)); r.on('end',()=>{ try{resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')))}catch(e){resolve(null)} }); });
@@ -2445,7 +2449,7 @@ function enviarMensajeMessenger(recipientId, texto) {
     });
     const req2 = https.request({
       hostname: 'graph.facebook.com',
-      path: `/v22.0/me/messages?access_token=${TOKEN_PAGE}`,
+      path: `/v22.0/me/messages?access_token=${encodeURIComponent(TOKEN_PAGE || '')}`,
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
     }, (r) => { const chunks=[]; r.on('data',c=>chunks.push(c)); r.on('end',()=>{ try{resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')))}catch(e){resolve(null)} }); });
@@ -3353,8 +3357,8 @@ function subirImagenAdjuntoMeta(imagenBase64, mimeType, tokenPagina) {
     const body = Buffer.concat(parts);
 
     const req2 = https.request({
-      hostname: 'graph.facebook.com',
-      path: `/v22.0/me/message_attachments?access_token=${tokenPagina}`,
+      hostname: /^IG/i.test(tokenPagina) ? 'graph.instagram.com' : 'graph.facebook.com',
+      path: `/v22.0/me/message_attachments?access_token=${encodeURIComponent(tokenPagina)}`,
       method: 'POST',
       headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}`, 'Content-Length': body.length }
     }, (r) => { const chunks=[]; r.on('data',c=>chunks.push(c)); r.on('end',()=>{ try{ resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')).attachment_id || null); }catch(e){ resolve(null); } }); });
@@ -3372,8 +3376,8 @@ function enviarImagenAdjuntoMeta(recipientId, attachmentId, tokenPagina, caption
       message: { attachment: { type: 'image', payload: { attachment_id: attachmentId } } }
     });
     const req2 = https.request({
-      hostname: 'graph.facebook.com',
-      path: `/v22.0/me/messages?access_token=${tokenPagina}`,
+      hostname: /^IG/i.test(tokenPagina) ? 'graph.instagram.com' : 'graph.facebook.com',
+      path: `/v22.0/me/messages?access_token=${encodeURIComponent(tokenPagina)}`,
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
     }, (r) => { const chunks=[]; r.on('data',c=>chunks.push(c)); r.on('end',()=>{
@@ -5325,7 +5329,7 @@ app.post('/api/lead-ads', async (req, res) => {
     const leadData = await new Promise((resolve) => {
       const req2 = https.request({
         hostname: 'graph.facebook.com',
-        path: `/v22.0/${leadgen_id}?access_token=${TOKEN_PAGE}`,
+        path: `/v22.0/${leadgen_id}?access_token=${encodeURIComponent(TOKEN_PAGE || '')}`,
         method: 'GET'
       }, (r) => { const chunks=[]; r.on('data',c=>chunks.push(c)); r.on('end',()=>{ try{resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')))}catch(e){resolve(null)} }); });
       req2.on('error', ()=>resolve(null)); req2.end();
