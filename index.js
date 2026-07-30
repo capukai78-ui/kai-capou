@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-usar-debug-token-en-vez-de-me'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-distinguir-permiso-vs-token-invalido'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -3739,7 +3739,15 @@ async function probarConexionMeta(token) {
       res.on('end', () => {
         try {
           const json = JSON.parse(data);
-          if (json.error) return resolve({ ok: false, error: json.error.message });
+          if (json.error) {
+            const msg = json.error.message || '';
+            // Si el error es de "falta permiso" (código 100 típico de páginas con alcance
+            // limitado), el token SÍ es real y válido — solo no alcanza para que Meta lo
+            // revise con este método. No se cuenta como desconectado.
+            const esSoloFaltaDePermiso = /missing permission|pages_read_engagement|reviewable feature/i.test(msg);
+            if (esSoloFaltaDePermiso) return resolve({ ok: true, nota: 'Token válido, pero con permisos limitados para autorevisión' });
+            return resolve({ ok: false, error: msg });
+          }
           if (json?.data?.is_valid === false) return resolve({ ok: false, error: json.data.error?.message || 'Token marcado como inválido por Meta' });
           if (json?.data?.is_valid === true) return resolve({ ok: true });
           resolve({ ok: false, error: 'Meta no devolvió un resultado claro' });
