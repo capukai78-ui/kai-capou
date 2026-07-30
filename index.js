@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-habilitar-escritura-social-en-acrux'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-numeros-prueba-sin-bloqueo-humano'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1256,6 +1256,10 @@ async function procesarNuevosMensajesAcruxLab() {
       const ultimoInbound = [...msgs].reverse().find(m => !m.from_me);
       if (!ultimoInbound) continue; // no hay mensaje nuevo del padre en esta ventana de tiempo
 
+      // Se extrae aquí (antes se hacía más abajo) porque ahora se necesita antes, para
+      // la excepción de números de prueba en el bloqueo de "agente humano".
+      const numero = extraerNumeroDeMsgid(ultimoInbound.msgid);
+
       // ¿Ya se respondió DESPUÉS de ese mensaje? (por KAI o por un humano)
       const yaRespondido = msgs.some(m => m.from_me && m.date_message > ultimoInbound.date_message);
       if (yaRespondido) continue;
@@ -1296,7 +1300,11 @@ async function procesarNuevosMensajesAcruxLab() {
       // ¿La conversación está TOMADA por un agente humano en el ChatRoom real de Odoo?
       // KAI no puede (ni debe) escribirle — la está atendiendo esa persona. Sincronizamos
       // nuestro registro a modo humano para reflejarlo en el panel y no reintentar.
-      const agenteHumanoEnOdoo = agentePorContacto[contactoId];
+      // EXCEPCIÓN: los números de prueba nunca se bloquean por esto — Odoo asigna el
+      // agente automáticamente con solo ABRIR la conversación (comportamiento propio de
+      // AcruxLab, no una decisión real de nadie), y eso frenaba las pruebas una y otra
+      // vez cada vez que alguien del equipo miraba el ChatRoom sin querer tomar nada.
+      const agenteHumanoEnOdoo = esNumeroDePrueba(numero) ? null : agentePorContacto[contactoId];
       if (agenteHumanoEnOdoo) {
         // Se guarda TAMBIÉN el nombre de quien la tomó. Sin eso quedaba "modo humano
         // sin agente": ni la vendedora sabía que era suya ni KAI podía atenderla.
@@ -1314,7 +1322,8 @@ async function procesarNuevosMensajesAcruxLab() {
       // a los 30 minutos, pero se eliminó a propósito: si una agente ya lo atendió, el
       // padre espera seguir hablando con ella, no que el bot se meta a media conversación.
       // El chat queda marcado como PENDIENTE en su bandeja para que sepa que debe contestar.
-      const asign = await AsignacionAcrux.findOne({ tenant_id: tenant._id, contacto_id: contactoId });
+      // Los números de prueba se saltan esto también, por la misma razón de arriba.
+      const asign = esNumeroDePrueba(numero) ? null : await AsignacionAcrux.findOne({ tenant_id: tenant._id, contacto_id: contactoId });
       if (asign?.modo === 'humano') {
         // Caso "tierra de nadie": está marcada como humana pero SIN agente asignado.
         // Así nadie la atiende: ni la vendedora (no sabe que es suya) ni KAI (cree que
@@ -1327,7 +1336,6 @@ async function procesarNuevosMensajesAcruxLab() {
         }
       }
 
-      const numero = extraerNumeroDeMsgid(ultimoInbound.msgid);
       if (!numero) continue; // sin número no podemos llevar memoria confiable — se deja para atención manual
 
       // ===== ¿ESTE PAPÁ YA ES DE ALGUIEN? =====
