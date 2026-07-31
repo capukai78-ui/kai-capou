@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-sincronizar-agente-ACTIVADO'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-reporte-cuantos-con-admin'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7198,6 +7198,51 @@ app.get('/api/estado-conexiones', authMiddleware, async (req, res) => {
       hay_cambios_recientes: detalle.some(d => d.cambio_reciente),
       hay_proximos_a_vencer: detalle.some(d => d.proximo_a_vencer),
       conexiones: detalle
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// ===== REPORTE: CUÁNTOS QUEDARON CON "ADMINISTRADOR" =====
+// De SOLO LECTURA. Cuenta, por separado: leads/Oportunidades en Odoo con el usuario de
+// servicio como vendedor, y conversaciones de AcruxLab con el usuario de servicio como
+// agente — para saber el tamaño real del problema y decidir si vale la pena limpiarlo.
+// GET /api/debug/cuantos-con-administrador
+app.get('/api/debug/cuantos-con-administrador', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    // 1) Leads/Oportunidades en Odoo cuyo vendedor es el usuario de servicio
+    const uidServicio = await getOdooUID();
+    const leadsConAdmin = await odooCallLocal('crm.lead', 'search_read',
+      [[['user_id', '=', uidServicio], ['active', '=', true]]],
+      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'stage_id', 'type', 'create_date'], limit: 500, context: { active_test: false } }
+    ).catch(() => []);
+
+    // 2) Conversaciones de AcruxLab cuyo agente es el usuario de servicio
+    const conversacionesConAdmin = await odooCallLocal('acrux.chat.conversation', 'search_read',
+      [[['agent_id', '=', uidServicio]]],
+      { fields: ['id', 'number', 'status', 'write_date'], limit: 500 }
+    ).catch(() => []);
+
+    res.json({
+      ok: true,
+      revisado_a_las: new Date().toISOString(),
+      total_leads_con_administrador: leadsConAdmin.length,
+      total_conversaciones_acrux_con_administrador: conversacionesConAdmin.length,
+      detalle_leads: leadsConAdmin.map(l => ({
+        lead_id: l.id,
+        link: `https://alba.capouilliez.edu.gt/web#id=${l.id}&model=crm.lead&view_type=form`,
+        nombre: l.partner_name || l.contact_name || l.name,
+        telefono: l.phone || null,
+        etapa: l.stage_id?.[1] || '',
+        tipo: l.type === 'opportunity' ? 'Oportunidad' : 'Lead',
+        creado: l.create_date
+      })),
+      detalle_conversaciones: conversacionesConAdmin.map(c => ({
+        contacto_id: c.id,
+        numero: c.number || null,
+        status: c.status,
+        ultima_actividad: c.write_date
+      }))
     });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
