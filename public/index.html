@@ -1976,6 +1976,7 @@ async function abrirAcruxChat(contactoId){
       const btnSoltarNormal = document.getElementById('acrux-btn-soltar');
       btnSoltarNormal.textContent = '🔓 Soltar';
       btnSoltarNormal.title = 'Úsalo si esta conversación se te pegó por accidente en Odoo (ej. al pasar el mouse) — la libera para que cualquier vendedora la pueda ver y tomar de nuevo';
+      btnSoltarNormal.setAttribute('onclick', 'liberarAcruxLab()');
       if(hilo.modo === 'humano'){
         modoEl.textContent = '👤 ' + (hilo.agente_asignado || 'Humano');
         modoEl.style.background = 'var(--g3)'; modoEl.style.color = 'var(--g)';
@@ -2125,7 +2126,7 @@ async function liberarAcruxLab(){
       headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'},
       body: JSON.stringify({ contacto_id: _acruxContactoActivo })
     }).then(r=>r.json());
-    if(r.ok){ showToast(r.mensaje||'Liberado ✓','ok'); abrirAcruxChat(_acruxContactoActivo); }
+    if(r.ok){ showToast(r.mensaje||'Liberado ✓','ok'); abrirAcruxChat(_acruxContactoActivo); loadAcruxLista(); }
     else { showToast(r.error||'No se pudo liberar','error'); }
   } catch(e){ showToast('Error de conexión','error'); }
 }
