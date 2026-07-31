@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-diagnostico-boton-y-limite-14-dias'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-sincronizar-agente-ACTIVADO'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1166,7 +1166,7 @@ const ACRUX_AUTO_RESPUESTA_ACTIVO = true; // Activado para prueba de fin de sema
 // REVERTIDO el 24/07 a solicitud explícita — el usuario quiere probar con 1 solo chat
 // primero, y sacar el reporte completo de atendidos antes de activar esto para todos.
 // NO cambiar a true sin confirmación directa.
-const SINCRONIZAR_AGENTE_EN_ODOO_ACTIVO = false;
+const SINCRONIZAR_AGENTE_EN_ODOO_ACTIVO = true; // Activado 31/07/2026 con confirmación explícita — antes quedaba "Administrador" en Odoo hasta corrección manual
 const VENTANA_MOTOR_ACRUX_HORAS = 48; // cuánto hacia atrás revisa el motor buscando mensajes sin responder
 
 // Motor que revisa cada cierto tiempo si hay mensajes nuevos sin responder en AcruxLab,
