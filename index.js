@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-numeros-prueba-sin-bloqueo-humano'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-filtro-leads-mas-estricto-y-refrescar-lista'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -6944,12 +6944,15 @@ function esLeadRealSocial(texto) {
   const t = (texto || '').trim();
   if (!t) return false;
   const tieneEmail = /@/.test(t);
-  const tieneNivel = /preprimaria|primaria|secundaria|bachillerato|kinder|kínder|párvulos|parvulos|jardín|jardin|infantil|preparatoria|grado|matr[ií]cula|inscripci[oó]n|admisi[oó]n|mensualidad|colegiatura|cuota|precio|informaci[oó]n/i.test(t);
-  const tieneTelefono = /\d{8,}/.test(t.replace(/\D/g, '').length >= 8 ? t.replace(/\D/g, '') : '');
-  // Si al quitar emojis y espacios casi no queda nada (solo un emoji, "🔥", "😍"), es reacción.
-  const soloEmojiOMuyCorto = t.replace(/[\p{Emoji}\s]/gu, '').length < 8;
-  const suficientesPalabras = t.split(/\s+/).filter(Boolean).length >= 4;
-  return tieneEmail || tieneNivel || tieneTelefono || (!soloEmojiOMuyCorto && suficientesPalabras);
+  const tieneNivel = /preprimaria|primaria|secundaria|bachillerato|kinder|kínder|párvulos|parvulos|jardín|jardin|infantil|preparatoria|grado|matr[ií]cula|inscripci[oó]n|admisi[oó]n|mensualidad|colegiatura|cuota|precio|informaci[oó]n del colegio|informaci[oó]n sobre|m[aá]s informaci[oó]n/i.test(t);
+  const soloDigitos = t.replace(/\D/g, '');
+  // Un número suelto (sin nada de contexto educativo alrededor) YA NO cuenta por sí solo
+  // como lead — muchos "47106931" son solo reacciones o números mal enviados, no
+  // interés real. Un teléfono real cuenta solo si además hay indicio de admisiones.
+  const tieneTelefonoConContexto = soloDigitos.length >= 8 && (tieneNivel || tieneEmail);
+  // Ya no basta con "4+ palabras" — eso dejaba pasar spam de negocios ajenos
+  // (carpintería, publicidad, avisos de cuenta). Ahora se exige señal educativa real.
+  return tieneEmail || tieneNivel || tieneTelefonoConContexto;
 }
 
 // ===== FUSIÓN CON INSTAGRAM / MESSENGER =====
