@@ -2106,20 +2106,26 @@ async function tomarSeguimientoAcrux(){
 // Odoo y con solo pasar el mouse, quedó asignada a su usuario). La deja libre para que
 // cualquier vendedora la vea y la tome de nuevo con normalidad.
 async function liberarAcruxLab(){
-  if(!_acruxContactoActivo) return;
+  console.log('[DIAG] liberarAcruxLab llamada. _acruxContactoActivo =', _acruxContactoActivo);
+  if(!_acruxContactoActivo){ console.log('[DIAG] Se detuvo: _acruxContactoActivo es falsy'); return; }
   if(String(_acruxContactoActivo).startsWith('social_')){
+    console.log('[DIAG] Entró a la rama SOCIAL');
     const idReal = String(_acruxContactoActivo).replace('social_','');
+    console.log('[DIAG] idReal =', idReal, '| API =', API, '| TOKEN presente:', !!TOKEN);
     try {
+      console.log('[DIAG] Antes del fetch...');
       const r = await fetch(API+'/api/acrux/marcar-revisado-social',{
         method:'POST',
         headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'},
         body: JSON.stringify({ conversacion_id: idReal })
       }).then(r=>r.json());
+      console.log('[DIAG] Respuesta del servidor:', r);
       if(r.ok){ showToast(r.mensaje||'Marcado ✓','ok'); loadAcruxLista(); }
       else { showToast(r.error||'No se pudo marcar','error'); }
-    } catch(e){ showToast('Error de conexión','error'); }
+    } catch(e){ console.log('[DIAG] ERROR atrapado:', e); showToast('Error de conexión','error'); }
     return;
   }
+  console.log('[DIAG] Entró a la rama NORMAL (AcruxLab)');
   try {
     const r = await fetch(API+'/api/acrux/liberar',{
       method:'POST',
@@ -2128,7 +2134,7 @@ async function liberarAcruxLab(){
     }).then(r=>r.json());
     if(r.ok){ showToast(r.mensaje||'Liberado ✓','ok'); abrirAcruxChat(_acruxContactoActivo); loadAcruxLista(); }
     else { showToast(r.error||'No se pudo liberar','error'); }
-  } catch(e){ showToast('Error de conexión','error'); }
+  } catch(e){ console.log('[DIAG] ERROR atrapado (rama normal):', e); showToast('Error de conexión','error'); }
 }
 
 async function togglePlantillasAcrux(){
