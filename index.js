@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-filtro-leads-mas-estricto-y-refrescar-lista'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-diagnostico-boton-y-limite-14-dias'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -6963,9 +6963,11 @@ function esLeadRealSocial(texto) {
     // El contacto_id de estos se marca con el prefijo "social_" (usando el _id de Mongo)
     // para que el frontend sepa distinguirlos al abrir el chat.
     try {
+      const hace14Dias = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
       const socialConvs = await Conversacion.find({
         tenant_id: req.user.tenant_id,
-        canal: { $in: ['instagram', 'messenger'] }
+        canal: { $in: ['instagram', 'messenger'] },
+        ultimaActividad: { $gte: hace14Dias }
       }).sort({ ultimaActividad: -1 }).limit(200).lean();
 
       const socialMapeadas = socialConvs.map(c => {
