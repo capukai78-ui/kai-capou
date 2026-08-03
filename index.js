@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-reporte-cuantos-con-admin'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-verificar-duplicados-recientes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7207,6 +7207,50 @@ app.get('/api/estado-conexiones', authMiddleware, async (req, res) => {
 // servicio como vendedor, y conversaciones de AcruxLab con el usuario de servicio como
 // agente — para saber el tamaño real del problema y decidir si vale la pena limpiarlo.
 // GET /api/debug/cuantos-con-administrador
+// ===== VERIFICACIÓN: ¿SE SIGUEN CREANDO DUPLICADOS? =====
+// De SOLO LECTURA. Revisa los leads creados DESPUÉS de la hora que le indiques (por
+// default, desde que se aplicó la corrección de duplicados hoy) y busca si dos o más
+// comparten el mismo teléfono (comparando solo los últimos 8 dígitos, sin importar
+// formato) — eso confirmaría si la corrección de hoy está funcionando de verdad.
+// GET /api/debug/verificar-duplicados-recientes?desde=2026-07-31T00:00:00
+app.get('/api/debug/verificar-duplicados-recientes', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const desde = req.query.desde || '2026-07-31 00:00:00';
+    const leads = await odooCallLocal('crm.lead', 'search_read',
+      [[['create_date', '>=', desde]]],
+      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'mobile', 'user_id', 'create_date'], limit: 1000, context: { active_test: false } }
+    ) || [];
+
+    const porTelefono = {};
+    for (const l of leads) {
+      const tel = String(l.phone || l.mobile || '').replace(/\D/g, '');
+      if (tel.length < 8) continue;
+      const clave = tel.slice(-8);
+      if (!porTelefono[clave]) porTelefono[clave] = [];
+      porTelefono[clave].push({
+        lead_id: l.id,
+        link: `https://alba.capouilliez.edu.gt/web#id=${l.id}&model=crm.lead&view_type=form`,
+        nombre: l.partner_name || l.contact_name || l.name,
+        telefono_guardado: l.phone || l.mobile,
+        vendedor: l.user_id?.[1] || 'Sin asignar',
+        creado: l.create_date
+      });
+    }
+
+    const duplicadosReales = Object.entries(porTelefono).filter(([_, arr]) => arr.length > 1);
+
+    res.json({
+      ok: true,
+      desde,
+      total_leads_revisados: leads.length,
+      total_numeros_unicos: Object.keys(porTelefono).length,
+      total_casos_con_duplicado: duplicadosReales.length,
+      duplicados: duplicadosReales.map(([tel, arr]) => ({ ultimos_8_digitos: tel, cuantas_veces: arr.length, casos: arr }))
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/debug/cuantos-con-administrador', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
