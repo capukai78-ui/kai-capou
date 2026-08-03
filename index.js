@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-verificar-duplicados-recientes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-formato-telefono-estandar'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1577,6 +1577,21 @@ async function obtenerOCrearConversacionAcrux(numero, nombre) {
 // texto literal, así que un espacio de más rompe la búsqueda por completo — eso fue lo
 // que pasó con Nery Mejía: su Oportunidad estaba como "+502 4214 0856" y la búsqueda con
 // el número limpio "42140856" nunca la encontró, así que KAI creó un lead de más.
+// Convierte cualquier formato de teléfono guatemalteco al estándar pedido:
+// "+502 xxxx xxxx" (con espacio a la mitad de los 8 dígitos). Si no se puede
+// reconocer como un número guatemalteco válido (8 dígitos), se devuelve tal cual
+// venía, para no perder el dato original en casos raros (extranjeros, etc.)
+function formatearTelefonoEstandar(telefono) {
+  if (!telefono) return telefono;
+  const soloDigitos = String(telefono).replace(/\D/g, '');
+  // Quita el 502 del principio si viene incluido, para quedarnos con los 8 dígitos reales
+  const ocho = soloDigitos.length === 11 && soloDigitos.startsWith('502') ? soloDigitos.slice(3)
+             : soloDigitos.length === 8 ? soloDigitos
+             : null;
+  if (!ocho) return telefono; // no se reconoce como número guatemalteco de 8 dígitos — se deja igual
+  return `+502 ${ocho.slice(0, 4)} ${ocho.slice(4)}`;
+}
+
 function condicionesTelefono(telefono, campos = ['phone', 'mobile']) {
   const soloDigitos = String(telefono || '').replace(/\D/g, '');
   const ultimos8 = soloDigitos.slice(-8);
@@ -2358,7 +2373,7 @@ async function crearCandidatoEnOdoo(tenant, contacto, numero, resultadoNivel) {
 
     const leadId = await odooCallLocal('crm.lead', 'create', [{
       name: nombreLead,
-      phone: numero,
+      phone: formatearTelefonoEstandar(numero),
       partner_name: contacto.nombre || null,
       email_from: contacto.correo || null,
       description: descripcion,
@@ -2538,7 +2553,7 @@ async function procesarMensajeOmnichannel(numero, nombre, mensaje, canal, tenant
 
       const leadId = await odooCallLocal('crm.lead', 'create', [{
         name: `Lead KAI — ${nombre || 'Sin nombre'} (${etiquetaCanal})`,
-        phone: telParaBuscar,
+        phone: formatearTelefonoEstandar(telParaBuscar),
         partner_name: nombre || null,
         description: `Canal de origen: ${canal}\nCapturado automáticamente por KAI.`,
         team_id: teamId,
@@ -5390,7 +5405,7 @@ app.post('/api/lead-ads', async (req, res) => {
         const agenteNuevo = await asignarAgenteLibre(tenant._id); // nunca se deja sin vendedor explícito
         const leadId = await odooCallLocal('crm.lead', 'create', [{
           name: `Lead Ads — ${nombre}`,
-          phone: telefono || null,
+          phone: formatearTelefonoEstandar(telefono) || null,
           email_from: correo || null,
           partner_name: nombre,
           description: `Formulario de Lead Ad completado.\nNivel de interés: ${nivel || 'No especificado'}\nCapturado automáticamente por KAI.`,
@@ -5449,7 +5464,7 @@ app.post('/api/lead-web', async (req, res) => {
         const agenteNuevo = await asignarAgenteLibre(tenant._id); // nunca se deja sin vendedor explícito
         const leadId = await odooCallLocal('crm.lead', 'create', [{
           name: `Formulario Web — ${nombre || correo || telefono}`,
-          phone: telefono || null,
+          phone: formatearTelefonoEstandar(telefono) || null,
           email_from: correo || null,
           partner_name: nombre || null,
           description: `Formulario web completado.\n${mensaje ? 'Mensaje: ' + mensaje : ''}\nNivel de interés: ${nivel_interes || 'No especificado'}\nCapturado automáticamente por KAI.`,
@@ -7213,13 +7228,113 @@ app.get('/api/estado-conexiones', authMiddleware, async (req, res) => {
 // comparten el mismo teléfono (comparando solo los últimos 8 dígitos, sin importar
 // formato) — eso confirmaría si la corrección de hoy está funcionando de verdad.
 // GET /api/debug/verificar-duplicados-recientes?desde=2026-07-31T00:00:00
+// ===== FUSIONAR DUPLICADOS REALES =====
+// Dado un teléfono, encuentra los leads activos duplicados y archiva todos menos el
+// "mejor" (el que tenga vendedor real asignado; si ninguno, el más antiguo — para no
+// perder el primer contacto real). Deja nota en ambos explicando qué pasó.
+// Por defecto es VISTA PREVIA — agrega &aplicar=1 para ejecutar de verdad.
+// GET /api/debug/fusionar-duplicado?telefono=50257643478[&aplicar=1]
+// ===== REPORTE: EN QUÉ FORMATO QUEDÓ GUARDADO EL TELÉFONO =====
+// De SOLO LECTURA. Revisa todos los leads que Kai ha creado (identificados por el
+// nombre "Lead KAI —" o etiquetas de canal propias) y agrupa por formato de teléfono
+// guardado — para ver qué tan inconsistente está antes de estandarizar hacia adelante.
+// GET /api/debug/formatos-telefono-kai
+app.get('/api/debug/formatos-telefono-kai', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const leads = await odooCallLocal('crm.lead', 'search_read',
+      [['|', '|', ['name', 'ilike', 'Lead KAI'], ['name', 'ilike', 'Lead Ads'], ['name', 'ilike', 'Formulario Web']]],
+      { fields: ['id', 'name', 'phone', 'create_date'], limit: 2000, context: { active_test: false } }
+    ) || [];
+
+    const clasificar = (tel) => {
+      if (!tel) return 'sin_telefono';
+      const t = String(tel).trim();
+      if (/^\+502 \d{4} \d{4}$/.test(t)) return 'CORRECTO: +502 xxxx xxxx';
+      if (/^\+502\d{8}$/.test(t)) return 'sin espacios: +502xxxxxxxx';
+      if (/^502\d{8}$/.test(t)) return 'sin +: 502xxxxxxxx';
+      if (/^\d{8}$/.test(t)) return 'solo 8 dígitos: xxxxxxxx';
+      if (/^\+502-\d{4}-\d{4}$/.test(t)) return 'con guiones: +502-xxxx-xxxx';
+      return 'otro formato raro';
+    };
+
+    const porFormato = {};
+    for (const l of leads) {
+      const cat = clasificar(l.phone);
+      if (!porFormato[cat]) porFormato[cat] = [];
+      porFormato[cat].push({ lead_id: l.id, nombre: l.name, telefono_guardado: l.phone, creado: l.create_date });
+    }
+
+    res.json({
+      ok: true,
+      total_leads_de_kai: leads.length,
+      resumen: Object.entries(porFormato).map(([formato, arr]) => ({ formato, cantidad: arr.length })).sort((a,b)=>b.cantidad-a.cantidad),
+      detalle_por_formato: porFormato
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+app.get('/api/debug/fusionar-duplicado', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const telefono = String(req.query.telefono || '').replace(/\D/g, '').slice(-8);
+    if (!telefono || telefono.length < 8) return res.json({ ok: false, error: 'Falta ?telefono= válido (mínimo 8 dígitos)' });
+    const aplicar = req.query.aplicar === '1';
+
+    const condiciones = condicionesTelefono(telefono);
+    const dominio = [['active', '=', true]];
+    for (let i = 0; i < condiciones.length - 1; i++) dominio.push('|');
+    condiciones.forEach(c => dominio.push(c));
+
+    const candidatos = await odooCallLocal('crm.lead', 'search_read',
+      [dominio],
+      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'mobile', 'user_id', 'stage_id', 'type', 'create_date'], order: 'create_date asc' }
+    ) || [];
+
+    if (candidatos.length < 2) {
+      return res.json({ ok: true, mensaje: `Solo se encontró ${candidatos.length} lead activo con ese teléfono — no hay nada que fusionar.`, candidatos });
+    }
+
+    // El "ganador": el que tenga vendedor real (no Administrador, no vacío). Si más de
+    // uno califica, o ninguno, gana el más antiguo (primer contacto real).
+    const conVendedorReal = candidatos.filter(c => c.user_id && c.user_id[1] !== 'Administrador');
+    const ganador = conVendedorReal[0] || candidatos[0];
+    const perdedores = candidatos.filter(c => c.id !== ganador.id);
+
+    if (!aplicar) {
+      return res.json({
+        ok: true,
+        modo: 'VISTA PREVIA — agrega &aplicar=1 para archivar de verdad',
+        se_mantendria: { id: ganador.id, nombre: ganador.partner_name || ganador.contact_name || ganador.name, vendedor: ganador.user_id?.[1] || 'Sin asignar', creado: ganador.create_date },
+        se_archivarian: perdedores.map(p => ({ id: p.id, nombre: p.partner_name || p.contact_name || p.name, vendedor: p.user_id?.[1] || 'Sin asignar', creado: p.create_date }))
+      });
+    }
+
+    for (const perdedor of perdedores) {
+      await odooCallLocal('crm.lead', 'write', [[perdedor.id], { active: false }]);
+      await odooCallLocal('crm.lead', 'message_post', [[perdedor.id]], {
+        body: `♻️ <b>Archivado por ser duplicado</b> — el contacto real de este teléfono se mantiene en el lead #${ganador.id}. Detectado y fusionado automáticamente.`
+      }).catch(() => {});
+    }
+    await odooCallLocal('crm.lead', 'message_post', [[ganador.id]], {
+      body: `♻️ Se archivaron ${perdedores.length} lead(s) duplicado(s) del mismo teléfono: ${perdedores.map(p => '#' + p.id).join(', ')}. Este quedó como el principal.`
+    }).catch(() => {});
+
+    res.json({
+      ok: true,
+      se_mantuvo: { id: ganador.id, nombre: ganador.partner_name || ganador.contact_name || ganador.name },
+      se_archivaron: perdedores.map(p => p.id)
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/debug/verificar-duplicados-recientes', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
     const desde = req.query.desde || '2026-07-31 00:00:00';
     const leads = await odooCallLocal('crm.lead', 'search_read',
       [[['create_date', '>=', desde]]],
-      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'mobile', 'user_id', 'create_date'], limit: 1000, context: { active_test: false } }
+      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'mobile', 'user_id', 'create_date', 'active'], limit: 1000, context: { active_test: false } }
     ) || [];
 
     const porTelefono = {};
@@ -7234,19 +7349,23 @@ app.get('/api/debug/verificar-duplicados-recientes', authMiddleware, async (req,
         nombre: l.partner_name || l.contact_name || l.name,
         telefono_guardado: l.phone || l.mobile,
         vendedor: l.user_id?.[1] || 'Sin asignar',
+        activo: l.active,
         creado: l.create_date
       });
     }
 
-    const duplicadosReales = Object.entries(porTelefono).filter(([_, arr]) => arr.length > 1);
+    // Un duplicado REAL requiere que 2 o más sigan ACTIVOS al mismo tiempo — si uno ya
+    // se archivó (alguien o algo ya lo resolvió), no cuenta como problema pendiente.
+    const duplicadosReales = Object.entries(porTelefono).filter(([_, arr]) => arr.filter(x => x.activo).length > 1);
 
     res.json({
       ok: true,
       desde,
       total_leads_revisados: leads.length,
       total_numeros_unicos: Object.keys(porTelefono).length,
-      total_casos_con_duplicado: duplicadosReales.length,
-      duplicados: duplicadosReales.map(([tel, arr]) => ({ ultimos_8_digitos: tel, cuantas_veces: arr.length, casos: arr }))
+      total_casos_con_duplicado_YA_RESUELTO_archivado: Object.entries(porTelefono).filter(([_, arr]) => arr.length > 1 && arr.filter(x => x.activo).length <= 1).length,
+      total_casos_con_duplicado_ACTIVO_pendiente: duplicadosReales.length,
+      duplicados_pendientes: duplicadosReales.map(([tel, arr]) => ({ ultimos_8_digitos: tel, cuantas_veces: arr.length, casos: arr }))
     });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
@@ -10349,7 +10468,7 @@ app.post('/api/motor/procesar-social-calientes', authMiddleware, async (req, res
           name: `Lead ${item.canal === 'instagram' ? 'Instagram' : 'Messenger'} — ${nombre}`,
           contact_name: nombre,
           partner_name: nombre,
-          phone: tel || undefined,
+          phone: formatearTelefonoEstandar(tel) || undefined,
           email_from: item.correo_detectado || undefined,
           description: `Origen: ${item.canal}\nMensaje recibido: ${item.mensaje || ''}\nClasificado por KAI como CALIENTE: ${item.motivo || ''}`,
           type: 'lead',
