@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-formato-telefono-ya-existente'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-corregir-campo-mobile-tambien'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7254,20 +7254,31 @@ app.get('/api/debug/corregir-formato-telefono', authMiddleware, async (req, res)
     if (!ids.length) return res.json({ ok: false, error: 'Falta ?lead_ids=40611,40612,...' });
     const aplicar = req.query.aplicar === '1';
 
-    const leads = await odooCallLocal('crm.lead', 'read', [ids, ['id', 'name', 'phone']]);
-    const cambios = leads.map(l => ({
-      lead_id: l.id,
-      nombre: l.name,
-      antes: l.phone,
-      despues: formatearTelefonoEstandar(l.phone)
-    })).filter(c => c.antes !== c.despues);
+    const leads = await odooCallLocal('crm.lead', 'read', [ids, ['id', 'name', 'phone', 'mobile']]);
+    const cambios = [];
+    for (const l of leads) {
+      const cambio = { lead_id: l.id, nombre: l.name };
+      let hayCambio = false;
+      if (l.phone && String(l.phone) !== 'false') {
+        const nuevo = formatearTelefonoEstandar(l.phone);
+        if (nuevo !== l.phone) { cambio.phone_antes = l.phone; cambio.phone_despues = nuevo; hayCambio = true; }
+      }
+      if (l.mobile && String(l.mobile) !== 'false') {
+        const nuevo = formatearTelefonoEstandar(l.mobile);
+        if (nuevo !== l.mobile) { cambio.mobile_antes = l.mobile; cambio.mobile_despues = nuevo; hayCambio = true; }
+      }
+      if (hayCambio) cambios.push(cambio);
+    }
 
     if (!aplicar) {
       return res.json({ ok: true, modo: 'VISTA PREVIA — agrega &aplicar=1 para aplicar de verdad', cambios });
     }
 
     for (const c of cambios) {
-      await odooCallLocal('crm.lead', 'write', [[c.lead_id], { phone: c.despues }]);
+      const escritura = {};
+      if (c.phone_despues) escritura.phone = c.phone_despues;
+      if (c.mobile_despues) escritura.mobile = c.mobile_despues;
+      await odooCallLocal('crm.lead', 'write', [[c.lead_id], escritura]);
     }
     res.json({ ok: true, corregidos: cambios.length, cambios });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
@@ -9806,16 +9817,23 @@ app.post('/api/motor/formulario/grabar/:leadId', authMiddleware, async (req, res
     const actualizacion = {};
     if (d.nombre_padre) { actualizacion.contact_name = d.nombre_padre; actualizacion.partner_name = d.nombre_padre; }
     if (d.telefono) {
-      actualizacion.phone = formatearTelefonoEstandar(d.telefono);
+      // Si el dato ya vivía en "mobile" (el caso más común en estos formularios),
+      // se corrige ahí — no en "phone", porque la vista de leads y el resto del
+      // sistema priorizan "mobile" primero, y escribir en el campo equivocado
+      // dejaba el número viejo visible aunque "phone" ya estuviera bien.
+      const campoDestino = (lead.mobile && String(lead.mobile) !== 'false') ? 'mobile' : 'phone';
+      actualizacion[campoDestino] = formatearTelefonoEstandar(d.telefono);
     } else {
       // La IA no encontró un teléfono nuevo en el texto — pero si Odoo ya había puesto
       // uno al crear el lead (antes de que Kai lo tocara), igual hay que dejarlo en el
-      // formato estándar, no solo cuando la IA lo "descubre" de cero.
-      const telefonoYaPuesto = (lead.mobile && String(lead.mobile) !== 'false') ? lead.mobile
-                              : (lead.phone && String(lead.phone) !== 'false') ? lead.phone : null;
-      if (telefonoYaPuesto) {
-        const reformateado = formatearTelefonoEstandar(telefonoYaPuesto);
-        if (reformateado !== telefonoYaPuesto) actualizacion.phone = reformateado;
+      // formato estándar, no solo cuando la IA lo "descubre" de cero. Se corrige en el
+      // MISMO campo donde ya estaba (mobile o phone), no siempre en "phone".
+      const campoConDato = (lead.mobile && String(lead.mobile) !== 'false') ? 'mobile'
+                          : (lead.phone && String(lead.phone) !== 'false') ? 'phone' : null;
+      if (campoConDato) {
+        const valorActual = lead[campoConDato];
+        const reformateado = formatearTelefonoEstandar(valorActual);
+        if (reformateado !== valorActual) actualizacion[campoConDato] = reformateado;
       }
     }
     if (d.correo) actualizacion.email_from = d.correo;
