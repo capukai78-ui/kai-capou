@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-formato-telefono-estandar'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-formato-telefono-formulario-correo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1732,9 +1732,9 @@ async function contactarLeadPorAcruxLab(tenant, lead) {
           return { ok: false, motivo: 'no_es_admision', tema: datosDelCorreo.tema };
         }
         if (datosDelCorreo.telefono) {
-          telFinal = datosDelCorreo.telefono;
+          telFinal = formatearTelefonoEstandar(datosDelCorreo.telefono);
           // Guardarlo en Odoo, para que el equipo también lo vea en la ficha del lead
-          const actualiza = { phone: datosDelCorreo.telefono };
+          const actualiza = { phone: telFinal };
           if (datosDelCorreo.nombre_padre) { actualiza.contact_name = datosDelCorreo.nombre_padre; actualiza.partner_name = datosDelCorreo.nombre_padre; }
           if (datosDelCorreo.correo) actualiza.email_from = datosDelCorreo.correo;
           await odooCallLocal('crm.lead', 'write', [[lead.id], actualiza]).catch(() => {});
@@ -9771,7 +9771,7 @@ app.post('/api/motor/formulario/grabar/:leadId', authMiddleware, async (req, res
 
     const actualizacion = {};
     if (d.nombre_padre) { actualizacion.contact_name = d.nombre_padre; actualizacion.partner_name = d.nombre_padre; }
-    if (d.telefono) actualizacion.phone = d.telefono;
+    if (d.telefono) actualizacion.phone = formatearTelefonoEstandar(d.telefono);
     if (d.correo) actualizacion.email_from = d.correo;
     if (d.nombre_padre) actualizacion.name = `Formulario Admisiones — ${d.nombre_padre}`;
 
