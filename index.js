@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-corregir-campo-mobile-tambien'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-diagnostico-corregir-formato'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7255,6 +7255,7 @@ app.get('/api/debug/corregir-formato-telefono', authMiddleware, async (req, res)
     const aplicar = req.query.aplicar === '1';
 
     const leads = await odooCallLocal('crm.lead', 'read', [ids, ['id', 'name', 'phone', 'mobile']]);
+    console.log('[DIAG corregir-formato] leads leídos:', JSON.stringify(leads));
     const cambios = [];
     for (const l of leads) {
       const cambio = { lead_id: l.id, nombre: l.name };
@@ -7271,7 +7272,7 @@ app.get('/api/debug/corregir-formato-telefono', authMiddleware, async (req, res)
     }
 
     if (!aplicar) {
-      return res.json({ ok: true, modo: 'VISTA PREVIA — agrega &aplicar=1 para aplicar de verdad', cambios });
+      return res.json({ ok: true, modo: 'VISTA PREVIA — agrega &aplicar=1 para aplicar de verdad', cambios, _diagnostico_leads_leidos: leads });
     }
 
     for (const c of cambios) {
