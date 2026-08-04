@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-corregir-formato-existentes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-formato-telefono-ya-existente'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1714,8 +1714,10 @@ async function contactarLeadPorAcruxLab(tenant, lead) {
     }).catch(() => {});
   };
 
-  const telCrudo = (lead.mobile && String(lead.mobile) !== 'false') ? lead.mobile
-                 : ((lead.phone && String(lead.phone) !== 'false') ? lead.phone : null);
+    const telCrudo = formatearTelefonoEstandar(
+    (lead.mobile && String(lead.mobile) !== 'false') ? lead.mobile
+    : ((lead.phone && String(lead.phone) !== 'false') ? lead.phone : null)
+  );
 
   // Sin teléfono en los campos, pero el dato puede venir DENTRO del correo del
   // formulario (llega así cuando Odoo no lo separa en campos). Antes de descartarlo,
@@ -1918,8 +1920,10 @@ async function contactarLeadPorWhatsApp(tenant, lead) {
     }).catch(() => {});
   };
 
-  const telCrudo = (lead.mobile && String(lead.mobile) !== 'false') ? lead.mobile
-                 : ((lead.phone && String(lead.phone) !== 'false') ? lead.phone : null);
+    const telCrudo = formatearTelefonoEstandar(
+    (lead.mobile && String(lead.mobile) !== 'false') ? lead.mobile
+    : ((lead.phone && String(lead.phone) !== 'false') ? lead.phone : null)
+  );
   if (!telCrudo) {
     await marcarSinWhatsApp('el registro no trae número de teléfono');
     return { ok: false, motivo: 'sin_telefono' };
@@ -9801,7 +9805,19 @@ app.post('/api/motor/formulario/grabar/:leadId', authMiddleware, async (req, res
 
     const actualizacion = {};
     if (d.nombre_padre) { actualizacion.contact_name = d.nombre_padre; actualizacion.partner_name = d.nombre_padre; }
-    if (d.telefono) actualizacion.phone = formatearTelefonoEstandar(d.telefono);
+    if (d.telefono) {
+      actualizacion.phone = formatearTelefonoEstandar(d.telefono);
+    } else {
+      // La IA no encontró un teléfono nuevo en el texto — pero si Odoo ya había puesto
+      // uno al crear el lead (antes de que Kai lo tocara), igual hay que dejarlo en el
+      // formato estándar, no solo cuando la IA lo "descubre" de cero.
+      const telefonoYaPuesto = (lead.mobile && String(lead.mobile) !== 'false') ? lead.mobile
+                              : (lead.phone && String(lead.phone) !== 'false') ? lead.phone : null;
+      if (telefonoYaPuesto) {
+        const reformateado = formatearTelefonoEstandar(telefonoYaPuesto);
+        if (reformateado !== telefonoYaPuesto) actualizacion.phone = reformateado;
+      }
+    }
     if (d.correo) actualizacion.email_from = d.correo;
     if (d.nombre_padre) actualizacion.name = `Formulario Admisiones — ${d.nombre_padre}`;
 
