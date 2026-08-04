@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-diagnostico-corregir-formato'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-diagnostico-banco-imagenes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7159,6 +7159,23 @@ app.post('/api/estado-conexiones/revisar-ahora', authMiddleware, async (req, res
 // longitud y si tiene espacios/saltos de línea de más al principio o al final, que es
 // la causa más común de "Cannot parse access token" cuando el token en sí se ve bien.
 // GET /api/debug/diagnostico-token?variable=INSTAGRAM_PAGE_TOKEN
+// Diagnóstico del banco de imágenes — cuáles existen, en qué categoría y nivel
+// educativo están etiquetadas ahora mismo, para planear la separación de Básico y
+// Bachillerato antes de tocar nada.
+// GET /api/debug/banco-de-imagenes
+app.get('/api/debug/banco-de-imagenes', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const imagenes = await ImagenMarketing.find({ tenant_id: req.user.tenant_id })
+      .select('nombre categoria nivel_educativo').lean();
+    res.json({
+      ok: true,
+      total: imagenes.length,
+      imagenes: imagenes.map(i => ({ id: i._id, nombre: i.nombre, categoria: i.categoria, nivel_educativo: i.nivel_educativo }))
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/debug/diagnostico-token', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   const nombreVar = req.query.variable;
