@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-formato-telefono-formulario-correo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-corregir-formato-existentes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7239,6 +7239,36 @@ app.get('/api/estado-conexiones', authMiddleware, async (req, res) => {
 // nombre "Lead KAI —" o etiquetas de canal propias) y agrupa por formato de teléfono
 // guardado — para ver qué tan inconsistente está antes de estandarizar hacia adelante.
 // GET /api/debug/formatos-telefono-kai
+// ===== CORREGIR FORMATO DE TELÉFONO EN LEADS QUE YA EXISTEN =====
+// Para los leads que se crearon ANTES de la corrección de hoy, y quedaron con formato
+// incorrecto. Por defecto es VISTA PREVIA — agrega &aplicar=1 para escribir de verdad.
+// GET /api/debug/corregir-formato-telefono?lead_ids=40611,40612[&aplicar=1]
+app.get('/api/debug/corregir-formato-telefono', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const ids = String(req.query.lead_ids || '').split(',').map(s => parseInt(s.trim())).filter(Boolean);
+    if (!ids.length) return res.json({ ok: false, error: 'Falta ?lead_ids=40611,40612,...' });
+    const aplicar = req.query.aplicar === '1';
+
+    const leads = await odooCallLocal('crm.lead', 'read', [ids, ['id', 'name', 'phone']]);
+    const cambios = leads.map(l => ({
+      lead_id: l.id,
+      nombre: l.name,
+      antes: l.phone,
+      despues: formatearTelefonoEstandar(l.phone)
+    })).filter(c => c.antes !== c.despues);
+
+    if (!aplicar) {
+      return res.json({ ok: true, modo: 'VISTA PREVIA — agrega &aplicar=1 para aplicar de verdad', cambios });
+    }
+
+    for (const c of cambios) {
+      await odooCallLocal('crm.lead', 'write', [[c.lead_id], { phone: c.despues }]);
+    }
+    res.json({ ok: true, corregidos: cambios.length, cambios });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/debug/formatos-telefono-kai', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
