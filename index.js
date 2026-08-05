@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-video-una-sola-vez-y-basicos-plural'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-imagen-basicos-y-carreras-primero'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -3476,21 +3476,20 @@ const SECUENCIA_IMAGENES_NO_INTERACTIVO = {
     { categoria: 'info_general', nombre_contiene: 'Horario' },
     { categoria: 'cuotas', nivel_educativo: 'Primaria', nombre_contiene: '(?<!Pre)Primaria' }
   ],
-  // Básico y Bachillerato comparten exactamente la misma base de imágenes (Nivel,
-  // Requisitos, Horario, Cuotas — todavía no están separadas físicamente). La única
-  // diferencia real es que Bachillerato agrega la imagen de carreras al final.
+  // Básico tiene su propia imagen de "Nivel" (subida hoy). Bachillerato comparte
+  // Requisitos/Horario/Cuotas con Básico, pero agrega la imagen de Carreras — y esa va
+  // PRIMERO, antes que las demás, tal como se pidió.
   basico: [
-    { categoria: 'programas', nombre_contiene: 'Secundaria' },
+    { categoria: 'programas', nivel_educativo: 'Básico', nombre_contiene: 'Básicos' },
     { categoria: 'admision', nombre_contiene: 'Requisitos' },
     { categoria: 'info_general', nombre_contiene: 'Horario' },
     { categoria: 'cuotas', nivel_educativo: 'Secundaria', nombre_contiene: 'Secundaria' }
   ],
   bachillerato: [
-    { categoria: 'programas', nombre_contiene: 'Secundaria' },
+    { categoria: 'programas', nivel_educativo: 'Bachillerato', nombre_contiene: 'Carreras' },
     { categoria: 'admision', nombre_contiene: 'Requisitos' },
     { categoria: 'info_general', nombre_contiene: 'Horario' },
-    { categoria: 'cuotas', nivel_educativo: 'Secundaria', nombre_contiene: 'Secundaria' },
-    { categoria: 'programas', nivel_educativo: 'Bachillerato', nombre_contiene: 'Carreras' }
+    { categoria: 'cuotas', nivel_educativo: 'Secundaria', nombre_contiene: 'Secundaria' }
   ]
 };
 
