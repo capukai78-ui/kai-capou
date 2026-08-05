@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-diagnostico-banco-imagenes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-video-una-sola-vez-y-basicos-plural'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -3476,15 +3476,25 @@ const SECUENCIA_IMAGENES_NO_INTERACTIVO = {
     { categoria: 'info_general', nombre_contiene: 'Horario' },
     { categoria: 'cuotas', nivel_educativo: 'Primaria', nombre_contiene: '(?<!Pre)Primaria' }
   ],
-  secundaria: [
+  // Básico y Bachillerato comparten exactamente la misma base de imágenes (Nivel,
+  // Requisitos, Horario, Cuotas — todavía no están separadas físicamente). La única
+  // diferencia real es que Bachillerato agrega la imagen de carreras al final.
+  basico: [
     { categoria: 'programas', nombre_contiene: 'Secundaria' },
     { categoria: 'admision', nombre_contiene: 'Requisitos' },
     { categoria: 'info_general', nombre_contiene: 'Horario' },
     { categoria: 'cuotas', nivel_educativo: 'Secundaria', nombre_contiene: 'Secundaria' }
+  ],
+  bachillerato: [
+    { categoria: 'programas', nombre_contiene: 'Secundaria' },
+    { categoria: 'admision', nombre_contiene: 'Requisitos' },
+    { categoria: 'info_general', nombre_contiene: 'Horario' },
+    { categoria: 'cuotas', nivel_educativo: 'Secundaria', nombre_contiene: 'Secundaria' },
+    { categoria: 'programas', nivel_educativo: 'Bachillerato', nombre_contiene: 'Carreras' }
   ]
 };
 
-const MENU_NIVEL_NI = '¡Hola! 👋 Bienvenido al Colegio Capouilliez.\n\n¿En qué nivel está interesado? Marque el número:\n1. Preprimaria\n2. Primaria\n3. Secundaria (Básico y Bachillerato en Ciencias y Letras)';
+const MENU_NIVEL_NI = '¡Hola! 👋 Bienvenido al Colegio Capouilliez.\n\n¿En qué nivel está interesado? Marque el número:\n1. Preprimaria\n2. Primaria\n3. Básicos\n4. Bachillerato en Ciencias y Letras';
 
 // Devuelve TODOS los niveles mencionados en el mensaje (puede ser más de uno — "1, 2 y
 // 3" es una respuesta real y predecible de un papá con varios hijos). Antes solo
@@ -3493,15 +3503,16 @@ function detectarNivelesMenuNI(texto) {
   const t = (texto || '').trim().toLowerCase();
   const detectados = [];
 
-  // "Todos", "los tres", etc. — pide los tres niveles de una vez.
-  if (/\btodos\b|\btodas\b|\blos tres\b|\blas tres\b/.test(t)) return ['preprimaria', 'primaria', 'secundaria'];
+  // "Todos", "los cuatro", etc. — pide los cuatro niveles de una vez.
+  if (/\btodos\b|\btodas\b|\blos (tres|cuatro)\b|\blas (tres|cuatro)\b/.test(t)) return ['preprimaria', 'primaria', 'basico', 'bachillerato'];
 
   // Cada nivel se reconoce por: el número (en cualquier parte del mensaje, no solo al
   // inicio — "Gracias, ahora el 2?" debe funcionar), un ordinal en palabras, o el
-  // nombre real del nivel/grado.
+  // nombre real del nivel/grado. Básico y Bachillerato son opciones separadas (3 y 4).
   if (/\b1\b|\bprimero\b|\bprimera\b/.test(t) || /preprimaria|jard[ií]n|infantil|k[ií]nder|p[aá]rvulos|preparatoria/.test(t)) detectados.push('preprimaria');
   if (/\b2\b|\bsegundo\b|\bsegunda\b/.test(t) || /\bprimaria\b/.test(t)) detectados.push('primaria');
-  if (/\b3\b|\btercero\b|\btercera\b/.test(t) || /secundaria|b[aá]sico|bachillerato/.test(t)) detectados.push('secundaria');
+  if (/\b3\b|\btercero\b|\btercera\b/.test(t) || /\bb[aá]sico\b|\bbasicos\b/.test(t)) detectados.push('basico');
+  if (/\b4\b|\bcuarto\b|\bcuarta\b/.test(t) || /bachillerato/.test(t)) detectados.push('bachillerato');
   return detectados;
 }
 // Se deja esta versión (un solo nivel) por si algo más la usa — ahora es un simple atajo.
@@ -3536,10 +3547,14 @@ async function manejarModoNoInteractivoAcrux(tenant, mensajeUsuario, conv, conta
     return { texto: MENU_NIVEL_NI, handoff: false };
   }
 
-  // Uno o más niveles nuevos — se manda la secuencia completa de CADA UNO, en orden
-  // (un papá puede pedir varios de una vez: "1, 2 y 3" — eso es normal y predecible).
-  for (const nivel of nivelesNuevos) {
+  // Uno o más niveles nuevos — el video del proyecto se manda UNA SOLA VEZ en toda la
+  // conversación, no solo dentro del mismo mensaje ("1, 2 y 3" no debe repetirlo 3
+  // veces, y tampoco debe repetirse si más adelante pide otro nivel por separado).
+  if (!conv.videoProyectoEnviado) {
     await enviarTextoAcruxLab(contactoId, MENSAJE_VIDEO_PROYECTO_NI);
+    conv.videoProyectoEnviado = true;
+  }
+  for (const nivel of nivelesNuevos) {
     for (const filtro of SECUENCIA_IMAGENES_NO_INTERACTIVO[nivel]) {
       const img = await buscarImagenSecuenciaNI(tenant, filtro);
       if (!img) { console.log(`⚠️ [No interactivo] No se encontró imagen en el banco para: ${JSON.stringify(filtro)}`); continue; }
@@ -3609,10 +3624,15 @@ async function manejarModoNoInteractivoWhatsApp(tenant, mensajeUsuario, ctxSesio
     return MENU_NIVEL_NI;
   }
 
-  for (const nivel of nivelesNuevos) {
+  // El video del proyecto se manda UNA SOLA VEZ en toda la conversación — ni dentro
+  // del mismo mensaje, ni si más adelante pide otro nivel por separado.
+  if (!ctxSesion.videoProyectoEnviado) {
     await enviarWhatsAppMeta(numeroOrigen, MENSAJE_VIDEO_PROYECTO_NI);
     conversacionDB.mensajes.push({ de: 'bot', texto: MENSAJE_VIDEO_PROYECTO_NI, fecha: new Date() });
+    ctxSesion.videoProyectoEnviado = true;
+  }
 
+  for (const nivel of nivelesNuevos) {
     for (const filtro of SECUENCIA_IMAGENES_NO_INTERACTIVO[nivel]) {
       const img = await buscarImagenSecuenciaNI(tenant, filtro);
       if (!img) { console.log(`⚠️ [No interactivo][WhatsApp] No se encontró imagen para: ${JSON.stringify(filtro)}`); continue; }
@@ -7996,7 +8016,7 @@ app.get('/api/debug/probar-imagen-no-interactivo', authMiddleware, async (req, r
   try {
     const nivel = req.query.nivel;
     const contactoId = parseInt(req.query.contacto_id);
-    if (!nivel || !SECUENCIA_IMAGENES_NO_INTERACTIVO[nivel]) return res.json({ ok: false, error: 'Falta ?nivel=preprimaria|primaria|secundaria' });
+    if (!nivel || !SECUENCIA_IMAGENES_NO_INTERACTIVO[nivel]) return res.json({ ok: false, error: 'Falta ?nivel=preprimaria|primaria|basico|bachillerato' });
     if (!contactoId) return res.json({ ok: false, error: 'Falta ?contacto_id= (una conversación real de AcruxLab)' });
 
     const tenant = await Tenant.findOne({ activo: true });
