@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-imagen-basicos-y-carreras-primero'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-correccion-telefono-automatica-independiente'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -3926,6 +3926,43 @@ async function revisarConexionesYAvisarCambios() {
   } catch (e) { console.error('❌ [Conexiones] Error revisando estado:', e.message); }
 }
 setInterval(revisarConexionesYAvisarCambios, 10 * 60 * 1000); // cada 10 minutos
+
+// ===== CORRECCIÓN AUTOMÁTICA DE FORMATO DE TELÉFONO — INDEPENDIENTE DE KAI =====
+// Los leads del Formulario de Admisiones muchas veces quedan con todos sus datos
+// (nivel, zona) llenados directamente por la propia automatización de Odoo (campos
+// Studio), sin que nuestra clasificación de Kai (extraerDatosDelFormulario) llegue a
+// tocarlos nunca. Por eso la corrección de formato de teléfono NO puede depender de
+// que Kai procese el lead — este chequeo revisa TODOS los leads recientes por su
+// cuenta, cada 5 minutos, sin importar qué otro proceso los haya tocado o no.
+async function corregirFormatoTelefonoAutomatico() {
+  try {
+    const desde = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').substring(0, 19);
+    const leads = await odooCallLocal('crm.lead', 'search_read',
+      [[['create_date', '>=', desde], ['active', '=', true]]],
+      { fields: ['id', 'phone', 'mobile'], limit: 500, context: { active_test: false } }
+    ).catch(() => []);
+
+    let corregidos = 0;
+    for (const l of leads || []) {
+      const escritura = {};
+      if (l.phone && String(l.phone) !== 'false') {
+        const nuevo = formatearTelefonoEstandar(l.phone);
+        if (nuevo !== l.phone) escritura.phone = nuevo;
+      }
+      if (l.mobile && String(l.mobile) !== 'false') {
+        const nuevo = formatearTelefonoEstandar(l.mobile);
+        if (nuevo !== l.mobile) escritura.mobile = nuevo;
+      }
+      if (Object.keys(escritura).length) {
+        await odooCallLocal('crm.lead', 'write', [[l.id], escritura]).catch(() => {});
+        corregidos++;
+      }
+    }
+    if (corregidos > 0) console.log(`📞 [Formato teléfono] ${corregidos} lead(s) corregido(s) automáticamente en esta pasada.`);
+  } catch (e) { console.error('❌ [Formato teléfono] Error en la corrección automática:', e.message); }
+}
+setInterval(corregirFormatoTelefonoAutomatico, 5 * 60 * 1000); // cada 5 minutos
+setTimeout(corregirFormatoTelefonoAutomatico, 20 * 1000); // primera pasada poco después de arrancar
 setTimeout(revisarConexionesYAvisarCambios, 15 * 1000); // primera revisión poco después de arrancar
 
 async function respaldoAutomaticoDiario() {
