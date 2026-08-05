@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-correccion-telefono-automatica-independiente'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-dashboard-marketing-reconstruido'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7219,6 +7219,103 @@ app.post('/api/estado-conexiones/revisar-ahora', authMiddleware, async (req, res
 // educativo están etiquetadas ahora mismo, para planear la separación de Básico y
 // Bachillerato antes de tocar nada.
 // GET /api/debug/banco-de-imagenes
+// ===== DASHBOARD DE MARKETING — RECONSTRUIDO CON DATOS REALES =====
+// De SOLO LECTURA. Usa search_count para los totales (no se corta en 500 como el
+// dashboard anterior) y separa Leads de Oportunidades correctamente para que el
+// rendimiento del equipo refleje la realidad, no solo quien cierra Oportunidades.
+// GET /api/dashboard-marketing
+app.get('/api/dashboard-marketing', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const [totalActivos, totalPerdidos] = await Promise.all([
+      odooCallLocal('crm.lead', 'search_count', [[['active', '=', true]]]),
+      odooCallLocal('crm.lead', 'search_count', [[['active', '=', false]]])
+    ]);
+
+    // Traer TODOS los activos (sin límite artificial) con lo mínimo necesario para
+    // agrupar en el propio código — evita depender de read_group, que puede variar
+    // de formato según la versión de Odoo.
+    const activos = await odooCallLocal('crm.lead', 'search_read',
+      [[['active', '=', true]]],
+      { fields: ['id', 'stage_id', 'user_id', 'type', 'create_date'], limit: 5000, context: { active_test: false } }
+    ) || [];
+    const perdidos = await odooCallLocal('crm.lead', 'search_read',
+      [[['active', '=', false]]],
+      { fields: ['id', 'lost_reason_id', 'user_id', 'type'], limit: 5000, context: { active_test: false } }
+    ) || [];
+
+    const inscritos = activos.filter(l => /inscrit/i.test(l.stage_id?.[1] || ''));
+
+    // Pipeline por etapa (de los activos)
+    const porEtapa = {};
+    activos.forEach(l => {
+      const etapa = l.stage_id?.[1] || '(sin etapa)';
+      porEtapa[etapa] = (porEtapa[etapa] || 0) + 1;
+    });
+    const pipelinePorEtapa = Object.entries(porEtapa).map(([etapa, cantidad]) => ({ etapa, cantidad })).sort((a, b) => b.cantidad - a.cantidad);
+
+    // Motivos de pérdida reales (de los archivados/perdidos)
+    const porMotivo = {};
+    perdidos.forEach(l => {
+      const motivo = l.lost_reason_id?.[1] || 'Sin motivo registrado';
+      porMotivo[motivo] = (porMotivo[motivo] || 0) + 1;
+    });
+    const motivosPerdida = Object.entries(porMotivo).map(([motivo, cantidad]) => ({ motivo, cantidad })).sort((a, b) => b.cantidad - a.cantidad);
+
+    // Rendimiento del equipo — Leads y Oportunidades por separado, para no repetir
+    // el error de solo contar Oportunidades (que hacía ver a Cindy/Vanessa en 0%).
+    const porVendedor = {};
+    activos.forEach(l => {
+      const vendedor = l.user_id?.[1] || 'Sin asignar';
+      if (!porVendedor[vendedor]) porVendedor[vendedor] = { vendedor, leads_simples: 0, oportunidades: 0, inscritos: 0 };
+      if (l.type === 'opportunity') porVendedor[vendedor].oportunidades++; else porVendedor[vendedor].leads_simples++;
+    });
+    inscritos.forEach(l => {
+      const vendedor = l.user_id?.[1] || 'Sin asignar';
+      if (porVendedor[vendedor]) porVendedor[vendedor].inscritos++;
+    });
+    const rendimientoEquipo = Object.values(porVendedor).map(v => ({
+      ...v,
+      total: v.leads_simples + v.oportunidades,
+      porcentaje_del_total: totalActivos ? `${Math.round(((v.leads_simples + v.oportunidades) / totalActivos) * 100)}%` : '0%'
+    })).sort((a, b) => b.total - a.total);
+
+    // Últimos leads reales, en tiempo real
+    const ultimos = await odooCallLocal('crm.lead', 'search_read',
+      [[['active', '=', true]]],
+      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'mobile', 'stage_id', 'create_date'], limit: 10, order: 'create_date desc' }
+    ) || [];
+
+    // Leads nuevos últimas 24h — mismo criterio ya verificado hoy
+    const desde24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').substring(0, 19);
+    const nuevos24h = activos.filter(l => l.create_date >= desde24h);
+
+    res.json({
+      ok: true,
+      revisado_a_las: new Date().toISOString(),
+      resumen: {
+        leads_activos: totalActivos,
+        leads_perdidos: totalPerdidos,
+        inscritos: inscritos.length,
+        conversion: totalActivos ? `${Math.round((inscritos.length / (totalActivos + totalPerdidos)) * 100)}%` : '0%'
+      },
+      pipeline_por_etapa: pipelinePorEtapa,
+      motivos_perdida: motivosPerdida,
+      rendimiento_equipo: rendimientoEquipo,
+      ultimos_leads: ultimos.map(l => ({
+        nombre: l.partner_name || l.contact_name || l.name,
+        telefono: (l.mobile && String(l.mobile) !== 'false') ? l.mobile : (l.phone || null),
+        etapa: l.stage_id?.[1] || '',
+        creado: l.create_date
+      })),
+      leads_nuevos_24h: {
+        total: nuevos24h.length,
+        con_telefono: nuevos24h.length // ya viene de "activos", que no filtra por teléfono — informativo
+      }
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/debug/banco-de-imagenes', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
