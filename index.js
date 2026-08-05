@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-dashboard-marketing-reconstruido'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-dashboard-sin-ruido-y-credito-real'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7244,6 +7244,24 @@ app.get('/api/dashboard-marketing', authMiddleware, async (req, res) => {
       { fields: ['id', 'lost_reason_id', 'user_id', 'type'], limit: 5000, context: { active_test: false } }
     ) || [];
 
+    // Motivos que NO son admisiones reales — currículums, proveedores, tickets de
+    // soporte, spam y pruebas. Se excluyen del cálculo de conversión porque nunca
+    // fueron un padre de familia interesado; contarlos castiga el % hacia abajo sin
+    // razón real. Los duplicados también se excluyen — son la MISMA familia contada
+    // dos veces, no una pérdida real adicional.
+    const MOTIVOS_RUIDO = ['solicitud de empleo', 'proveedor', 'ticket', 'publicidad falsa', 'prueba', 'chat basura', 'respuesta automática', 'referencia laborales', 'solicitud de practicas', 'problema con la plataforma para registro'];
+    const MOTIVOS_DUPLICADO = ['lead duplicado', 'número incorrecto/duplicado', 'duplicado'];
+
+    const perdidosClasificados = perdidos.map(l => {
+      const motivo = (l.lost_reason_id?.[1] || '').toLowerCase();
+      const esRuido = MOTIVOS_RUIDO.some(m => motivo.includes(m));
+      const esDuplicado = MOTIVOS_DUPLICADO.some(m => motivo.includes(m));
+      return { ...l, es_ruido: esRuido, es_duplicado: esDuplicado };
+    });
+    const perdidosReales = perdidosClasificados.filter(l => !l.es_ruido && !l.es_duplicado);
+    const totalRuido = perdidosClasificados.filter(l => l.es_ruido).length;
+    const totalDuplicados = perdidosClasificados.filter(l => l.es_duplicado).length;
+
     const inscritos = activos.filter(l => /inscrit/i.test(l.stage_id?.[1] || ''));
 
     // Pipeline por etapa (de los activos)
@@ -7256,11 +7274,11 @@ app.get('/api/dashboard-marketing', authMiddleware, async (req, res) => {
 
     // Motivos de pérdida reales (de los archivados/perdidos)
     const porMotivo = {};
-    perdidos.forEach(l => {
+    perdidosReales.forEach(l => {
       const motivo = l.lost_reason_id?.[1] || 'Sin motivo registrado';
       porMotivo[motivo] = (porMotivo[motivo] || 0) + 1;
     });
-    const motivosPerdida = Object.entries(porMotivo).map(([motivo, cantidad]) => ({ motivo, cantidad })).sort((a, b) => b.cantidad - a.cantidad);
+    const motivosPerdidaReales = Object.entries(porMotivo).map(([motivo, cantidad]) => ({ motivo, cantidad })).sort((a, b) => b.cantidad - a.cantidad);
 
     // Rendimiento del equipo — Leads y Oportunidades por separado, para no repetir
     // el error de solo contar Oportunidades (que hacía ver a Cindy/Vanessa en 0%).
@@ -7290,18 +7308,29 @@ app.get('/api/dashboard-marketing', authMiddleware, async (req, res) => {
     const desde24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').substring(0, 19);
     const nuevos24h = activos.filter(l => l.create_date >= desde24h);
 
+    // La "base real" de admisiones = todo lo activo + lo perdido de verdad (sin ruido
+    // ni duplicados). Esa es la que se debe usar para medir conversión de verdad.
+    const baseRealAdmisiones = totalActivos + perdidosReales.length;
+
     res.json({
       ok: true,
       revisado_a_las: new Date().toISOString(),
       resumen: {
         leads_activos: totalActivos,
-        leads_perdidos: totalPerdidos,
+        leads_perdidos_total: totalPerdidos,
+        leads_perdidos_reales_admisiones: perdidosReales.length,
+        excluidos_por_ruido_no_admisiones: totalRuido,
+        excluidos_por_duplicado: totalDuplicados,
         inscritos: inscritos.length,
-        conversion: totalActivos ? `${Math.round((inscritos.length / (totalActivos + totalPerdidos)) * 100)}%` : '0%'
+        conversion_ANTES_sin_filtrar: totalActivos ? `${Math.round((inscritos.length / (totalActivos + totalPerdidos)) * 100)}%` : '0%',
+        conversion_real_solo_admisiones: baseRealAdmisiones ? `${Math.round((inscritos.length / baseRealAdmisiones) * 100)}%` : '0%'
       },
       pipeline_por_etapa: pipelinePorEtapa,
-      motivos_perdida: motivosPerdida,
+      motivos_perdida_reales_admisiones: motivosPerdidaReales,
+      motivos_excluidos_como_ruido: MOTIVOS_RUIDO,
+      motivos_excluidos_como_duplicado: MOTIVOS_DUPLICADO,
       rendimiento_equipo: rendimientoEquipo,
+      nota_credito_real_del_equipo: 'Este "rendimiento_equipo" solo cuenta quién tiene el lead asignado AHORA, no la cadena completa de traspasos. Para ver quién participó de verdad en cada Inscrito (Cindy/Vanessa calificando, Sylvia cerrando), usa GET /api/reportes/bitacora-inscritos — ya construido y probado hoy.',
       ultimos_leads: ultimos.map(l => ({
         nombre: l.partner_name || l.contact_name || l.name,
         telefono: (l.mobile && String(l.mobile) !== 'false') ? l.mobile : (l.phone || null),
