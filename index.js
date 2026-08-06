@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-buscar-etiqueta-deuda'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-buscar-texto-amplio'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7739,6 +7739,21 @@ app.get('/api/debug/probar-solo-lectura', authMiddleware, async (req, res) => {
 // Busca etiquetas (crm.tag) que coincidan con un texto — para encontrar el nombre
 // exacto de algo como "Deuda Inscripción 2027" cuando no se sabe si es etapa o etiqueta.
 // GET /api/debug/buscar-etiqueta?texto=deuda
+// Búsqueda amplia: revisa si el texto aparece en el NOMBRE de algún lead, en el nombre
+// de alguna ETAPA (aunque no esté en el top del pipeline), o en alguna nota del chatter.
+// GET /api/debug/buscar-texto-amplio?texto=deuda
+app.get('/api/debug/buscar-texto-amplio', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const texto = req.query.texto || '';
+    const [porNombreLead, etapas] = await Promise.all([
+      odooCallLocal('crm.lead', 'search_read', [[['name', 'ilike', texto]]], { fields: ['id', 'name', 'stage_id'], limit: 10, context: { active_test: false } }),
+      odooCallLocal('crm.stage', 'search_read', [[['name', 'ilike', texto]]], { fields: ['id', 'name'] }).catch(() => [])
+    ]);
+    res.json({ ok: true, leads_con_ese_nombre: porNombreLead, etapas_encontradas: etapas });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/debug/buscar-etiqueta', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
