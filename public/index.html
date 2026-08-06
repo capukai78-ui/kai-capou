@@ -974,7 +974,7 @@ tr:hover td{background:var(--g4)}
 
     <div class="page" id="p-marketing">
       <div class="ph">
-        <div><div class="ph-title">Marketing &amp; Rendimiento</div><div class="ph-sub">Pipeline real · Equipo · Motivos de pérdida — Odoo producción</div></div>
+        <div><div class="ph-title">Marketing &amp; Rendimiento</div><div class="ph-sub">Últimos 12 meses (Inscritos = ciclo completo) · Odoo producción, solo Colegio Capouilliez</div></div>
         <button class="rpill" onclick="loadMarketing()">↻ Actualizar</button>
       </div>
       <div class="dash-metrics" id="mkt-kpis">
@@ -3130,95 +3130,100 @@ async function loadMarketing(){
 
   kpisEl.innerHTML='<div class="mc"><div class="mc-lbl">Cargando datos de Odoo...</div><div class="mc-val">⏳</div></div>';
 
-  let dash={resumen:{totalLeads:0,totalPerdidos:0,totalEtapas:0},porEtapa:{},porUsuario:{},porMotivo:{},ultimosLeads:[]};
+  let dash=null;
   try{
-    const r=await fetch(API+'/api/odoo/dashboard',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+    const r=await fetch(API+'/api/dashboard-marketing',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
     if(r.ok) dash=r;
   }catch(e){console.warn('Error cargando marketing:',e);}
 
-  const {totalLeads,totalPerdidos}=dash.resumen;
-  const inscritos=Object.entries(dash.porEtapa).filter(([k])=>/inscrit/i.test(k)).reduce((a,[,v])=>a+v,0);
-  const conv=totalLeads>0?Math.round((inscritos/totalLeads)*100):0;
+  if(!dash){
+    kpisEl.innerHTML='<div class="mc"><div class="mc-lbl">No se pudo cargar</div><div class="mc-val">—</div></div>';
+    return;
+  }
 
-  // KPIs
+  const res=dash.resumen;
+
+  // KPIs — el número central es Inscritos del ciclo actual, no un conteo mezclado
   kpisEl.innerHTML=`
-    <div class="mc"><div class="mc-lbl">Leads activos</div><div class="mc-val">${totalLeads}</div><div class="mc-sub">en Odoo producción</div></div>
-    <div class="mc" style="border-top:2px solid var(--red,#E24B4A)"><div class="mc-lbl">Leads perdidos</div><div class="mc-val" style="color:var(--red,#E24B4A)">${totalPerdidos}</div><div class="mc-sub">requieren análisis</div></div>
-    <div class="mc" style="border-top:2px solid var(--green,#5BA8F5)"><div class="mc-lbl">Inscritos</div><div class="mc-val" style="color:var(--green,#5BA8F5)">${inscritos}</div><div class="mc-sub">confirmados</div></div>
-    <div class="mc" style="border-top:2px solid var(--purple,#A855F7)"><div class="mc-lbl">Conversión</div><div class="mc-val" style="color:var(--purple,#A855F7)">${conv}%</div><div class="mc-sub">leads → inscritos</div></div>`;
+    <div class="mc" style="border-top:2px solid var(--green,#5BA8F5);background:linear-gradient(180deg,var(--bg1) 0%,rgba(91,168,245,.06) 250%)">
+      <div class="mc-lbl">Inscritos Ciclo 2027</div><div class="mc-val" style="color:var(--green,#5BA8F5)">${res.inscritos_ciclo_2027_confirmados}</div>
+      <div class="mc-sub">confirmados · etapa exacta</div></div>
+    <div class="mc"><div class="mc-lbl">Leads activos</div><div class="mc-val">${res.leads_activos.toLocaleString()}</div><div class="mc-sub">últimos 12 meses</div></div>
+    <div class="mc" style="border-top:2px solid var(--red,#E24B4A)"><div class="mc-lbl">Pérdidas reales</div><div class="mc-val" style="color:var(--red,#E24B4A)">${res.leads_perdidos_reales_admisiones.toLocaleString()}</div>
+      <div class="mc-sub">sin ruido ni duplicados</div></div>
+    <div class="mc" style="border-top:2px solid var(--purple,#A855F7)"><div class="mc-lbl">Conversión real</div><div class="mc-val" style="color:var(--purple,#A855F7)">${res.conversion_real_solo_admisiones}</div>
+      <div class="mc-sub">inscritos ÷ (activos+perdidos reales)</div></div>
+    <div class="mc"><div class="mc-lbl">En proyecto (deuda pend.)</div><div class="mc-val">${res.en_proyecto_deuda_pendiente_de_pago}</div><div class="mc-sub">avanzaron, falta el pago</div></div>
+    <div class="mc"><div class="mc-lbl">Excluidos como ruido/dup.</div><div class="mc-val" style="color:var(--text3)">${(res.excluidos_por_ruido_no_admisiones+res.excluidos_por_duplicado).toLocaleString()}</div><div class="mc-sub">${res.excluidos_por_ruido_no_admisiones} ruido + ${res.excluidos_por_duplicado} duplicados</div></div>`;
 
-  // Pipeline
-  const etapasOrden=['Ciclo 2027','2026 - Inscritos','Evaluación Enero','Confirmados Open 12 de julio','Intereated','12 y 13 mayo','Abono Inscripciones 2027','Inside Tour 19 marzo 2026','Seleccionados'];
-  const maxPipe=Math.max(...Object.values(dash.porEtapa),1);
-  pipeEl.innerHTML=Object.entries(dash.porEtapa)
-    .sort((a,b)=>b[1]-a[1]).slice(0,10)
-    .map(([etapa,n])=>{
-      const pct=Math.round((n/maxPipe)*100);
-      const color=(/inscrit/i.test(etapa)?'var(--green,#5BA8F5)':/selecc/i.test(etapa)?'var(--amber,#F5A623)':/eval/i.test(etapa)?'var(--purple,#A855F7)':/abono/i.test(etapa)?'var(--blue,#4B9EFF)':'var(--blue,#4B9EFF)');
-      return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12px">
-        <div style="min-width:160px;color:var(--text2);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${etapa}">${etapa}</div>
-        <div style="flex:1;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden">
-          <div style="width:${pct}%;height:100%;background:${color};border-radius:3px"></div>
-        </div>
-        <div style="min-width:24px;text-align:right;font-weight:500">${n}</div>
-      </div>`;
-    }).join('');
+  // Pipeline por etapa — 100% de los datos reales que llegaron del servidor
+  const pipeline=dash.pipeline_por_etapa||[];
+  const maxPipe=Math.max(...pipeline.map(p=>p.cantidad),1);
+  pipeEl.innerHTML=pipeline.slice(0,12).map(p=>{
+    const pct=Math.round((p.cantidad/maxPipe)*100);
+    const color=/inscrit/i.test(p.etapa)?'var(--green,#5BA8F5)':/perdido/i.test(p.etapa)?'var(--red,#E24B4A)':'var(--blue,#4B9EFF)';
+    return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12px">
+      <div style="min-width:170px;color:var(--text2);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.etapa}">${p.etapa}</div>
+      <div style="flex:1;height:7px;background:var(--bg3);border-radius:3px;overflow:hidden">
+        <div style="width:${pct}%;height:100%;background:${color};border-radius:3px"></div>
+      </div>
+      <div style="min-width:34px;text-align:right;font-weight:600">${p.cantidad.toLocaleString()}</div>
+    </div>`;
+  }).join('') || '<div style="color:var(--text3);font-size:12px">Sin datos</div>';
 
-  // Motivos de pérdida
-  const maxMot=Math.max(...Object.values(dash.porMotivo),1);
-  perdEl.innerHTML=Object.entries(dash.porMotivo)
-    .sort((a,b)=>b[1]-a[1]).slice(0,10)
-    .map(([motivo,n])=>{
-      const pct=Math.round((n/maxMot)*100);
-      const color=n>40?'var(--red,#E24B4A)':n>20?'#F09595':'#FFBBBB';
-      return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12px">
-        <div style="min-width:160px;color:var(--text2);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${motivo}">${motivo}</div>
-        <div style="flex:1;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden">
-          <div style="width:${pct}%;height:100%;background:${color};border-radius:3px"></div>
-        </div>
-        <div style="min-width:24px;text-align:right;font-weight:500">${n}</div>
-      </div>`;
-    }).join('');
+  // Motivos de pérdida reales — ya vienen filtrados de ruido/duplicados desde el servidor
+  const motivos=dash.motivos_perdida_reales_admisiones||[];
+  const maxMot=Math.max(...motivos.map(m=>m.cantidad),1);
+  perdEl.innerHTML=motivos.slice(0,10).map(m=>{
+    const pct=Math.round((m.cantidad/maxMot)*100);
+    const color=m.cantidad>80?'var(--red,#E24B4A)':m.cantidad>30?'#F09595':'#FFBBBB';
+    return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12px">
+      <div style="min-width:170px;color:var(--text2);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${m.motivo}">${m.motivo}</div>
+      <div style="flex:1;height:7px;background:var(--bg3);border-radius:3px;overflow:hidden">
+        <div style="width:${pct}%;height:100%;background:${color};border-radius:3px"></div>
+      </div>
+      <div style="min-width:24px;text-align:right;font-weight:500">${m.cantidad}</div>
+    </div>`;
+  }).join('') || '<div style="color:var(--text3);font-size:12px">Sin datos</div>';
 
-  // Rendimiento equipo
-  const equipo=[
-    {nombre:'Sylvia Flores',correo:'sylvia@capouilliez.edu.gt',rol:'Coordinadora',color:'#F5A800'},
-    {nombre:'Cindy Godoy',correo:'cindy.godoy@capouilliez.edu.gt',rol:'Asesora de admisiones',color:'#378ADD'},
-    {nombre:'Vanessa Carreto',correo:'vanessa.carreto@capouilliez.edu.gt',rol:'Asesora de admisiones',color:'#1D9E75'},
-  ];
-  const totalPorUsuario=Object.values(dash.porUsuario).reduce((a,b)=>a+b,0)||1;
+  // Rendimiento del equipo — TODAS las vendedoras reales que devuelva Odoo, no una
+  // lista fija de 3 nombres. Antes esto hacía ver a Cindy/Vanessa en 0% por error.
+  const equipo=dash.rendimiento_equipo||[];
+  const coloresEquipo={};
+  const paletaEquipo=['#F5A800','#378ADD','#1D9E75','#A855F7','#E24B4A','#4B9EFF'];
+  equipo.forEach((v,i)=>{ coloresEquipo[v.vendedor]=paletaEquipo[i%paletaEquipo.length]; });
   equipoEl.innerHTML=`<table><thead><tr>
-    <th>Asesora</th><th>Rol</th><th>Leads asignados</th><th>% del total</th><th>Estado</th>
-  </tr></thead><tbody>${equipo.map(p=>{
-    const leads=dash.porUsuario[p.nombre]||0;
-    const pct=Math.round((leads/totalPorUsuario)*100);
-    const status=leads>0?`<span class="bx blue">Activa</span>`:`<span class="bx" style="background:var(--bg3);color:var(--text3)">Sin leads asignados</span>`;
+    <th>Asesora</th><th>Leads simples</th><th>Oportunidades</th><th>Inscritos</th><th>Total</th><th>% del total</th>
+  </tr></thead><tbody>${equipo.map(v=>{
+    const color=coloresEquipo[v.vendedor];
+    const pctNum=parseInt(v.porcentaje_del_total)||0;
     return `<tr>
-      <td><div style="font-weight:500;color:${p.color}">${p.nombre}</div><div style="font-size:11px;color:var(--text3)">${p.correo}</div></td>
-      <td style="font-size:12px;color:var(--text2)">${p.rol}</td>
-      <td style="font-size:14px;font-weight:500">${leads}</td>
+      <td><div style="font-weight:500;color:${color}">${v.vendedor}</div></td>
+      <td style="font-size:13px">${v.leads_simples.toLocaleString()}</td>
+      <td style="font-size:13px">${v.oportunidades.toLocaleString()}</td>
+      <td style="font-size:13px;color:var(--green,#5BA8F5);font-weight:600">${v.inscritos}</td>
+      <td style="font-size:14px;font-weight:600">${v.total.toLocaleString()}</td>
       <td><div style="display:flex;align-items:center;gap:6px">
         <div style="width:60px;height:4px;background:var(--bg3);border-radius:2px;overflow:hidden">
-          <div style="width:${pct}%;height:100%;background:${p.color};border-radius:2px"></div>
+          <div style="width:${pctNum}%;height:100%;background:${color};border-radius:2px"></div>
         </div>
-        <span style="font-size:11px">${pct}%</span>
+        <span style="font-size:11px">${v.porcentaje_del_total}</span>
       </div></td>
-      <td>${status}</td>
     </tr>`;
   }).join('')}</tbody></table>
   <div style="margin-top:10px;padding:10px 12px;background:var(--bg2);border-radius:8px;font-size:11px;color:var(--text3)">
-    💡 Para ver comisiones individuales, los leads deben estar asignados en Odoo a cada asesora. 
-    Cindy y Vanessa aún no tienen leads reasignados — coordinar con Sylvia.
+    💡 Este total solo cuenta quién tiene el lead asignado ahora. Para ver quién participó de verdad en cada Inscrito (calificación + cierre), usa la Bitácora de Inscritos.
   </div>`;
 
   // Últimos leads
-  leadsEl.innerHTML=dash.ultimosLeads.length?`<table><thead><tr>
+  const ultimos=dash.ultimos_leads||[];
+  leadsEl.innerHTML=ultimos.length?`<table><thead><tr>
     <th>Nombre</th><th>Teléfono</th><th>Etapa</th><th>Fecha</th>
-  </tr></thead><tbody>${dash.ultimosLeads.map(l=>`<tr>
-    <td style="font-weight:500">${l.name||'Sin nombre'}</td>
-    <td style="font-size:12px;color:var(--text2)">${l.phone||'—'}</td>
-    <td><span class="bx blue" style="font-size:10px">${l.stage_id?.[1]||'—'}</span></td>
-    <td style="font-size:11px;color:var(--text3)">${l.create_date?l.create_date.substring(0,10):'—'}</td>
+  </tr></thead><tbody>${ultimos.map(l=>`<tr>
+    <td style="font-weight:500">${l.nombre||'Sin nombre'}</td>
+    <td style="font-size:12px;color:var(--text2)">${l.telefono||'—'}</td>
+    <td><span class="bx blue" style="font-size:10px">${l.etapa||'—'}</span></td>
+    <td style="font-size:11px;color:var(--text3)">${l.creado?l.creado.substring(0,10):'—'}</td>
   </tr>`).join('')}</tbody></table>`
   :'<div style="text-align:center;padding:20px;color:var(--text3)">Sin datos</div>';
 }
