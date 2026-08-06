@@ -15,7 +15,7 @@
   --text:#141B2E;--text2:rgba(20,30,55,.65);--text3:rgba(20,30,55,.42);
   --red:#FF3B5C;--red2:rgba(255,59,92,.12);--amber:#FF9F1C;--amber2:rgba(255,159,28,.14);
   --blue:#2F5CFF;--blue2:rgba(47,92,255,.12);--purple:#8B5CF6;--purple2:rgba(139,92,246,.14);
-  --green:#00C48C;--green2:rgba(0,196,140,.14);--teal:#00C2D1;--teal2:rgba(0,194,209,.14);
+  --green:#00805A;--green2:rgba(0,128,90,.14);--teal:#00C2D1;--teal2:rgba(0,194,209,.14);
   --pink:#EC4899;--pink2:rgba(236,72,153,.14);--cyan:#06B6D4;
   --acrux:#00C2D1;--acrux2:rgba(0,194,209,.14);--acrux3:rgba(0,194,209,.4);
   --font-h:'Outfit',sans-serif;--font:'Plus Jakarta Sans',sans-serif;--r:14px;--r2:10px;
@@ -30,7 +30,7 @@ html.theme-ledger{
   --text:#161B26;--text2:#5B6478;--text3:#8A93A6;
   --red:#B5433C;--red2:rgba(181,67,60,.12);--amber:#B8792E;--amber2:rgba(184,121,46,.14);
   --blue:#2E5AA8;--blue2:rgba(46,90,168,.12);--purple:#6B4A9E;--purple2:rgba(107,74,158,.13);
-  --green:#1E8F6F;--green2:rgba(30,143,111,.14);--teal:#1E7D8C;--teal2:rgba(30,125,140,.13);
+  --green:#166F53;--green2:rgba(22,111,83,.14);--teal:#1E7D8C;--teal2:rgba(30,125,140,.13);
   --pink:#A34E72;--pink2:rgba(163,78,114,.13);--cyan:#1E7D8C;
   --acrux:#1E7D8C;--acrux2:rgba(30,125,140,.13);--acrux3:rgba(30,125,140,.4);
   --font-h:'Fraunces',serif;--font:'Inter',sans-serif;
@@ -39,6 +39,8 @@ html.theme-ledger{
   --sb-text:#FFFFFF;--sb-text2:rgba(255,255,255,.62);--sb-text3:rgba(241,226,180,.5);--sb-border:rgba(200,155,60,.18);--sb-hov:rgba(255,255,255,.05);
 }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-font-smoothing:antialiased}
+a:focus-visible,button:focus-visible,.chip:focus-visible,.nl:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--g);outline-offset:2px;border-radius:6px}
+@media (prefers-reduced-motion:reduce){*{animation-duration:.01ms !important;transition-duration:.01ms !important}}
 body{font-family:var(--font);background:var(--body-grad,linear-gradient(135deg,#F6F8FC 0%,#EFF3FA 40%,#E8EEFA 70%,#E3EBFB 100%));color:var(--text);min-height:100vh;transition:background .2s}
 html.theme-ledger body{--body-grad:linear-gradient(135deg,#FAF7F1 0%,#F5F0E4 50%,#F2EBDB 100%)}
 body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
@@ -102,11 +104,15 @@ html.theme-ledger .theme-opt.active{color:#2A1E08}
 .mc-lbl{font-size:11.5px;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;font-weight:700;margin-bottom:6px;position:relative;z-index:1}
 .mc-val{font-family:var(--num-font);font-size:38px;font-weight:800;letter-spacing:-1.5px;color:var(--text);line-height:1;margin-bottom:6px;position:relative;z-index:1;font-variant-numeric:tabular-nums}
 .mc-sub{font-size:11px;color:var(--text3)}
+.mc-skel{pointer-events:none}
+.mc-skel::before{display:none}
+.skel-line{height:9px;border-radius:5px;background:linear-gradient(90deg,var(--bg3) 25%,var(--bg4) 50%,var(--bg3) 75%);background-size:200% 100%;animation:skel-shine 1.4s ease infinite}
+@keyframes skel-shine{0%{background-position:200% 0}100%{background-position:-200% 0}}
 /* TABLE */
 .tw{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:16px}
 /* CHIPS interactivos (filtros tipo Power BI slicer) */
 .chip-row{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}
-.chip{background:var(--bg2);border:1.5px solid var(--border);border-radius:100px;padding:8px 16px;font-size:12px;font-weight:600;color:var(--text2);cursor:pointer;transition:all .15s;display:inline-flex;align-items:center;gap:7px;font-family:var(--font)}
+.chip{background:var(--bg2);border:1.5px solid var(--border);border-radius:100px;padding:10px 16px;font-size:12px;font-weight:600;color:var(--text2);cursor:pointer;transition:all .15s;display:inline-flex;align-items:center;gap:7px;font-family:var(--font)}
 .chip:hover{border-color:var(--ac,var(--g));color:var(--text);transform:translateY(-1px)}
 .chip.active{background:var(--ac,var(--g));border-color:var(--ac,var(--g));color:#fff;box-shadow:0 6px 16px -4px var(--ac,var(--g))}
 .chip-dot{width:8px;height:8px;border-radius:50%;background:currentColor;opacity:.85}
@@ -117,7 +123,8 @@ html.theme-ledger .theme-opt.active{color:#2A1E08}
 .chart-card-icon{width:26px;height:26px;border-radius:8px;background:var(--ac2,var(--g3));display:flex;align-items:center;justify-content:center;flex-shrink:0}
 .chart-card-icon svg{width:14px;height:14px;stroke:var(--ac,var(--g))}
 .tw-h{padding:14px 20px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);gap:10px;flex-wrap:wrap}
-.tw-t{font-family:var(--font-h);font-size:14px;font-weight:800;letter-spacing:-.2px}
+.tw-t{font-family:var(--font-h);font-size:14px;font-weight:800;letter-spacing:-.2px;display:inline-flex;align-items:center;gap:8px}
+.tw-t svg{width:15px;height:15px;stroke:var(--g);flex-shrink:0}
 table{width:100%;border-collapse:collapse}
 th{font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;padding:9px 20px;text-align:left;border-bottom:1px solid var(--border)}
 td{padding:11px 20px;font-size:13px;border-bottom:1px solid rgba(91,168,245,.04)}
@@ -345,11 +352,11 @@ tr:hover td{background:var(--g4)}
         </div>
       </div>
       <div class="tw" style="margin-bottom:16px;border-top:4px solid var(--purple)">
-        <div class="tw-h"><div class="tw-t">👥 Rendimiento del equipo</div><div style="font-size:11px;color:var(--text2)">Clic en una asesora para filtrar abajo</div></div>
+        <div class="tw-h"><div class="tw-t"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>Rendimiento del equipo</div><div style="font-size:11px;color:var(--text2)">Clic en una asesora para filtrar abajo</div></div>
         <div id="dash-equipo" style="padding:12px 16px"></div>
       </div>
       <div class="tw" style="border-top:4px solid var(--teal)">
-        <div class="tw-h"><div class="tw-t">🕐 Últimos leads</div></div>
+        <div class="tw-h"><div class="tw-t"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>Últimos leads</div></div>
         <div id="t-dash"></div>
       </div>
     </div>
@@ -3181,7 +3188,20 @@ function setTemaKAI(nombre){
   if(document.getElementById('p-dashboard')?.classList.contains('active')) buildDash();
 }
 
+function habilitarNavPorTeclado(){
+  document.querySelectorAll('.nl').forEach(el=>{
+    if(el.hasAttribute('data-kb-ready'))return;
+    el.setAttribute('data-kb-ready','1');
+    el.setAttribute('tabindex','0');
+    el.setAttribute('role','button');
+    el.addEventListener('keydown',e=>{
+      if(e.key==='Enter'||e.key===' '){e.preventDefault();el.click();}
+    });
+  });
+}
+
 function initApp(){
+  habilitarNavPorTeclado();
   const temaGuardado=document.documentElement.classList.contains('theme-ledger')?'ledger':'clasico';
   document.getElementById('theme-opt-clasico')?.classList.toggle('active',temaGuardado==='clasico');
   document.getElementById('theme-opt-ledger')?.classList.toggle('active',temaGuardado==='ledger');
@@ -3203,6 +3223,8 @@ const ICONS = {
 };
 
 async function buildDash(){
+  const metricsEl=document.getElementById('dash-metrics');
+  metricsEl.innerHTML=Array(4).fill('<div class="mc mc-skel"><div class="mc-icon" style="background:var(--bg3)"></div><div class="skel-line" style="width:70%"></div><div class="skel-line" style="width:45%;height:30px;margin:8px 0"></div><div class="skel-line" style="width:55%"></div></div>').join('');
   let dash=null;
   try {
     const r=await fetch(API+'/api/dashboard-marketing',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
@@ -3210,7 +3232,7 @@ async function buildDash(){
   } catch(e){ console.warn('Dashboard no disponible', e); }
 
   if(!dash){
-    document.getElementById('dash-metrics').innerHTML='<div class="mc"><div class="mc-lbl">No se pudo cargar</div><div class="mc-val">—</div></div>';
+    metricsEl.innerHTML='<div class="mc"><div class="mc-lbl">No se pudo cargar</div><div class="mc-val">—</div><div class="mc-sub">Verifica la conexión e inténtalo de nuevo</div></div>';
     return;
   }
 
@@ -3240,7 +3262,7 @@ async function buildDash(){
   const top=pipeline.slice(0,7);
   const pLabels=top.map(p=>p.etapa);
   const pValues=top.map(p=>p.cantidad);
-  const COLORS=esLedger?['#2E5AA8','#C89B3C','#6B4A9E','#1E8F6F','#B5433C','#1E7D8C','#A34E72']:['#2F5CFF','#FF9F1C','#8B5CF6','#00C48C','#FF3B5C','#00C2D1','#EC4899'];
+  const COLORS=esLedger?['#2E5AA8','#C89B3C','#6B4A9E','#166F53','#B5433C','#1E7D8C','#A34E72']:['#2F5CFF','#FF9F1C','#8B5CF6','#00805A','#FF3B5C','#00C2D1','#EC4899'];
 
   if(cPipe)cPipe.destroy();
   cPipe=new Chart(document.getElementById('c-pipe'),{
@@ -3248,6 +3270,7 @@ async function buildDash(){
     data:{labels:pLabels,datasets:[{data:pValues,backgroundColor:COLORS.slice(0,pLabels.length),borderColor:'#fff',borderWidth:3,hoverOffset:12}]},
     options:{
       responsive:true,maintainAspectRatio:false,cutout:'62%',
+      onHover(evt,elements){evt.native.target.style.cursor=elements.length?'pointer':'default';},
       onClick(evt,elements){
         if(!elements.length)return;
         const etapa=pLabels[elements[0].index];
@@ -3262,7 +3285,10 @@ async function buildDash(){
 
   // Rendimiento del equipo — chips interactivos reales (filtran la tabla de últimos leads) + tabla
   const equipo=dash.rendimiento_equipo||[];
-  const paletaEquipo=esLedger?['#2E5AA8','#1E8F6F','#B8792E','#6B4A9E','#B5433C','#1E7D8C','#A34E72']:['#2F5CFF','#00C48C','#FF9F1C','#8B5CF6','#FF3B5C','#00C2D1','#EC4899'];
+  // Paleta de texto: oscurecida respecto a COLORS porque estos valores se usan como
+  // color de fuente en nombres de asesoras (13-14px) y necesitan 4.5:1 de contraste
+  // sobre blanco, no solo el 3:1 que basta para relleno de gráfica.
+  const paletaEquipo=esLedger?['#2E5AA8','#166F53','#8A5A1F','#6B4A9E','#B5433C','#1E7D8C','#A34E72']:['#2F5CFF','#00805A','#A6650A','#6D3FD1','#C2274A','#0E7A85','#B2296A'];
   const chipsEl=document.getElementById('dash-chips-equipo');
   if(equipo.length){
     chipsEl.innerHTML = `<button class="chip" id="chip-todos" onclick="filtrarPorAsesora(null)"><span class="chip-dot" style="background:var(--text3)"></span>Todo el equipo</button>` +
@@ -3316,7 +3342,8 @@ function renderDashTable(leads, etapaFiltro){
 
   if(tw){
     const title=tw.querySelector('.tw-t');
-    if(title) title.textContent = etapaFiltro ? `🕐 ${etapaFiltro}` : '🕐 Últimos leads';
+    const iconoReloj='<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>';
+    if(title) title.innerHTML = iconoReloj + (etapaFiltro || 'Últimos leads');
   }
   tEl.innerHTML=leads.length
     ?`<table><thead><tr><th>Nombre</th><th>Teléfono</th><th>Etapa</th><th>Fecha</th></tr></thead><tbody>${leads.map(l=>`<tr>
