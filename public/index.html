@@ -8,12 +8,15 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <style>
 :root{
-  --g:#3E7BFA;--g2:#2C63D9;--g3:rgba(62,123,250,.10);--g4:rgba(62,123,250,.05);
-  --bg:#F6F8FC;--bg2:#FFFFFF;--bg3:#F1F4F9;--bg4:#E9EDF5;
-  --border:rgba(20,30,50,.09);--border2:rgba(62,123,250,.35);
-  --text:#1B2333;--text2:rgba(30,40,60,.62);--text3:rgba(30,40,60,.4);
-  --red:#F0555C;--amber:#F0A63C;--blue:#3E7BFA;--purple:#9B6DE8;--green:#2FB37C;
-  --acrux:#0FB5A6;--acrux2:rgba(15,181,166,.12);--acrux3:rgba(15,181,166,.35);
+  --g:#2F5CFF;--g2:#1C3FD9;--g3:rgba(47,92,255,.12);--g4:rgba(47,92,255,.06);
+  --bg:#F4F6FB;--bg2:#FFFFFF;--bg3:#EEF1F8;--bg4:#E4E9F5;
+  --border:rgba(20,30,50,.08);--border2:rgba(47,92,255,.4);
+  --text:#141B2E;--text2:rgba(20,30,55,.65);--text3:rgba(20,30,55,.42);
+  --red:#FF3B5C;--red2:rgba(255,59,92,.12);--amber:#FF9F1C;--amber2:rgba(255,159,28,.14);
+  --blue:#2F5CFF;--blue2:rgba(47,92,255,.12);--purple:#8B5CF6;--purple2:rgba(139,92,246,.14);
+  --green:#00C48C;--green2:rgba(0,196,140,.14);--teal:#00C2D1;--teal2:rgba(0,194,209,.14);
+  --pink:#EC4899;--pink2:rgba(236,72,153,.14);--cyan:#06B6D4;
+  --acrux:#00C2D1;--acrux2:rgba(0,194,209,.14);--acrux3:rgba(0,194,209,.4);
   --font-h:'Outfit',sans-serif;--font:'Plus Jakarta Sans',sans-serif;--r:14px;--r2:10px;
 }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-font-smoothing:antialiased}
@@ -54,19 +57,34 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
 .rpill{background:var(--bg3);border:1px solid var(--border);border-radius:100px;padding:7px 14px;font-size:11px;color:var(--text2);cursor:pointer;transition:all .15s;font-family:var(--font);border:none}
 .rpill:hover{color:var(--g)}
 /* METRICS */
-.mrow{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
-.mrow3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}
-.mc{background:linear-gradient(135deg,var(--bg2),var(--bg3));border:1px solid var(--border);border-radius:var(--r);padding:18px 20px;position:relative;overflow:hidden;transition:border-color .2s,transform .2s;border-top:2px solid var(--g)}
-.mc:hover{border-color:var(--border2);transform:translateY(-2px)}
-.mc::after{content:'';position:absolute;top:0;left:0;right:0;height:1.5px;background:var(--ac,var(--g))}
-.mc.amber{--ac:#FFB830;border-top-color:#FFB830}.mc.blue{--ac:#38C5FF;border-top-color:#38C5FF}.mc.purple{--ac:#C084FC;border-top-color:#C084FC}.mc.red{--ac:#FF5C5C;border-top-color:#FF5C5C}
-.mc-lbl{font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.07em;font-weight:500;margin-bottom:8px}
-.mc-val{font-family:var(--font-h);font-size:34px;font-weight:900;letter-spacing:-2px;color:var(--ac,var(--g));line-height:1;margin-bottom:4px}
+.mrow{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}
+.mrow3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:18px}
+.mc{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:20px 22px;position:relative;overflow:hidden;transition:transform .18s,box-shadow .18s;--ac:var(--g);--ac2:var(--g3)}
+.mc:hover{transform:translateY(-3px);box-shadow:0 12px 28px -8px rgba(20,30,60,.18)}
+.mc::before{content:'';position:absolute;inset:0;background:linear-gradient(150deg,var(--ac2) 0%,transparent 55%);pointer-events:none}
+.mc::after{content:'';position:absolute;top:0;left:0;right:0;height:4px;background:var(--ac);border-radius:var(--r) var(--r) 0 0}
+.mc-icon{width:38px;height:38px;border-radius:11px;background:var(--ac);display:flex;align-items:center;justify-content:center;margin-bottom:14px;box-shadow:0 6px 14px -4px var(--ac2);position:relative;z-index:1}
+.mc-icon svg{width:19px;height:19px;stroke:#fff}
+.mc.amber{--ac:var(--amber);--ac2:var(--amber2)}.mc.blue{--ac:var(--blue);--ac2:var(--blue2)}.mc.purple{--ac:var(--purple);--ac2:var(--purple2)}.mc.red{--ac:var(--red);--ac2:var(--red2)}.mc.green{--ac:var(--green);--ac2:var(--green2)}.mc.teal{--ac:var(--teal);--ac2:var(--teal2)}
+.mc-lbl{font-size:11.5px;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;font-weight:700;margin-bottom:6px;position:relative;z-index:1}
+.mc-val{font-family:var(--font-h);font-size:38px;font-weight:800;letter-spacing:-1.5px;color:var(--text);line-height:1;margin-bottom:6px;position:relative;z-index:1}
 .mc-sub{font-size:11px;color:var(--text3)}
 /* TABLE */
 .tw{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:16px}
+/* CHIPS interactivos (filtros tipo Power BI slicer) */
+.chip-row{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}
+.chip{background:var(--bg2);border:1.5px solid var(--border);border-radius:100px;padding:8px 16px;font-size:12px;font-weight:600;color:var(--text2);cursor:pointer;transition:all .15s;display:inline-flex;align-items:center;gap:7px;font-family:var(--font)}
+.chip:hover{border-color:var(--ac,var(--g));color:var(--text);transform:translateY(-1px)}
+.chip.active{background:var(--ac,var(--g));border-color:var(--ac,var(--g));color:#fff;box-shadow:0 6px 16px -4px var(--ac,var(--g))}
+.chip-dot{width:8px;height:8px;border-radius:50%;background:currentColor;opacity:.85}
+/* Tarjeta de gráfica con barra de color superior */
+.chart-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:20px;position:relative;overflow:hidden}
+.chart-card::before{content:'';position:absolute;top:0;left:0;right:0;height:4px;background:var(--ac,var(--g))}
+.chart-card-h{display:flex;align-items:center;gap:10px;margin-bottom:3px}
+.chart-card-icon{width:26px;height:26px;border-radius:8px;background:var(--ac2,var(--g3));display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.chart-card-icon svg{width:14px;height:14px;stroke:var(--ac,var(--g))}
 .tw-h{padding:14px 20px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);gap:10px;flex-wrap:wrap}
-.tw-t{font-family:var(--font-h);font-size:13px;font-weight:700;letter-spacing:-.2px}
+.tw-t{font-family:var(--font-h);font-size:14px;font-weight:800;letter-spacing:-.2px}
 table{width:100%;border-collapse:collapse}
 th{font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;padding:9px 20px;text-align:left;border-bottom:1px solid var(--border)}
 td{padding:11px 20px;font-size:13px;border-bottom:1px solid rgba(91,168,245,.04)}
@@ -270,24 +288,31 @@ tr:hover td{background:var(--g4)}
         <div class="live-pill"><div class="live-dot"></div>En vivo</div>
       </div>
       <div class="mrow" id="dash-metrics"></div>
+      <div class="chip-row" id="dash-chips-equipo"></div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px">
-        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:20px">
-          <div style="font-family:var(--font-h);font-size:13px;font-weight:700;margin-bottom:3px">Pipeline</div>
-          <div style="font-size:11px;color:var(--text2);margin-bottom:14px">Por etapa · datos reales de Odoo</div>
-          <div style="position:relative;height:200px"><canvas id="c-pipe"></canvas></div>
+        <div class="chart-card" style="--ac:var(--blue);--ac2:var(--blue2)">
+          <div class="chart-card-h">
+            <div class="chart-card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3v9l6 3"/></svg></div>
+            <div style="font-family:var(--font-h);font-size:14px;font-weight:800">Pipeline</div>
+          </div>
+          <div style="font-size:11px;color:var(--text2);margin-bottom:14px;margin-left:36px">Por etapa · clic en una porción para filtrar la tabla</div>
+          <div style="position:relative;height:210px"><canvas id="c-pipe"></canvas></div>
         </div>
-        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:20px">
-          <div style="font-family:var(--font-h);font-size:13px;font-weight:700;margin-bottom:3px">Motivos de pérdida</div>
-          <div style="font-size:11px;color:var(--text2);margin-bottom:14px">Últimos 12 meses · sin ruido ni duplicados</div>
-          <div style="position:relative;height:200px"><canvas id="c-dash"></canvas></div>
+        <div class="chart-card" style="--ac:var(--red);--ac2:var(--red2)">
+          <div class="chart-card-h">
+            <div class="chart-card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></div>
+            <div style="font-family:var(--font-h);font-size:14px;font-weight:800">Motivos de pérdida</div>
+          </div>
+          <div style="font-size:11px;color:var(--text2);margin-bottom:14px;margin-left:36px">Últimos 12 meses · sin ruido ni duplicados</div>
+          <div style="position:relative;height:210px"><canvas id="c-dash"></canvas></div>
         </div>
       </div>
-      <div class="tw" style="margin-bottom:16px">
-        <div class="tw-h"><div class="tw-t">👥 Rendimiento del equipo</div></div>
+      <div class="tw" style="margin-bottom:16px;border-top:4px solid var(--purple)">
+        <div class="tw-h"><div class="tw-t">👥 Rendimiento del equipo</div><div style="font-size:11px;color:var(--text2)">Clic en una asesora para filtrar abajo</div></div>
         <div id="dash-equipo" style="padding:12px 16px"></div>
       </div>
-      <div class="tw">
-        <div class="tw-h"><div class="tw-t">Últimos leads</div></div>
+      <div class="tw" style="border-top:4px solid var(--teal)">
+        <div class="tw-h"><div class="tw-t">🕐 Últimos leads</div></div>
         <div id="t-dash"></div>
       </div>
     </div>
@@ -3116,8 +3141,16 @@ function initApp(){
   ['oh-fecha'].forEach(id=>{const el=document.getElementById(id);if(el)el.value=ds;});
 }
 
-// Leads globales para filtrar desde el pastel
+// Leads globales para filtrar desde el pastel / chips de equipo
 let _dashLeads = [];
+let _dashEquipoActivo = null;
+
+const ICONS = {
+  inscrito:'<circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6"/>',
+  activos:'<path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/>',
+  perdidas:'<path d="M23 6l-9.5 9.5-5-5L1 18"/><path d="M17 6h6v6"/>',
+  conversion:'<path d="M12 20V10M18 20V4M6 20v-4"/>'
+};
 
 async function buildDash(){
   let dash=null;
@@ -3135,59 +3168,74 @@ async function buildDash(){
   _dashLeads = dash.ultimos_leads || [];
 
   document.getElementById('dash-metrics').innerHTML=`
-    <div class="mc" style="border-top:2px solid var(--green,#5BA8F5)"><div class="mc-lbl">Inscritos Ciclo 2027</div><div class="mc-val" style="color:var(--green,#5BA8F5)">${res.inscritos_ciclo_2027_confirmados}</div><div class="mc-sub">confirmados · etapa exacta</div></div>
-    <div class="mc"><div class="mc-lbl">Leads activos</div><div class="mc-val">${res.leads_activos.toLocaleString()}</div><div class="mc-sub">últimos 12 meses</div></div>
-    <div class="mc amber"><div class="mc-lbl">Pérdidas reales</div><div class="mc-val">${res.leads_perdidos_reales_admisiones.toLocaleString()}</div><div class="mc-sub">sin ruido ni duplicados</div></div>
-    <div class="mc purple"><div class="mc-lbl">Conversión real</div><div class="mc-val">${res.conversion_real_solo_admisiones}</div><div class="mc-sub">inscritos ÷ (activos+perdidos)</div></div>`;
+    <div class="mc green"><div class="mc-icon"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round">${ICONS.inscrito}</svg></div><div class="mc-lbl">Inscritos Ciclo 2027</div><div class="mc-val">${res.inscritos_ciclo_2027_confirmados}</div><div class="mc-sub">confirmados · etapa exacta</div></div>
+    <div class="mc blue"><div class="mc-icon"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round">${ICONS.activos}</svg></div><div class="mc-lbl">Leads activos</div><div class="mc-val">${res.leads_activos.toLocaleString()}</div><div class="mc-sub">últimos 12 meses</div></div>
+    <div class="mc red"><div class="mc-icon"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round">${ICONS.perdidas}</svg></div><div class="mc-lbl">Pérdidas reales</div><div class="mc-val">${res.leads_perdidos_reales_admisiones.toLocaleString()}</div><div class="mc-sub">sin ruido ni duplicados</div></div>
+    <div class="mc purple"><div class="mc-icon"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round">${ICONS.conversion}</svg></div><div class="mc-lbl">Conversión real</div><div class="mc-val">${res.conversion_real_solo_admisiones}</div><div class="mc-sub">inscritos ÷ (activos+perdidos)</div></div>`;
 
-  const gc='rgba(91,168,245,.06)',tc='rgba(238,242,238,.3)';
+  const gc='rgba(20,30,55,.06)',tc='rgba(20,30,55,.55)';
 
-  // Motivos de pérdida reales — barras horizontales (reemplaza la gráfica semanal ficticia anterior)
+  // Motivos de pérdida reales — barras horizontales, color rojo vívido consistente con la tarjeta
   const motivos=(dash.motivos_perdida_reales_admisiones||[]).slice(0,7);
   const mLabels=motivos.map(m=>m.motivo.length>18?m.motivo.slice(0,18)+'…':m.motivo);
   const mValues=motivos.map(m=>m.cantidad);
   if(cDash)cDash.destroy();
-  cDash=new Chart(document.getElementById('c-dash'),{type:'bar',data:{labels:mLabels,datasets:[{data:mValues,backgroundColor:'rgba(255,75,75,.6)',borderColor:'#FF4B4B',borderWidth:1,borderRadius:6,borderSkipped:false}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{color:gc},ticks:{color:tc,font:{size:10},precision:0}},y:{grid:{display:false},ticks:{color:tc,font:{size:10}}}}}});
+  cDash=new Chart(document.getElementById('c-dash'),{type:'bar',data:{labels:mLabels,datasets:[{data:mValues,backgroundColor:'rgba(255,59,92,.75)',borderColor:'#FF3B5C',borderWidth:0,borderRadius:6,borderSkipped:false}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{backgroundColor:'#141B2E',padding:10,cornerRadius:8,titleFont:{weight:700}}},scales:{x:{grid:{color:gc},ticks:{color:tc,font:{size:10},precision:0}},y:{grid:{display:false},ticks:{color:tc,font:{size:11,weight:600}}}}}});
 
-  // Pastel con etapas REALES del endpoint corregido
+  // Pastel con etapas REALES del endpoint corregido — paleta vívida consistente
   const pipeline=dash.pipeline_por_etapa||[];
   const top=pipeline.slice(0,7);
   const pLabels=top.map(p=>p.etapa);
   const pValues=top.map(p=>p.cantidad);
-  const COLORS=['rgba(75,158,255,.8)','rgba(245,166,35,.8)','rgba(168,85,247,.8)','rgba(91,168,245,.85)','rgba(255,75,75,.6)','rgba(56,189,248,.8)','rgba(251,191,36,.8)'];
-  const BORDERS=['#4B9EFF','#F5A623','#A855F7','#5BA8F5','#FF4B4B','#38BDF8','#FBBF24'];
+  const COLORS=['#2F5CFF','#FF9F1C','#8B5CF6','#00C48C','#FF3B5C','#00C2D1','#EC4899'];
 
   if(cPipe)cPipe.destroy();
   cPipe=new Chart(document.getElementById('c-pipe'),{
     type:'doughnut',
-    data:{labels:pLabels,datasets:[{data:pValues,backgroundColor:COLORS.slice(0,pLabels.length),borderColor:BORDERS.slice(0,pLabels.length),borderWidth:2,hoverOffset:10}]},
+    data:{labels:pLabels,datasets:[{data:pValues,backgroundColor:COLORS.slice(0,pLabels.length),borderColor:'#fff',borderWidth:3,hoverOffset:12}]},
     options:{
-      responsive:true,maintainAspectRatio:false,cutout:'65%',
-      plugins:{legend:{position:'bottom',labels:{color:'rgba(238,242,238,.4)',font:{size:10},padding:10,usePointStyle:true,
-        generateLabels(c){return c.data.labels.map((l,i)=>({text:`${l.length>16?l.slice(0,16)+'…':l} (${c.data.datasets[0].data[i]})`,fillStyle:c.data.datasets[0].backgroundColor[i],strokeStyle:c.data.datasets[0].borderColor[i],lineWidth:1,index:i,datasetIndex:0}));}
-      }},tooltip:{callbacks:{label(ctx){return ` ${ctx.label}: ${ctx.parsed} leads`;}}}}
+      responsive:true,maintainAspectRatio:false,cutout:'62%',
+      onClick(evt,elements){
+        if(!elements.length)return;
+        const etapa=pLabels[elements[0].index];
+        const filtrados=_dashLeads.filter(l=>l.etapa===etapa);
+        renderDashTable(filtrados,etapa);
+      },
+      plugins:{legend:{position:'bottom',labels:{color:'rgba(20,30,55,.6)',font:{size:10,weight:600},padding:10,usePointStyle:true,pointStyle:'circle',
+        generateLabels(c){return c.data.labels.map((l,i)=>({text:`${l.length>16?l.slice(0,16)+'…':l} (${c.data.datasets[0].data[i]})`,fillStyle:c.data.datasets[0].backgroundColor[i],strokeStyle:c.data.datasets[0].backgroundColor[i],lineWidth:1,index:i,datasetIndex:0}));}
+      }},tooltip:{backgroundColor:'#141B2E',padding:10,cornerRadius:8,callbacks:{label(ctx){return ` ${ctx.label}: ${ctx.parsed} leads`;}}}}
     }
   });
 
-  // Rendimiento del equipo — dinámico, sin nombres fijos
+  // Rendimiento del equipo — chips interactivos reales (filtran la tabla de últimos leads) + tabla
   const equipo=dash.rendimiento_equipo||[];
-  const paletaEquipo=['#F5A800','#378ADD','#1D9E75','#A855F7','#E24B4A','#4B9EFF'];
+  const paletaEquipo=['#2F5CFF','#00C48C','#FF9F1C','#8B5CF6','#FF3B5C','#00C2D1','#EC4899'];
+  const chipsEl=document.getElementById('dash-chips-equipo');
+  if(equipo.length){
+    chipsEl.innerHTML = `<button class="chip" id="chip-todos" onclick="filtrarPorAsesora(null)"><span class="chip-dot" style="background:var(--text3)"></span>Todo el equipo</button>` +
+      equipo.map((v,i)=>{
+        const color=paletaEquipo[i%paletaEquipo.length];
+        return `<button class="chip" id="chip-${i}" style="--ac:${color}" onclick="filtrarPorAsesora('${v.vendedor.replace(/'/g,"\\'")}',${i})"><span class="chip-dot" style="color:${color}"></span>${v.vendedor} (${v.total})</button>`;
+      }).join('');
+    document.getElementById('chip-todos').classList.add('active');
+  } else { chipsEl.innerHTML=''; }
+
   document.getElementById('dash-equipo').innerHTML=equipo.length?`<table><thead><tr>
     <th>Asesora</th><th>Leads simples</th><th>Oportunidades</th><th>Inscritos</th><th>Total</th><th>% del total</th>
   </tr></thead><tbody>${equipo.map((v,i)=>{
     const color=paletaEquipo[i%paletaEquipo.length];
     const pctNum=parseInt(v.porcentaje_del_total)||0;
-    return `<tr>
-      <td><div style="font-weight:500;color:${color}">${v.vendedor}</div></td>
+    return `<tr style="cursor:pointer" onclick="filtrarPorAsesora('${v.vendedor.replace(/'/g,"\\'")}',${i})">
+      <td><div style="font-weight:700;color:${color};display:flex;align-items:center;gap:7px"><span class="chip-dot" style="color:${color};width:9px;height:9px"></span>${v.vendedor}</div></td>
       <td style="font-size:13px">${v.leads_simples.toLocaleString()}</td>
       <td style="font-size:13px">${v.oportunidades.toLocaleString()}</td>
-      <td style="font-size:13px;color:var(--green,#5BA8F5);font-weight:600">${v.inscritos}</td>
-      <td style="font-size:14px;font-weight:600">${v.total.toLocaleString()}</td>
+      <td style="font-size:13px;color:var(--green);font-weight:700">${v.inscritos}</td>
+      <td style="font-size:14px;font-weight:800">${v.total.toLocaleString()}</td>
       <td><div style="display:flex;align-items:center;gap:6px">
-        <div style="width:60px;height:4px;background:var(--bg3);border-radius:2px;overflow:hidden">
-          <div style="width:${pctNum}%;height:100%;background:${color};border-radius:2px"></div>
+        <div style="width:60px;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden">
+          <div style="width:${pctNum}%;height:100%;background:${color};border-radius:3px"></div>
         </div>
-        <span style="font-size:11px">${v.porcentaje_del_total}</span>
+        <span style="font-size:11px;font-weight:600">${v.porcentaje_del_total}</span>
       </div></td>
     </tr>`;
   }).join('')}</tbody></table>`
@@ -3197,12 +3245,25 @@ async function buildDash(){
   renderDashTable(_dashLeads, null);
 }
 
+function filtrarPorAsesora(vendedor, idx){
+  document.querySelectorAll('#dash-chips-equipo .chip').forEach(c=>c.classList.remove('active'));
+  if(vendedor===null){
+    document.getElementById('chip-todos').classList.add('active');
+    renderDashTable(_dashLeads, null);
+  } else {
+    document.getElementById('chip-'+idx).classList.add('active');
+    const filtrados=_dashLeads.filter(l=>l.vendedor===vendedor);
+    renderDashTable(filtrados, vendedor);
+  }
+}
+
 function renderDashTable(leads, etapaFiltro){
   const tEl=document.getElementById('t-dash');
   const tw=tEl?.closest('.tw');
+
   if(tw){
     const title=tw.querySelector('.tw-t');
-    if(title) title.textContent = etapaFiltro ? etapaFiltro : 'Últimos leads';
+    if(title) title.textContent = etapaFiltro ? `🕐 ${etapaFiltro}` : '🕐 Últimos leads';
   }
   tEl.innerHTML=leads.length
     ?`<table><thead><tr><th>Nombre</th><th>Teléfono</th><th>Etapa</th><th>Fecha</th></tr></thead><tbody>${leads.map(l=>`<tr>
@@ -3211,9 +3272,8 @@ function renderDashTable(leads, etapaFiltro){
       <td><span class="bx blue" style="font-size:10px">${l.etapa||'—'}</span></td>
       <td style="font-size:11px;color:var(--text3)">${l.creado?l.creado.substring(0,10):'—'}</td>
     </tr>`).join('')}</tbody></table>`
-    :'<div style="text-align:center;padding:20px;color:var(--text3)">Sin datos</div>';
+    :'<div style="text-align:center;padding:20px;color:var(--text3)">Sin datos para este filtro</div>';
 }
-
 
 async function renderLeads(){
   const el=document.getElementById('t-leads');
