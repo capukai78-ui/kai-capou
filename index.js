@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-diagnostico-conteo-inflado'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-filtrar-solo-capouilliez-no-innovo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7227,21 +7227,26 @@ app.post('/api/estado-conexiones/revisar-ahora', authMiddleware, async (req, res
 app.get('/api/dashboard-marketing', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
+    // Esta instancia de Odoo tiene DOS empresas (Colegio Capouilliez y otra llamada
+    // "Innovo", completamente ajena) — sin este filtro, todos los conteos salían
+    // mezclados con datos de la otra empresa (20,349 en vez de los ~5,000-6,000 reales).
+    const FILTRO_EMPRESA = ['company_id', '=', 1]; // 1 = Colegio Capouilliez
+
     const [totalActivos, totalPerdidos] = await Promise.all([
-      odooCallLocal('crm.lead', 'search_count', [[['active', '=', true]]]),
-      odooCallLocal('crm.lead', 'search_count', [[['active', '=', false]]])
+      odooCallLocal('crm.lead', 'search_count', [[['active', '=', true], FILTRO_EMPRESA]]),
+      odooCallLocal('crm.lead', 'search_count', [[['active', '=', false], FILTRO_EMPRESA]])
     ]);
 
     // Traer TODOS los activos (sin límite artificial) con lo mínimo necesario para
     // agrupar en el propio código — evita depender de read_group, que puede variar
     // de formato según la versión de Odoo.
     const activos = await odooCallLocal('crm.lead', 'search_read',
-      [[['active', '=', true]]],
-      { fields: ['id', 'stage_id', 'user_id', 'type', 'create_date'], limit: 5000, context: { active_test: false } }
+      [[['active', '=', true], FILTRO_EMPRESA]],
+      { fields: ['id', 'stage_id', 'user_id', 'type', 'create_date'], limit: 8000, context: { active_test: false } }
     ) || [];
     const perdidos = await odooCallLocal('crm.lead', 'search_read',
-      [[['active', '=', false]]],
-      { fields: ['id', 'lost_reason_id', 'user_id', 'type'], limit: 5000, context: { active_test: false } }
+      [[['active', '=', false], FILTRO_EMPRESA]],
+      { fields: ['id', 'lost_reason_id', 'user_id', 'type'], limit: 8000, context: { active_test: false } }
     ) || [];
 
     // Motivos que NO son admisiones reales — currículums, proveedores, tickets de
@@ -7306,7 +7311,7 @@ app.get('/api/dashboard-marketing', authMiddleware, async (req, res) => {
 
     // Últimos leads reales, en tiempo real
     const ultimos = await odooCallLocal('crm.lead', 'search_read',
-      [[['active', '=', true]]],
+      [[['active', '=', true], FILTRO_EMPRESA]],
       { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'mobile', 'stage_id', 'create_date'], limit: 10, order: 'create_date desc' }
     ) || [];
 
