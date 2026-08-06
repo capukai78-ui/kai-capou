@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-dashboard-unico-fusionado'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-dashboard-visual-ejecutivo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7329,7 +7329,7 @@ app.get('/api/dashboard-marketing', authMiddleware, async (req, res) => {
     // Últimos leads reales, en tiempo real
     const ultimos = await odooCallLocal('crm.lead', 'search_read',
       [[['active', '=', true], FILTRO_EMPRESA]],
-      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'mobile', 'stage_id', 'create_date'], limit: 10, order: 'create_date desc' }
+      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'mobile', 'stage_id', 'user_id', 'create_date'], limit: 20, order: 'create_date desc' }
     ) || [];
 
     // Leads nuevos últimas 24h — mismo criterio ya verificado hoy
@@ -7366,6 +7366,7 @@ app.get('/api/dashboard-marketing', authMiddleware, async (req, res) => {
         nombre: l.partner_name || l.contact_name || l.name,
         telefono: (l.mobile && String(l.mobile) !== 'false') ? l.mobile : (l.phone || null),
         etapa: l.stage_id?.[1] || '',
+        vendedor: l.user_id?.[1] || 'Sin asignar',
         creado: l.create_date
       })),
       leads_nuevos_24h: {
