@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-buscar-texto-amplio'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-inscritos-2027-vs-deuda-pendiente'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7262,7 +7262,13 @@ app.get('/api/dashboard-marketing', authMiddleware, async (req, res) => {
     const totalRuido = perdidosClasificados.filter(l => l.es_ruido).length;
     const totalDuplicados = perdidosClasificados.filter(l => l.es_duplicado).length;
 
-    const inscritos = activos.filter(l => /inscrit/i.test(l.stage_id?.[1] || ''));
+    // "Inscritos" real = SOLO la etapa exacta del ciclo actual ("2027 - Inscritos").
+    // "2026 - Inscritos" es del ciclo anterior (no cuenta para la meta de este año), y
+    // "Deuda Inscripción 2027" es un grupo aparte: familias que ya avanzaron pero
+    // todavía no completan el pago — están "en proyecto", no confirmadas del todo.
+    const inscritos = activos.filter(l => (l.stage_id?.[1] || '') === '2027 - Inscritos');
+    const enProyectoDeudaPendiente = activos.filter(l => (l.stage_id?.[1] || '') === 'Deuda Inscripción 2027');
+    const inscritosCicloAnterior = activos.filter(l => (l.stage_id?.[1] || '') === '2026 - Inscritos');
 
     // Pipeline por etapa (de los activos)
     const porEtapa = {};
@@ -7321,7 +7327,9 @@ app.get('/api/dashboard-marketing', authMiddleware, async (req, res) => {
         leads_perdidos_reales_admisiones: perdidosReales.length,
         excluidos_por_ruido_no_admisiones: totalRuido,
         excluidos_por_duplicado: totalDuplicados,
-        inscritos: inscritos.length,
+        inscritos_ciclo_2027_confirmados: inscritos.length,
+        en_proyecto_deuda_pendiente_de_pago: enProyectoDeudaPendiente.length,
+        inscritos_ciclo_2026_anterior_no_cuenta_para_meta: inscritosCicloAnterior.length,
         conversion_ANTES_sin_filtrar: totalActivos ? `${Math.round((inscritos.length / (totalActivos + totalPerdidos)) * 100)}%` : '0%',
         conversion_real_solo_admisiones: baseRealAdmisiones ? `${Math.round((inscritos.length / baseRealAdmisiones) * 100)}%` : '0%'
       },
