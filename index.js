@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-inscritos-2027-vs-deuda-pendiente'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-diagnostico-conteo-inflado'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7768,6 +7768,27 @@ app.get('/api/debug/buscar-etiqueta', authMiddleware, async (req, res) => {
     const texto = req.query.texto || '';
     const tags = await odooCallLocal('crm.tag', 'search_read', [[['name', 'ilike', texto]]], { fields: ['id', 'name'] });
     res.json({ ok: true, encontradas: tags });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Diagnóstico: comparar search_count vs contar manualmente con search_read, para ver
+// por qué salió un número muy distinto (20,349 vs los ~5,000 que veníamos viendo).
+// GET /api/debug/comparar-conteos
+app.get('/api/debug/comparar-conteos', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const conteoDirecto = await odooCallLocal('crm.lead', 'search_count', [[['active', '=', true]]]);
+    const conteoConContexto = await odooCallLocal('crm.lead', 'search_count', [[['active', '=', true]]], { context: { active_test: false } });
+    const idsDirecto = await odooCallLocal('crm.lead', 'search', [[['active', '=', true]]], { limit: 100000 });
+    const empresas = await odooCallLocal('res.company', 'search_read', [[]], { fields: ['id', 'name'] }).catch(() => []);
+
+    res.json({
+      ok: true,
+      search_count_simple: conteoDirecto,
+      search_count_con_contexto: conteoConContexto,
+      total_ids_reales_con_search: idsDirecto?.length || 0,
+      empresas_en_esta_instancia_de_odoo: empresas
+    });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
