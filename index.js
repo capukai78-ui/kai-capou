@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-dashboard-sin-ruido-y-credito-real'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-buscar-etiqueta-deuda'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7733,6 +7733,18 @@ app.get('/api/debug/probar-solo-lectura', authMiddleware, async (req, res) => {
       agente_despues: despues?.[0]?.agent_id?.[1] || 'ninguno',
       cambio_solo_por_leer: (antes?.[0]?.agent_id?.[1] || null) !== (despues?.[0]?.agent_id?.[1] || null)
     });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Busca etiquetas (crm.tag) que coincidan con un texto — para encontrar el nombre
+// exacto de algo como "Deuda Inscripción 2027" cuando no se sabe si es etapa o etiqueta.
+// GET /api/debug/buscar-etiqueta?texto=deuda
+app.get('/api/debug/buscar-etiqueta', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const texto = req.query.texto || '';
+    const tags = await odooCallLocal('crm.tag', 'search_read', [[['name', 'ilike', texto]]], { fields: ['id', 'name'] });
+    res.json({ ok: true, encontradas: tags });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
