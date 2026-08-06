@@ -4,7 +4,8 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>KAI — Colegio Capouilliez</title>
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
+<script>try{if(localStorage.getItem('kai_tema')==='ledger')document.documentElement.classList.add('theme-ledger');}catch(e){}</script>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,300;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@500;600;700&display=swap" rel="stylesheet"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <style>
 :root{
@@ -18,36 +19,68 @@
   --pink:#EC4899;--pink2:rgba(236,72,153,.14);--cyan:#06B6D4;
   --acrux:#00C2D1;--acrux2:rgba(0,194,209,.14);--acrux3:rgba(0,194,209,.4);
   --font-h:'Outfit',sans-serif;--font:'Plus Jakarta Sans',sans-serif;--r:14px;--r2:10px;
+  --sb-bg:var(--bg2);--sb-grad:none;--num-font:var(--font-h);--grid-tint:rgba(62,123,250,.05);
+  --sb-text:var(--text);--sb-text2:var(--text2);--sb-text3:var(--text3);--sb-border:var(--border);--sb-hov:var(--g4);
+}
+/* ===== TEMA ELEGANTE ("libro de matrícula") — se activa con html.theme-ledger ===== */
+html.theme-ledger{
+  --g:#C89B3C;--g2:#9E7526;--g3:rgba(200,155,60,.14);--g4:rgba(200,155,60,.06);
+  --bg:#FAF7F1;--bg2:#FFFFFF;--bg3:#F2EBDB;--bg4:#EDE3CC;
+  --border:rgba(14,27,51,.10);--border2:rgba(200,155,60,.4);
+  --text:#161B26;--text2:#5B6478;--text3:#8A93A6;
+  --red:#B5433C;--red2:rgba(181,67,60,.12);--amber:#B8792E;--amber2:rgba(184,121,46,.14);
+  --blue:#2E5AA8;--blue2:rgba(46,90,168,.12);--purple:#6B4A9E;--purple2:rgba(107,74,158,.13);
+  --green:#1E8F6F;--green2:rgba(30,143,111,.14);--teal:#1E7D8C;--teal2:rgba(30,125,140,.13);
+  --pink:#A34E72;--pink2:rgba(163,78,114,.13);--cyan:#1E7D8C;
+  --acrux:#1E7D8C;--acrux2:rgba(30,125,140,.13);--acrux3:rgba(30,125,140,.4);
+  --font-h:'Fraunces',serif;--font:'Inter',sans-serif;
+  --sb-bg:#0E1B33;--sb-grad:linear-gradient(190deg,#0E1B33 0%,#0A1428 100%);
+  --num-font:'IBM Plex Mono',monospace;--grid-tint:rgba(200,155,60,.04);
+  --sb-text:#FFFFFF;--sb-text2:rgba(255,255,255,.62);--sb-text3:rgba(241,226,180,.5);--sb-border:rgba(200,155,60,.18);--sb-hov:rgba(255,255,255,.05);
 }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-font-smoothing:antialiased}
-body{font-family:var(--font);background:linear-gradient(135deg,#F6F8FC 0%,#EFF3FA 40%,#E8EEFA 70%,#E3EBFB 100%);color:var(--text);min-height:100vh}
+body{font-family:var(--font);background:var(--body-grad,linear-gradient(135deg,#F6F8FC 0%,#EFF3FA 40%,#E8EEFA 70%,#E3EBFB 100%));color:var(--text);min-height:100vh;transition:background .2s}
+html.theme-ledger body{--body-grad:linear-gradient(135deg,#FAF7F1 0%,#F5F0E4 50%,#F2EBDB 100%)}
 body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
-  background-image:linear-gradient(rgba(62,123,250,.05) 1px,transparent 1px),linear-gradient(90deg,rgba(62,123,250,.05) 1px,transparent 1px);background-size:56px 56px;}
+  background-image:linear-gradient(var(--grid-tint) 1px,transparent 1px),linear-gradient(90deg,var(--grid-tint) 1px,transparent 1px);background-size:56px 56px;}
 .app{display:flex;min-height:100vh;position:relative;z-index:1}
-.sb{width:228px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;position:fixed;height:100vh;z-index:50;overflow-y:auto}
+.sb{width:228px;background:var(--sb-bg);background-image:var(--sb-grad);border-right:1px solid var(--sb-border);display:flex;flex-direction:column;position:fixed;height:100vh;z-index:50;overflow-y:auto}
 .main{margin-left:228px;flex:1;padding:26px 30px}
 /* SIDEBAR */
-.logo{padding:22px 20px 6px;font-family:var(--font-h);font-size:24px;font-weight:800;color:var(--g);letter-spacing:-1.5px;display:flex;align-items:center;gap:7px}
+.logo{padding:22px 20px 6px;font-family:var(--font-h);font-size:24px;font-weight:800;color:var(--sb-text);letter-spacing:-1.5px;display:flex;align-items:center;gap:9px}
+.logo-medal{display:none;width:32px;height:32px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#DEB85A,var(--g) 55%,#9E7526 100%);align-items:center;justify-content:center;position:relative;flex-shrink:0;box-shadow:0 3px 10px rgba(0,0,0,.35),inset 0 1px 2px rgba(255,255,255,.4)}
+.logo-medal::before{content:'';position:absolute;inset:2px;border-radius:50%;border:1px solid rgba(255,255,255,.35)}
+.logo-medal span{font-family:'Fraunces',serif;font-weight:700;font-size:7px;color:#3A2B0C;text-align:center;line-height:1.05}
+html.theme-ledger .logo-medal{display:flex}
+html.theme-ledger .logo-pulse{display:none}
 .logo-pulse{width:7px;height:7px;border-radius:50%;background:var(--g);animation:gp 2.5s ease infinite;flex-shrink:0}
 @keyframes gp{0%,100%{box-shadow:0 0 0 0 rgba(91,168,245,.5)}60%{box-shadow:0 0 0 8px rgba(91,168,245,0)}}
 .plan-tag{margin:8px 16px 14px;background:var(--g3);border:1px solid var(--border2);border-radius:6px;padding:4px 12px;font-size:11px;font-weight:600;color:var(--g);text-transform:uppercase;letter-spacing:.08em;display:inline-flex;align-items:center;gap:5px}
+html.theme-ledger .plan-tag{color:#F1E2B4}
 .plan-tag::before{content:'';width:5px;height:5px;border-radius:50%;background:var(--g);animation:gp 2s ease infinite}
 .role-badge{display:inline-block;padding:2px 10px;border-radius:4px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;margin:0 16px 14px}
 .ra{background:rgba(168,85,247,.15);color:#A855F7}
 .rv{background:rgba(75,158,255,.15);color:#4B9EFF}
 .rg{background:rgba(245,166,35,.15);color:#F5A623}
-.ns{font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.12em;padding:0 20px 5px;margin-top:4px}
-.nl{display:flex;align-items:center;gap:10px;padding:9px 20px;font-size:13px;color:var(--text2);cursor:pointer;transition:all .15s;border-left:2px solid transparent;text-decoration:none}
-.nl:hover{color:var(--text);background:var(--g4)}
+.ns{font-size:10px;font-weight:700;color:var(--sb-text3);text-transform:uppercase;letter-spacing:.12em;padding:0 20px 5px;margin-top:4px}
+.nl{display:flex;align-items:center;gap:10px;padding:9px 20px;font-size:13px;color:var(--sb-text2);cursor:pointer;transition:all .15s;border-left:2px solid transparent;text-decoration:none}
+.nl:hover{color:var(--sb-text);background:var(--sb-hov)}
 .nl.active{color:var(--g);background:var(--g3);border-left-color:var(--g);font-weight:600;letter-spacing:-.01em}
 .nl svg{width:15px;height:15px;opacity:.7;flex-shrink:0}
 .nl.active svg{opacity:1}
-.sb-bot{margin-top:auto;padding:14px 16px;border-top:1px solid var(--border)}
-.uc{display:flex;align-items:center;gap:10px;padding:10px;border-radius:var(--r2);background:var(--bg3);border:1px solid var(--border)}
+.sb-bot{margin-top:auto;padding:14px 16px;border-top:1px solid var(--sb-border)}
+.uc{display:flex;align-items:center;gap:10px;padding:10px;border-radius:var(--r2);background:rgba(255,255,255,.06);border:1px solid var(--sb-border)}
+html:not(.theme-ledger) .uc{background:var(--bg3);border-color:var(--border)}
 .uav{width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,var(--g),var(--g2));display:flex;align-items:center;justify-content:center;font-family:var(--font-h);font-size:14px;font-weight:700;color:#000;flex-shrink:0}
-.un{font-size:13px;font-weight:500}.ue{font-size:10px;color:var(--text2);margin-top:1px}
-.logout-btn{font-size:11px;color:var(--text3);cursor:pointer;background:none;border:none;margin-top:8px;padding:4px 10px;display:flex;align-items:center;gap:4px;transition:color .15s;font-family:var(--font)}
+.un{font-size:13px;font-weight:500;color:var(--sb-text)}.ue{font-size:10px;color:var(--sb-text2);margin-top:1px}
+.logout-btn{font-size:11px;color:var(--sb-text3);cursor:pointer;background:none;border:none;margin-top:8px;padding:4px 10px;display:flex;align-items:center;gap:4px;transition:color .15s;font-family:var(--font)}
 .logout-btn:hover{color:var(--red)}
+/* SELECTOR DE TEMA */
+.theme-switch{display:flex;background:rgba(255,255,255,.06);border:1px solid var(--sb-border);border-radius:100px;padding:3px;margin:0 16px 14px;gap:2px}
+html:not(.theme-ledger) .theme-switch{background:var(--bg3)}
+.theme-opt{flex:1;text-align:center;padding:6px 4px;border-radius:100px;font-size:10.5px;font-weight:700;color:var(--sb-text3);cursor:pointer;transition:all .15s;font-family:var(--font)}
+.theme-opt.active{background:var(--g);color:#fff}
+html.theme-ledger .theme-opt.active{color:#2A1E08}
 /* LAYOUT HELPERS */
 .ph{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:22px;gap:12px;flex-wrap:wrap}
 .ph-title{font-family:var(--font-h);font-size:22px;font-weight:800;letter-spacing:-.8px}
@@ -67,7 +100,7 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
 .mc-icon svg{width:19px;height:19px;stroke:#fff}
 .mc.amber{--ac:var(--amber);--ac2:var(--amber2)}.mc.blue{--ac:var(--blue);--ac2:var(--blue2)}.mc.purple{--ac:var(--purple);--ac2:var(--purple2)}.mc.red{--ac:var(--red);--ac2:var(--red2)}.mc.green{--ac:var(--green);--ac2:var(--green2)}.mc.teal{--ac:var(--teal);--ac2:var(--teal2)}
 .mc-lbl{font-size:11.5px;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;font-weight:700;margin-bottom:6px;position:relative;z-index:1}
-.mc-val{font-family:var(--font-h);font-size:38px;font-weight:800;letter-spacing:-1.5px;color:var(--text);line-height:1;margin-bottom:6px;position:relative;z-index:1}
+.mc-val{font-family:var(--num-font);font-size:38px;font-weight:800;letter-spacing:-1.5px;color:var(--text);line-height:1;margin-bottom:6px;position:relative;z-index:1;font-variant-numeric:tabular-nums}
 .mc-sub{font-size:11px;color:var(--text3)}
 /* TABLE */
 .tw{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:16px}
@@ -222,8 +255,12 @@ tr:hover td{background:var(--g4)}
 
 <div id="app" class="app" style="display:none">
   <aside class="sb">
-    <div class="logo"><div class="logo-pulse"></div>KAI</div>
-    <div id="kai-version-display" style="font-size:9px;color:var(--text3);margin:-8px 0 10px 2px;letter-spacing:.05em">v...</div>
+    <div class="logo"><div class="logo-pulse"></div><div class="logo-medal"><span>★<br>1923</span></div>KAI</div>
+    <div id="kai-version-display" style="font-size:9px;color:var(--sb-text3);margin:-8px 0 10px 2px;letter-spacing:.05em">v...</div>
+    <div class="theme-switch">
+      <div class="theme-opt" id="theme-opt-clasico" onclick="setTemaKAI('clasico')">Clásico</div>
+      <div class="theme-opt" id="theme-opt-ledger" onclick="setTemaKAI('ledger')">Elegante</div>
+    </div>
     <div id="plan-tag" class="plan-tag">Plan Profesional</div>
     <div id="role-badge" class="role-badge ra">👑 Administrador</div>
 
@@ -3134,7 +3171,20 @@ async function _loadMonitoreoOriginal(){
   }
 }
 
+function setTemaKAI(nombre){
+  const html=document.documentElement;
+  if(nombre==='ledger') html.classList.add('theme-ledger'); else html.classList.remove('theme-ledger');
+  try{localStorage.setItem('kai_tema',nombre);}catch(e){}
+  document.getElementById('theme-opt-clasico')?.classList.toggle('active',nombre==='clasico');
+  document.getElementById('theme-opt-ledger')?.classList.toggle('active',nombre==='ledger');
+  // Recolorear las gráficas del Dashboard si está visible, para que combinen con el tema
+  if(document.getElementById('p-dashboard')?.classList.contains('active')) buildDash();
+}
+
 function initApp(){
+  const temaGuardado=document.documentElement.classList.contains('theme-ledger')?'ledger':'clasico';
+  document.getElementById('theme-opt-clasico')?.classList.toggle('active',temaGuardado==='clasico');
+  document.getElementById('theme-opt-ledger')?.classList.toggle('active',temaGuardado==='ledger');
   buildDash(); renderCitas(); calcCom(); renderVentas();
   const d=new Date();d.setDate(d.getDate()+(6-d.getDay()+7)%7||7);
   const ds=d.toISOString().substring(0,10);
@@ -3174,20 +3224,23 @@ async function buildDash(){
     <div class="mc purple"><div class="mc-icon"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round">${ICONS.conversion}</svg></div><div class="mc-lbl">Conversión real</div><div class="mc-val">${res.conversion_real_solo_admisiones}</div><div class="mc-sub">inscritos ÷ (activos+perdidos)</div></div>`;
 
   const gc='rgba(20,30,55,.06)',tc='rgba(20,30,55,.55)';
+  const esLedger=document.documentElement.classList.contains('theme-ledger');
+  const rojoTema=esLedger?'#B5433C':'#FF3B5C';
+  const navyTema=esLedger?'#0E1B33':'#141B2E';
 
   // Motivos de pérdida reales — barras horizontales, color rojo vívido consistente con la tarjeta
   const motivos=(dash.motivos_perdida_reales_admisiones||[]).slice(0,7);
   const mLabels=motivos.map(m=>m.motivo.length>18?m.motivo.slice(0,18)+'…':m.motivo);
   const mValues=motivos.map(m=>m.cantidad);
   if(cDash)cDash.destroy();
-  cDash=new Chart(document.getElementById('c-dash'),{type:'bar',data:{labels:mLabels,datasets:[{data:mValues,backgroundColor:'rgba(255,59,92,.75)',borderColor:'#FF3B5C',borderWidth:0,borderRadius:6,borderSkipped:false}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{backgroundColor:'#141B2E',padding:10,cornerRadius:8,titleFont:{weight:700}}},scales:{x:{grid:{color:gc},ticks:{color:tc,font:{size:10},precision:0}},y:{grid:{display:false},ticks:{color:tc,font:{size:11,weight:600}}}}}});
+  cDash=new Chart(document.getElementById('c-dash'),{type:'bar',data:{labels:mLabels,datasets:[{data:mValues,backgroundColor:rojoTema+'BF',borderColor:rojoTema,borderWidth:0,borderRadius:6,borderSkipped:false}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{backgroundColor:navyTema,padding:10,cornerRadius:8,titleFont:{weight:700}}},scales:{x:{grid:{color:gc},ticks:{color:tc,font:{size:10},precision:0}},y:{grid:{display:false},ticks:{color:tc,font:{size:11,weight:600}}}}}});
 
   // Pastel con etapas REALES del endpoint corregido — paleta vívida consistente
   const pipeline=dash.pipeline_por_etapa||[];
   const top=pipeline.slice(0,7);
   const pLabels=top.map(p=>p.etapa);
   const pValues=top.map(p=>p.cantidad);
-  const COLORS=['#2F5CFF','#FF9F1C','#8B5CF6','#00C48C','#FF3B5C','#00C2D1','#EC4899'];
+  const COLORS=esLedger?['#2E5AA8','#C89B3C','#6B4A9E','#1E8F6F','#B5433C','#1E7D8C','#A34E72']:['#2F5CFF','#FF9F1C','#8B5CF6','#00C48C','#FF3B5C','#00C2D1','#EC4899'];
 
   if(cPipe)cPipe.destroy();
   cPipe=new Chart(document.getElementById('c-pipe'),{
@@ -3203,13 +3256,13 @@ async function buildDash(){
       },
       plugins:{legend:{position:'bottom',labels:{color:'rgba(20,30,55,.6)',font:{size:10,weight:600},padding:10,usePointStyle:true,pointStyle:'circle',
         generateLabels(c){return c.data.labels.map((l,i)=>({text:`${l.length>16?l.slice(0,16)+'…':l} (${c.data.datasets[0].data[i]})`,fillStyle:c.data.datasets[0].backgroundColor[i],strokeStyle:c.data.datasets[0].backgroundColor[i],lineWidth:1,index:i,datasetIndex:0}));}
-      }},tooltip:{backgroundColor:'#141B2E',padding:10,cornerRadius:8,callbacks:{label(ctx){return ` ${ctx.label}: ${ctx.parsed} leads`;}}}}
+      }},tooltip:{backgroundColor:navyTema,padding:10,cornerRadius:8,callbacks:{label(ctx){return ` ${ctx.label}: ${ctx.parsed} leads`;}}}}
     }
   });
 
   // Rendimiento del equipo — chips interactivos reales (filtran la tabla de últimos leads) + tabla
   const equipo=dash.rendimiento_equipo||[];
-  const paletaEquipo=['#2F5CFF','#00C48C','#FF9F1C','#8B5CF6','#FF3B5C','#00C2D1','#EC4899'];
+  const paletaEquipo=esLedger?['#2E5AA8','#1E8F6F','#B8792E','#6B4A9E','#B5433C','#1E7D8C','#A34E72']:['#2F5CFF','#00C48C','#FF9F1C','#8B5CF6','#FF3B5C','#00C2D1','#EC4899'];
   const chipsEl=document.getElementById('dash-chips-equipo');
   if(equipo.length){
     chipsEl.innerHTML = `<button class="chip" id="chip-todos" onclick="filtrarPorAsesora(null)"><span class="chip-dot" style="background:var(--text3)"></span>Todo el equipo</button>` +
