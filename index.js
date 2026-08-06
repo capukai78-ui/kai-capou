@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-filtrar-solo-capouilliez-no-innovo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-dashboard-12-meses'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7228,24 +7228,30 @@ app.get('/api/dashboard-marketing', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
     // Esta instancia de Odoo tiene DOS empresas (Colegio Capouilliez y otra llamada
-    // "Innovo", completamente ajena) — sin este filtro, todos los conteos salían
-    // mezclados con datos de la otra empresa (20,349 en vez de los ~5,000-6,000 reales).
+    // "Innovo", completamente ajena) — se filtra por si acaso, aunque no era la causa
+    // principal del número inflado (era simplemente el total histórico completo).
     const FILTRO_EMPRESA = ['company_id', '=', 1]; // 1 = Colegio Capouilliez
 
+    // Un dashboard de marketing diario no debe medirse contra TODA la historia del CRM
+    // (años de datos) — se acota a los últimos 12 meses, que es lo que refleja la
+    // tendencia real y accionable de hoy.
+    const desde12Meses = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').substring(0, 19);
+    const FILTRO_FECHA = ['create_date', '>=', desde12Meses];
+
     const [totalActivos, totalPerdidos] = await Promise.all([
-      odooCallLocal('crm.lead', 'search_count', [[['active', '=', true], FILTRO_EMPRESA]]),
-      odooCallLocal('crm.lead', 'search_count', [[['active', '=', false], FILTRO_EMPRESA]])
+      odooCallLocal('crm.lead', 'search_count', [[['active', '=', true], FILTRO_EMPRESA, FILTRO_FECHA]]),
+      odooCallLocal('crm.lead', 'search_count', [[['active', '=', false], FILTRO_EMPRESA, FILTRO_FECHA]])
     ]);
 
     // Traer TODOS los activos (sin límite artificial) con lo mínimo necesario para
     // agrupar en el propio código — evita depender de read_group, que puede variar
     // de formato según la versión de Odoo.
     const activos = await odooCallLocal('crm.lead', 'search_read',
-      [[['active', '=', true], FILTRO_EMPRESA]],
+      [[['active', '=', true], FILTRO_EMPRESA, FILTRO_FECHA]],
       { fields: ['id', 'stage_id', 'user_id', 'type', 'create_date'], limit: 8000, context: { active_test: false } }
     ) || [];
     const perdidos = await odooCallLocal('crm.lead', 'search_read',
-      [[['active', '=', false], FILTRO_EMPRESA]],
+      [[['active', '=', false], FILTRO_EMPRESA, FILTRO_FECHA]],
       { fields: ['id', 'lost_reason_id', 'user_id', 'type'], limit: 8000, context: { active_test: false } }
     ) || [];
 
@@ -7268,12 +7274,23 @@ app.get('/api/dashboard-marketing', authMiddleware, async (req, res) => {
     const totalDuplicados = perdidosClasificados.filter(l => l.es_duplicado).length;
 
     // "Inscritos" real = SOLO la etapa exacta del ciclo actual ("2027 - Inscritos").
-    // "2026 - Inscritos" es del ciclo anterior (no cuenta para la meta de este año), y
-    // "Deuda Inscripción 2027" es un grupo aparte: familias que ya avanzaron pero
-    // todavía no completan el pago — están "en proyecto", no confirmadas del todo.
-    const inscritos = activos.filter(l => (l.stage_id?.[1] || '') === '2027 - Inscritos');
-    const enProyectoDeudaPendiente = activos.filter(l => (l.stage_id?.[1] || '') === 'Deuda Inscripción 2027');
-    const inscritosCicloAnterior = activos.filter(l => (l.stage_id?.[1] || '') === '2026 - Inscritos');
+    // Esta consulta va SIN el filtro de 12 meses — el ciclo de admisiones puede llevar
+    // captando leads desde antes de esa ventana, y no queremos perder inscritos reales
+    // solo por haber entrado al embudo hace más de un año.
+    const [inscritosSinLimite, enProyectoSinLimite, inscritosCicloAnteriorSinLimite] = await Promise.all([
+      odooCallLocal('crm.lead', 'search_read',
+        [[['active', '=', true], FILTRO_EMPRESA, ['stage_id.name', '=', '2027 - Inscritos']]],
+        { fields: ['id', 'user_id'], limit: 2000, context: { active_test: false } }
+      ).catch(() => []),
+      odooCallLocal('crm.lead', 'search_read',
+        [[['active', '=', true], FILTRO_EMPRESA, ['stage_id.name', '=', 'Deuda Inscripción 2027']]],
+        { fields: ['id', 'user_id'], limit: 2000, context: { active_test: false } }
+      ).catch(() => []),
+      odooCallLocal('crm.lead', 'search_count', [[['active', '=', true], FILTRO_EMPRESA, ['stage_id.name', '=', '2026 - Inscritos']]]).catch(() => 0)
+    ]);
+    const inscritos = inscritosSinLimite;
+    const enProyectoDeudaPendiente = enProyectoSinLimite;
+    const inscritosCicloAnterior = { length: inscritosCicloAnteriorSinLimite };
 
     // Pipeline por etapa (de los activos)
     const porEtapa = {};
@@ -7332,11 +7349,12 @@ app.get('/api/dashboard-marketing', authMiddleware, async (req, res) => {
         leads_perdidos_reales_admisiones: perdidosReales.length,
         excluidos_por_ruido_no_admisiones: totalRuido,
         excluidos_por_duplicado: totalDuplicados,
+        periodo_medido: 'Últimos 12 meses (excepto Inscritos, que cuenta el ciclo completo)',
         inscritos_ciclo_2027_confirmados: inscritos.length,
         en_proyecto_deuda_pendiente_de_pago: enProyectoDeudaPendiente.length,
         inscritos_ciclo_2026_anterior_no_cuenta_para_meta: inscritosCicloAnterior.length,
-        conversion_ANTES_sin_filtrar: totalActivos ? `${Math.round((inscritos.length / (totalActivos + totalPerdidos)) * 100)}%` : '0%',
-        conversion_real_solo_admisiones: baseRealAdmisiones ? `${Math.round((inscritos.length / baseRealAdmisiones) * 100)}%` : '0%'
+        conversion_ANTES_sin_filtrar: totalActivos ? `${((inscritos.length / (totalActivos + totalPerdidos)) * 100).toFixed(1)}%` : '0%',
+        conversion_real_solo_admisiones: baseRealAdmisiones ? `${((inscritos.length / baseRealAdmisiones) * 100).toFixed(1)}%` : '0%'
       },
       pipeline_por_etapa: pipelinePorEtapa,
       motivos_perdida_reales_admisiones: motivosPerdidaReales,
