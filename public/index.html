@@ -230,7 +230,7 @@ tr:hover td{background:var(--g4)}
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>Mis Comisiones
     </a>
     <a class="nl" id="nav-marketing" onclick="nav('marketing',this)">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>Marketing
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>Leads Nuevos
     </a>
     <a class="nl" id="nav-monitoreo" onclick="nav('monitoreo',this)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/><path d="M6 8h.01M9 8h6M6 11h12"/></svg>Monitoreo
@@ -270,17 +270,21 @@ tr:hover td{background:var(--g4)}
         <div class="live-pill"><div class="live-dot"></div>En vivo</div>
       </div>
       <div class="mrow" id="dash-metrics"></div>
-      <div style="display:grid;grid-template-columns:1.6fr 1fr;gap:14px;margin-bottom:16px">
-        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:20px">
-          <div style="font-family:var(--font-h);font-size:13px;font-weight:700;margin-bottom:3px">Actividad semanal</div>
-          <div style="font-size:11px;color:var(--text2);margin-bottom:14px">Padres contactados por día</div>
-          <div style="position:relative;height:180px"><canvas id="c-dash"></canvas></div>
-        </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px">
         <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:20px">
           <div style="font-family:var(--font-h);font-size:13px;font-weight:700;margin-bottom:3px">Pipeline</div>
-          <div style="font-size:11px;color:var(--text2);margin-bottom:14px">Por etapa</div>
-          <div style="position:relative;height:180px"><canvas id="c-pipe"></canvas></div>
+          <div style="font-size:11px;color:var(--text2);margin-bottom:14px">Por etapa · datos reales de Odoo</div>
+          <div style="position:relative;height:200px"><canvas id="c-pipe"></canvas></div>
         </div>
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:20px">
+          <div style="font-family:var(--font-h);font-size:13px;font-weight:700;margin-bottom:3px">Motivos de pérdida</div>
+          <div style="font-size:11px;color:var(--text2);margin-bottom:14px">Últimos 12 meses · sin ruido ni duplicados</div>
+          <div style="position:relative;height:200px"><canvas id="c-dash"></canvas></div>
+        </div>
+      </div>
+      <div class="tw" style="margin-bottom:16px">
+        <div class="tw-h"><div class="tw-t">👥 Rendimiento del equipo</div></div>
+        <div id="dash-equipo" style="padding:12px 16px"></div>
       </div>
       <div class="tw">
         <div class="tw-h"><div class="tw-t">Últimos leads</div></div>
@@ -974,23 +978,7 @@ tr:hover td{background:var(--g4)}
 
     <div class="page" id="p-marketing">
       <div class="ph">
-        <div><div class="ph-title">Marketing &amp; Rendimiento</div><div class="ph-sub">Últimos 12 meses (Inscritos = ciclo completo) · Odoo producción, solo Colegio Capouilliez</div></div>
-        <button class="rpill" onclick="loadMarketing()">↻ Actualizar</button>
-      </div>
-      <div class="dash-metrics" id="mkt-kpis">
-        <div class="mc"><div class="mc-lbl">Cargando...</div><div class="mc-val">⏳</div></div>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
-        <div class="tw"><div class="tw-h"><div class="tw-t">📊 Pipeline por etapa</div></div><div id="mkt-pipeline" style="padding:12px 16px"></div></div>
-        <div class="tw"><div class="tw-h"><div class="tw-t">❌ Top motivos de pérdida</div></div><div id="mkt-perdidos" style="padding:12px 16px"></div></div>
-      </div>
-      <div class="tw" style="margin-bottom:16px">
-        <div class="tw-h"><div class="tw-t">👥 Rendimiento del equipo</div></div>
-        <div id="mkt-equipo" style="padding:12px 16px"></div>
-      </div>
-      <div class="tw">
-        <div class="tw-h"><div class="tw-t">🕐 Últimos leads en Odoo</div><div style="font-size:11px;color:var(--text3)">Tiempo real · Producción</div></div>
-        <div id="mkt-leads"></div>
+        <div><div class="ph-title">Leads Nuevos</div><div class="ph-sub">Escaneo y asignación · Para ver KPIs y rendimiento del equipo ve a Dashboard</div></div>
       </div>
 
       <!-- LEADS NUEVOS SIN CONTACTAR -->
@@ -1177,7 +1165,7 @@ function nav(page,el){
   if(page==='usuarios'){loadUsuarios();loadSedes();}
   if(page==='faqs')loadFaqs();
   if(page==='docs')loadDocs();
-  if(page==='marketing'){loadMarketing(); iniciarAutoEscaneoLeads();}
+  if(page==='marketing'){iniciarAutoEscaneoLeads();}
   else { detenerAutoEscaneoLeads(); }
   if(page==='chatslive'){
     // La pestaña "WhatsApp / IG / Messenger" es principalmente de pruebas internas del
@@ -3121,81 +3109,73 @@ async function _loadMonitoreoOriginal(){
   }
 }
 
-async function loadMarketing(){
-  const kpisEl=document.getElementById('mkt-kpis');
-  const pipeEl=document.getElementById('mkt-pipeline');
-  const perdEl=document.getElementById('mkt-perdidos');
-  const equipoEl=document.getElementById('mkt-equipo');
-  const leadsEl=document.getElementById('mkt-leads');
+function initApp(){
+  buildDash(); renderCitas(); calcCom(); renderVentas();
+  const d=new Date();d.setDate(d.getDate()+(6-d.getDay()+7)%7||7);
+  const ds=d.toISOString().substring(0,10);
+  ['oh-fecha'].forEach(id=>{const el=document.getElementById(id);if(el)el.value=ds;});
+}
 
-  kpisEl.innerHTML='<div class="mc"><div class="mc-lbl">Cargando datos de Odoo...</div><div class="mc-val">⏳</div></div>';
+// Leads globales para filtrar desde el pastel
+let _dashLeads = [];
 
+async function buildDash(){
   let dash=null;
-  try{
+  try {
     const r=await fetch(API+'/api/dashboard-marketing',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
     if(r.ok) dash=r;
-  }catch(e){console.warn('Error cargando marketing:',e);}
+  } catch(e){ console.warn('Dashboard no disponible', e); }
 
   if(!dash){
-    kpisEl.innerHTML='<div class="mc"><div class="mc-lbl">No se pudo cargar</div><div class="mc-val">—</div></div>';
+    document.getElementById('dash-metrics').innerHTML='<div class="mc"><div class="mc-lbl">No se pudo cargar</div><div class="mc-val">—</div></div>';
     return;
   }
 
   const res=dash.resumen;
+  _dashLeads = dash.ultimos_leads || [];
 
-  // KPIs — el número central es Inscritos del ciclo actual, no un conteo mezclado
-  kpisEl.innerHTML=`
-    <div class="mc" style="border-top:2px solid var(--green,#5BA8F5);background:linear-gradient(180deg,var(--bg1) 0%,rgba(91,168,245,.06) 250%)">
-      <div class="mc-lbl">Inscritos Ciclo 2027</div><div class="mc-val" style="color:var(--green,#5BA8F5)">${res.inscritos_ciclo_2027_confirmados}</div>
-      <div class="mc-sub">confirmados · etapa exacta</div></div>
+  document.getElementById('dash-metrics').innerHTML=`
+    <div class="mc" style="border-top:2px solid var(--green,#5BA8F5)"><div class="mc-lbl">Inscritos Ciclo 2027</div><div class="mc-val" style="color:var(--green,#5BA8F5)">${res.inscritos_ciclo_2027_confirmados}</div><div class="mc-sub">confirmados · etapa exacta</div></div>
     <div class="mc"><div class="mc-lbl">Leads activos</div><div class="mc-val">${res.leads_activos.toLocaleString()}</div><div class="mc-sub">últimos 12 meses</div></div>
-    <div class="mc" style="border-top:2px solid var(--red,#E24B4A)"><div class="mc-lbl">Pérdidas reales</div><div class="mc-val" style="color:var(--red,#E24B4A)">${res.leads_perdidos_reales_admisiones.toLocaleString()}</div>
-      <div class="mc-sub">sin ruido ni duplicados</div></div>
-    <div class="mc" style="border-top:2px solid var(--purple,#A855F7)"><div class="mc-lbl">Conversión real</div><div class="mc-val" style="color:var(--purple,#A855F7)">${res.conversion_real_solo_admisiones}</div>
-      <div class="mc-sub">inscritos ÷ (activos+perdidos reales)</div></div>
-    <div class="mc"><div class="mc-lbl">En proyecto (deuda pend.)</div><div class="mc-val">${res.en_proyecto_deuda_pendiente_de_pago}</div><div class="mc-sub">avanzaron, falta el pago</div></div>
-    <div class="mc"><div class="mc-lbl">Excluidos como ruido/dup.</div><div class="mc-val" style="color:var(--text3)">${(res.excluidos_por_ruido_no_admisiones+res.excluidos_por_duplicado).toLocaleString()}</div><div class="mc-sub">${res.excluidos_por_ruido_no_admisiones} ruido + ${res.excluidos_por_duplicado} duplicados</div></div>`;
+    <div class="mc amber"><div class="mc-lbl">Pérdidas reales</div><div class="mc-val">${res.leads_perdidos_reales_admisiones.toLocaleString()}</div><div class="mc-sub">sin ruido ni duplicados</div></div>
+    <div class="mc purple"><div class="mc-lbl">Conversión real</div><div class="mc-val">${res.conversion_real_solo_admisiones}</div><div class="mc-sub">inscritos ÷ (activos+perdidos)</div></div>`;
 
-  // Pipeline por etapa — 100% de los datos reales que llegaron del servidor
+  const gc='rgba(91,168,245,.06)',tc='rgba(238,242,238,.3)';
+
+  // Motivos de pérdida reales — barras horizontales (reemplaza la gráfica semanal ficticia anterior)
+  const motivos=(dash.motivos_perdida_reales_admisiones||[]).slice(0,7);
+  const mLabels=motivos.map(m=>m.motivo.length>18?m.motivo.slice(0,18)+'…':m.motivo);
+  const mValues=motivos.map(m=>m.cantidad);
+  if(cDash)cDash.destroy();
+  cDash=new Chart(document.getElementById('c-dash'),{type:'bar',data:{labels:mLabels,datasets:[{data:mValues,backgroundColor:'rgba(255,75,75,.6)',borderColor:'#FF4B4B',borderWidth:1,borderRadius:6,borderSkipped:false}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{color:gc},ticks:{color:tc,font:{size:10},precision:0}},y:{grid:{display:false},ticks:{color:tc,font:{size:10}}}}}});
+
+  // Pastel con etapas REALES del endpoint corregido
   const pipeline=dash.pipeline_por_etapa||[];
-  const maxPipe=Math.max(...pipeline.map(p=>p.cantidad),1);
-  pipeEl.innerHTML=pipeline.slice(0,12).map(p=>{
-    const pct=Math.round((p.cantidad/maxPipe)*100);
-    const color=/inscrit/i.test(p.etapa)?'var(--green,#5BA8F5)':/perdido/i.test(p.etapa)?'var(--red,#E24B4A)':'var(--blue,#4B9EFF)';
-    return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12px">
-      <div style="min-width:170px;color:var(--text2);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.etapa}">${p.etapa}</div>
-      <div style="flex:1;height:7px;background:var(--bg3);border-radius:3px;overflow:hidden">
-        <div style="width:${pct}%;height:100%;background:${color};border-radius:3px"></div>
-      </div>
-      <div style="min-width:34px;text-align:right;font-weight:600">${p.cantidad.toLocaleString()}</div>
-    </div>`;
-  }).join('') || '<div style="color:var(--text3);font-size:12px">Sin datos</div>';
+  const top=pipeline.slice(0,7);
+  const pLabels=top.map(p=>p.etapa);
+  const pValues=top.map(p=>p.cantidad);
+  const COLORS=['rgba(75,158,255,.8)','rgba(245,166,35,.8)','rgba(168,85,247,.8)','rgba(91,168,245,.85)','rgba(255,75,75,.6)','rgba(56,189,248,.8)','rgba(251,191,36,.8)'];
+  const BORDERS=['#4B9EFF','#F5A623','#A855F7','#5BA8F5','#FF4B4B','#38BDF8','#FBBF24'];
 
-  // Motivos de pérdida reales — ya vienen filtrados de ruido/duplicados desde el servidor
-  const motivos=dash.motivos_perdida_reales_admisiones||[];
-  const maxMot=Math.max(...motivos.map(m=>m.cantidad),1);
-  perdEl.innerHTML=motivos.slice(0,10).map(m=>{
-    const pct=Math.round((m.cantidad/maxMot)*100);
-    const color=m.cantidad>80?'var(--red,#E24B4A)':m.cantidad>30?'#F09595':'#FFBBBB';
-    return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12px">
-      <div style="min-width:170px;color:var(--text2);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${m.motivo}">${m.motivo}</div>
-      <div style="flex:1;height:7px;background:var(--bg3);border-radius:3px;overflow:hidden">
-        <div style="width:${pct}%;height:100%;background:${color};border-radius:3px"></div>
-      </div>
-      <div style="min-width:24px;text-align:right;font-weight:500">${m.cantidad}</div>
-    </div>`;
-  }).join('') || '<div style="color:var(--text3);font-size:12px">Sin datos</div>';
+  if(cPipe)cPipe.destroy();
+  cPipe=new Chart(document.getElementById('c-pipe'),{
+    type:'doughnut',
+    data:{labels:pLabels,datasets:[{data:pValues,backgroundColor:COLORS.slice(0,pLabels.length),borderColor:BORDERS.slice(0,pLabels.length),borderWidth:2,hoverOffset:10}]},
+    options:{
+      responsive:true,maintainAspectRatio:false,cutout:'65%',
+      plugins:{legend:{position:'bottom',labels:{color:'rgba(238,242,238,.4)',font:{size:10},padding:10,usePointStyle:true,
+        generateLabels(c){return c.data.labels.map((l,i)=>({text:`${l.length>16?l.slice(0,16)+'…':l} (${c.data.datasets[0].data[i]})`,fillStyle:c.data.datasets[0].backgroundColor[i],strokeStyle:c.data.datasets[0].borderColor[i],lineWidth:1,index:i,datasetIndex:0}));}
+      }},tooltip:{callbacks:{label(ctx){return ` ${ctx.label}: ${ctx.parsed} leads`;}}}}
+    }
+  });
 
-  // Rendimiento del equipo — TODAS las vendedoras reales que devuelva Odoo, no una
-  // lista fija de 3 nombres. Antes esto hacía ver a Cindy/Vanessa en 0% por error.
+  // Rendimiento del equipo — dinámico, sin nombres fijos
   const equipo=dash.rendimiento_equipo||[];
-  const coloresEquipo={};
   const paletaEquipo=['#F5A800','#378ADD','#1D9E75','#A855F7','#E24B4A','#4B9EFF'];
-  equipo.forEach((v,i)=>{ coloresEquipo[v.vendedor]=paletaEquipo[i%paletaEquipo.length]; });
-  equipoEl.innerHTML=`<table><thead><tr>
+  document.getElementById('dash-equipo').innerHTML=equipo.length?`<table><thead><tr>
     <th>Asesora</th><th>Leads simples</th><th>Oportunidades</th><th>Inscritos</th><th>Total</th><th>% del total</th>
-  </tr></thead><tbody>${equipo.map(v=>{
-    const color=coloresEquipo[v.vendedor];
+  </tr></thead><tbody>${equipo.map((v,i)=>{
+    const color=paletaEquipo[i%paletaEquipo.length];
     const pctNum=parseInt(v.porcentaje_del_total)||0;
     return `<tr>
       <td><div style="font-weight:500;color:${color}">${v.vendedor}</div></td>
@@ -3210,98 +3190,11 @@ async function loadMarketing(){
         <span style="font-size:11px">${v.porcentaje_del_total}</span>
       </div></td>
     </tr>`;
-  }).join('')}</tbody></table>
-  <div style="margin-top:10px;padding:10px 12px;background:var(--bg2);border-radius:8px;font-size:11px;color:var(--text3)">
-    💡 Este total solo cuenta quién tiene el lead asignado ahora. Para ver quién participó de verdad en cada Inscrito (calificación + cierre), usa la Bitácora de Inscritos.
-  </div>`;
-
-  // Últimos leads
-  const ultimos=dash.ultimos_leads||[];
-  leadsEl.innerHTML=ultimos.length?`<table><thead><tr>
-    <th>Nombre</th><th>Teléfono</th><th>Etapa</th><th>Fecha</th>
-  </tr></thead><tbody>${ultimos.map(l=>`<tr>
-    <td style="font-weight:500">${l.nombre||'Sin nombre'}</td>
-    <td style="font-size:12px;color:var(--text2)">${l.telefono||'—'}</td>
-    <td><span class="bx blue" style="font-size:10px">${l.etapa||'—'}</span></td>
-    <td style="font-size:11px;color:var(--text3)">${l.creado?l.creado.substring(0,10):'—'}</td>
-  </tr>`).join('')}</tbody></table>`
+  }).join('')}</tbody></table>`
   :'<div style="text-align:center;padding:20px;color:var(--text3)">Sin datos</div>';
-}
 
-function initApp(){
-  buildDash(); renderCitas(); calcCom(); renderVentas();
-  const d=new Date();d.setDate(d.getDate()+(6-d.getDay()+7)%7||7);
-  const ds=d.toISOString().substring(0,10);
-  ['oh-fecha'].forEach(id=>{const el=document.getElementById(id);if(el)el.value=ds;});
-}
-
-// Leads globales para filtrar desde el pastel
-let _dashLeads = [];
-
-async function buildDash(){
-  let odooLeads=[], odooStages=[];
-  try {
-    const [rL,rS]=await Promise.all([
-      fetch(API+'/api/odoo/leads?limit=500',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json()),
-      fetch(API+'/api/odoo/stages',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json())
-    ]);
-    if(rL.ok) odooLeads=rL.leads||[];
-    if(rS.ok) odooStages=rS.stages||[];
-  } catch(e){ console.warn('Odoo no disponible'); }
-
-  _dashLeads = odooLeads; // guardar para filtrar desde el pastel
-
-  const total=odooLeads.length;
-  const inscritos=odooLeads.filter(l=>/inscrit/i.test(l.stage_id?.[1]||'')).length;
-  const visitas=odooLeads.filter(l=>/visita|visit/i.test(l.stage_id?.[1]||'')).length;
-  const nuevos=odooLeads.filter(l=>/nuevo|new|intere/i.test(l.stage_id?.[1]||'')).length;
-  const contactados=odooLeads.filter(l=>/contactad/i.test(l.stage_id?.[1]||'')).length;
-  const perdidos=odooLeads.filter(l=>/perdid|lost/i.test(l.stage_id?.[1]||'')).length;
-
-  document.getElementById('dash-metrics').innerHTML=`
-    <div class="mc"><div class="mc-lbl">Total leads Odoo</div><div class="mc-val">${total}</div><div class="mc-sub">datos en tiempo real</div></div>
-    <div class="mc amber"><div class="mc-lbl">Visitas agendadas</div><div class="mc-val">${visitas}</div><div class="mc-sub">este mes</div></div>
-    <div class="mc blue"><div class="mc-lbl">Inscritos</div><div class="mc-val">${inscritos}</div><div class="mc-sub">confirmados</div></div>
-    <div class="mc purple"><div class="mc-lbl">Etapas activas</div><div class="mc-val">${odooStages.length}</div><div class="mc-sub">en CRM</div></div>`;
-
-  // Gráfica de barras semanal — igual que antes
-  const dias=['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
-  const hI=new Date().getDay();
-  const lb=[],dt=[];
-  [3,5,4,7,6,8,5].forEach((v,i)=>{lb.push(dias[(hI-6+i+7)%7]);dt.push(v);});
-  const gc='rgba(91,168,245,.06)',tc='rgba(238,242,238,.3)';
-  if(cDash)cDash.destroy();
-  cDash=new Chart(document.getElementById('c-dash'),{type:'bar',data:{labels:lb,datasets:[{data:dt,backgroundColor:dt.map((_,i)=>i===6?'rgba(91,168,245,.8)':'rgba(91,168,245,.2)'),borderColor:dt.map((_,i)=>i===6?'#5BA8F5':'rgba(91,168,245,.4)'),borderWidth:1,borderRadius:8,borderSkipped:false}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{color:gc},ticks:{color:tc,font:{size:11}}},y:{grid:{color:gc},ticks:{color:tc,font:{size:11},precision:0}}}}});
-
-  // Pastel con etapas REALES de Odoo + clic para filtrar tabla
-  const porEtapa={};
-  odooLeads.forEach(l=>{const e=l.stage_id?.[1]||'Sin etapa';porEtapa[e]=(porEtapa[e]||0)+1;});
-  const top=Object.entries(porEtapa).sort((a,b)=>b[1]-a[1]).slice(0,7);
-  const pLabels=top.map(([e])=>e);
-  const pValues=top.map(([,v])=>v);
-  const COLORS=['rgba(75,158,255,.8)','rgba(245,166,35,.8)','rgba(168,85,247,.8)','rgba(91,168,245,.85)','rgba(255,75,75,.6)','rgba(56,189,248,.8)','rgba(251,191,36,.8)'];
-  const BORDERS=['#4B9EFF','#F5A623','#A855F7','#5BA8F5','#FF4B4B','#38BDF8','#FBBF24'];
-
-  if(cPipe)cPipe.destroy();
-  cPipe=new Chart(document.getElementById('c-pipe'),{
-    type:'doughnut',
-    data:{labels:pLabels,datasets:[{data:pValues,backgroundColor:COLORS.slice(0,pLabels.length),borderColor:BORDERS.slice(0,pLabels.length),borderWidth:2,hoverOffset:10}]},
-    options:{
-      responsive:true,maintainAspectRatio:false,cutout:'65%',
-      onClick(evt,elements){
-        if(!elements.length)return;
-        const etapa=pLabels[elements[0].index];
-        const filtrados=_dashLeads.filter(l=>l.stage_id?.[1]===etapa);
-        renderDashTable(filtrados,etapa);
-      },
-      plugins:{legend:{position:'bottom',labels:{color:'rgba(238,242,238,.4)',font:{size:10},padding:10,usePointStyle:true,
-        generateLabels(c){return c.data.labels.map((l,i)=>({text:`${l.length>16?l.slice(0,16)+'…':l} (${c.data.datasets[0].data[i]})`,fillStyle:c.data.datasets[0].backgroundColor[i],strokeStyle:c.data.datasets[0].borderColor[i],lineWidth:1,index:i,datasetIndex:0}));}
-      }},tooltip:{callbacks:{label(ctx){return ` ${ctx.label}: ${ctx.parsed} leads`;}}}}
-    }
-  });
-
-  // Tabla inicial — últimos 10
-  renderDashTable(odooLeads.slice(0,10), null);
+  // Tabla inicial — últimos leads
+  renderDashTable(_dashLeads, null);
 }
 
 function renderDashTable(leads, etapaFiltro){
@@ -3311,27 +3204,16 @@ function renderDashTable(leads, etapaFiltro){
     const title=tw.querySelector('.tw-t');
     if(title) title.textContent = etapaFiltro ? etapaFiltro : 'Últimos leads';
   }
-  // Botón reset
-  let resetBtn=document.getElementById('dash-reset-btn');
-  if(!resetBtn && etapaFiltro){
-    resetBtn=document.createElement('button');
-    resetBtn.id='dash-reset-btn';
-    resetBtn.style.cssText='margin:0 20px 12px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:11px;color:var(--text2);cursor:pointer';
-    resetBtn.textContent='✕ Ver todos los leads';
-    resetBtn.onclick=()=>{renderDashTable(_dashLeads.slice(0,10),null);resetBtn.remove();};
-    tEl.parentNode.insertBefore(resetBtn, tEl);
-  } else if(resetBtn && !etapaFiltro){
-    resetBtn.remove();
-  }
   tEl.innerHTML=leads.length
     ?`<table><thead><tr><th>Nombre</th><th>Teléfono</th><th>Etapa</th><th>Fecha</th></tr></thead><tbody>${leads.map(l=>`<tr>
-      <td><div style="font-weight:500">${(l.name||'Sin nombre').replace(/\s*[-–].*tour.*|inside tour.*\d+\s*[-–]\s*/gi,'').trim()}</div></td>
-      <td style="font-size:12px;color:var(--text2)">${l.phone||'—'}</td>
-      <td><span class="bx blue" style="font-size:10px">${l.stage_id?.[1]||'—'}</span></td>
-      <td style="font-size:11px;color:var(--text3)">${l.create_date?l.create_date.substring(0,10):'—'}</td>
+      <td><div style="font-weight:500">${l.nombre||'Sin nombre'}</div></td>
+      <td style="font-size:12px;color:var(--text2)">${l.telefono||'—'}</td>
+      <td><span class="bx blue" style="font-size:10px">${l.etapa||'—'}</span></td>
+      <td style="font-size:11px;color:var(--text3)">${l.creado?l.creado.substring(0,10):'—'}</td>
     </tr>`).join('')}</tbody></table>`
-    :'<div style="text-align:center;padding:20px;color:var(--text3)">Sin leads en esta etapa</div>';
+    :'<div style="text-align:center;padding:20px;color:var(--text3)">Sin datos</div>';
 }
+
 
 async function renderLeads(){
   const el=document.getElementById('t-leads');
