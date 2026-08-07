@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-dashboard-inteligente'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-scroll-perdidos-nivel-evidencia'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7454,6 +7454,55 @@ app.get('/api/dashboard-marketing/zonas-por-motivo', authMiddleware, async (req,
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
+
+// Perdidos agrupados por nivel de interés — a diferencia de Inscritos, la mayoría de
+// leads perdidos vienen de WhatsApp normal (no del formulario), así que NO tienen
+// capo_level_of_interests lleno en Odoo. El nivel real que KAI capturó en la
+// conversación vive en MongoDB (Contacto.nivel_interes) — se cruza por teléfono,
+// normalizando formato con la misma función que ya usa el resto del sistema.
+app.get('/api/dashboard-marketing/perdidos-por-nivel', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const FILTRO_EMPRESA = ['company_id', '=', 1];
+    const desde12Meses = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').substring(0, 19);
+    const MOTIVOS_RUIDO = ['solicitud de empleo', 'proveedor', 'ticket', 'publicidad falsa', 'prueba', 'chat basura', 'respuesta automática', 'referencia laborales', 'solicitud de practicas', 'problema con la plataforma para registro'];
+    const MOTIVOS_DUPLICADO = ['lead duplicado', 'número incorrecto/duplicado', 'duplicado'];
+
+    const perdidos = await odooCallLocal('crm.lead', 'search_read',
+      [[['active', '=', false], FILTRO_EMPRESA, ['create_date', '>=', desde12Meses]]],
+      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'mobile', 'lost_reason_id', 'create_date'], limit: 3000, context: { active_test: false } }
+    ) || [];
+    const perdidosReales = perdidos.filter(l => {
+      const motivo = (l.lost_reason_id?.[1] || '').toLowerCase();
+      return !MOTIVOS_RUIDO.some(m => motivo.includes(m)) && !MOTIVOS_DUPLICADO.some(m => motivo.includes(m));
+    });
+
+    // Cruce por teléfono normalizado contra MongoDB
+    const telefonosNormalizados = perdidosReales
+      .map(l => formatearTelefonoEstandar((l.mobile && String(l.mobile) !== 'false') ? l.mobile : l.phone))
+      .filter(Boolean);
+    const contactos = await Contacto.find({ numero: { $in: telefonosNormalizados }, nivel_interes: { $ne: null } }).lean();
+    const mapaNivelPorTelefono = {};
+    contactos.forEach(c => { mapaNivelPorTelefono[formatearTelefonoEstandar(c.numero)] = c.nivel_interes; });
+
+    const porNivel = {};
+    let sinNivel = [];
+    perdidosReales.forEach(l => {
+      const telRaw = (l.mobile && String(l.mobile) !== 'false') ? l.mobile : l.phone;
+      const telNorm = formatearTelefonoEstandar(telRaw);
+      const alumno = { nombre: l.partner_name || l.contact_name || l.name, telefono: telRaw || null, motivo: l.lost_reason_id?.[1] || 'Sin motivo', creado: l.create_date };
+      const nivel = telNorm ? mapaNivelPorTelefono[telNorm] : null;
+      if (!nivel) { sinNivel.push(alumno); return; }
+      if (!porNivel[nivel]) porNivel[nivel] = { nivel, cantidad: 0, alumnos: [] };
+      porNivel[nivel].cantidad++;
+      porNivel[nivel].alumnos.push(alumno);
+    });
+    const resultado = Object.values(porNivel).sort((a, b) => b.cantidad - a.cantidad);
+    if (sinNivel.length) resultado.push({ nivel: 'Sin nivel registrado', cantidad: sinNivel.length, alumnos: sinNivel });
+
+    res.json({ ok: true, total_perdidos_reales: perdidosReales.length, con_nivel_registrado: perdidosReales.length - sinNivel.length, por_nivel: resultado });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
 
 app.get('/api/dashboard-marketing/leads-filtrados', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
