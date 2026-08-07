@@ -93,6 +93,9 @@ html.theme-ledger .theme-opt.active{color:#2A1E08}
 .rpill:hover{color:var(--g)}
 /* METRICS */
 .mrow{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}
+.chart-grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-bottom:16px}
+@media (max-width:1100px){.chart-grid-3{grid-template-columns:1fr 1fr}}
+@media (max-width:760px){.chart-grid-3,.mrow{grid-template-columns:1fr}}
 .mrow3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:18px}
 .mc{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:20px 22px;position:relative;overflow:hidden;transition:transform .18s,box-shadow .18s;--ac:var(--g);--ac2:var(--g3)}
 .mc:hover{transform:translateY(-3px);box-shadow:0 12px 28px -8px rgba(20,30,60,.18)}
@@ -337,7 +340,7 @@ tr:hover td{background:var(--g4)}
         <div id="dash-por-grado" style="padding:14px 16px;display:flex;flex-wrap:wrap;gap:10px"></div>
       </div>
       <div class="chip-row" id="dash-chips-equipo"></div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px">
+      <div class="chart-grid-3">
         <div class="chart-card" style="--ac:var(--blue);--ac2:var(--blue2)">
           <div class="chart-card-h">
             <div class="chart-card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3v9l6 3"/></svg></div>
@@ -351,8 +354,16 @@ tr:hover td{background:var(--g4)}
             <div class="chart-card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></div>
             <div style="font-family:var(--font-h);font-size:14px;font-weight:800">Motivos de pérdida</div>
           </div>
-          <div style="font-size:11px;color:var(--text2);margin-bottom:14px;margin-left:36px">Últimos 12 meses · sin ruido ni duplicados</div>
+          <div style="font-size:11px;color:var(--text2);margin-bottom:14px;margin-left:36px">Últimos 12 meses · clic para ver zona</div>
           <div style="position:relative;height:380px"><canvas id="c-dash"></canvas></div>
+        </div>
+        <div class="chart-card" style="--ac:var(--amber);--ac2:var(--amber2)">
+          <div class="chart-card-h">
+            <div class="chart-card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 10L12 5 2 10l10 5 10-5z"/><path d="M6 12v5c0 1 3 3 6 3s6-2 6-3v-5"/></svg></div>
+            <div style="font-family:var(--font-h);font-size:14px;font-weight:800">Perdidos por nivel</div>
+          </div>
+          <div style="font-size:11px;color:var(--text2);margin-bottom:14px;margin-left:36px">Clic en una porción para ver los alumnos</div>
+          <div style="position:relative;height:380px;perspective:900px"><canvas id="c-perdidos-nivel" style="transform:rotateX(5deg) scale(1.015);filter:drop-shadow(0 16px 20px rgba(20,30,55,.16))"></canvas></div>
         </div>
       </div>
       <div class="tw" style="margin-bottom:16px;border-top:4px solid var(--purple)">
@@ -1101,7 +1112,7 @@ const API='https://kai-capouilliez.up.railway.app';
 let TOKEN=localStorage.getItem('kai_token');
 let ROLE=localStorage.getItem('kai_role')||'admin';
 let USER=JSON.parse(localStorage.getItem('kai_user')||'{"nombre":"Colegio Capouilliez","email":"admin@capouilliez.edu.gt"}');
-let cDash=null,cPipe=null,kHist=[];
+let cDash=null,cPipe=null,cPerdidosNivel=null,kHist=[];
 
 const LEADS=[
   {nombre:'Roberto Álvarez',tel:'5201-3456',correo:'ralvarez@gmail.com',grado:'Primaria',zona:'Zona 10',vendedor:'Carlos López',sede:'Sede Central',estado:'visita_agendada',fecha:new Date(Date.now()-86400000*2)},
@@ -3273,6 +3284,7 @@ function dibujarPastelPipeline(pipelineData, tituloExtra){
 // Muestra, para un motivo de pérdida (ej. "Ubicación"), de qué zona/departamento
 // escribían esas familias — para identificar patrones geográficos a futuro.
 async function mostrarZonasPorMotivo(motivo){
+  irAResultados();
   const tEl=document.getElementById('t-dash');
   const colabEl=document.getElementById('dash-colaboracion');
   colabEl.innerHTML='';
@@ -3327,12 +3339,50 @@ async function cargarInscritosPorGrado(){
 }
 
 function expandirGrado(i){
+  irAResultados();
   const g=_inscritosPorGradoCache?.[i];
   if(!g) return;
   document.querySelectorAll('#dash-chips-equipo .chip').forEach(c=>c.classList.remove('active'));
   document.getElementById('dash-colaboracion').innerHTML='';
   const leadsFormato=g.alumnos.map(a=>({nombre:a.nombre,telefono:a.telefono,etapa:'2027 - Inscritos',creado:a.creado}));
   renderDashTable(leadsFormato, `🎓 Inscritos en ${g.grado}`, g.cantidad);
+}
+
+let _perdidosPorNivelCache=null;
+async function cargarPerdidosPorNivel(){
+  try{
+    const r=await fetch(API+'/api/dashboard-marketing/perdidos-por-nivel',{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+    const cont=document.getElementById('c-perdidos-nivel')?.closest('.chart-card');
+    if(!r.ok || !r.por_nivel.length){ if(cont)cont.querySelector('div[style*="height:380px"]').innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text3);font-size:12px">Sin datos</div>'; return; }
+    _perdidosPorNivelCache=r.por_nivel;
+    const esLedger=document.documentElement.classList.contains('theme-ledger');
+    const COLORS=esLedger?['#B5433C','#B8792E','#6B4A9E','#1E7D8C','#8A93A6']:['#FF3B5C','#A6650A','#6D3FD1','#0E7A85','#8A93A6'];
+    const labels=r.por_nivel.map(n=>n.nivel);
+    const values=r.por_nivel.map(n=>n.cantidad);
+    if(cPerdidosNivel)cPerdidosNivel.destroy();
+    cPerdidosNivel=new Chart(document.getElementById('c-perdidos-nivel'),{
+      type:'doughnut',
+      data:{labels,datasets:[{data:values,backgroundColor:COLORS.slice(0,labels.length),borderColor:'#fff',borderWidth:4,hoverOffset:22,spacing:3}]},
+      options:{
+        responsive:true,maintainAspectRatio:false,cutout:'58%',
+        animation:{animateRotate:true,animateScale:true,duration:700,easing:'easeOutQuart'},
+        onHover(evt,elements){evt.native.target.style.cursor=elements.length?'pointer':'default';},
+        onClick(evt,elements){ if(!elements.length)return; expandirNivelPerdido(elements[0].index); },
+        plugins:{legend:{position:'bottom',labels:{color:'rgba(20,30,55,.6)',font:{size:10,weight:600},padding:8,usePointStyle:true,pointStyle:'circle',boxWidth:8}},
+          tooltip:{backgroundColor:window._navyTemaActual||'#141B2E',padding:10,cornerRadius:8,callbacks:{label(ctx){return ` 👉 ${ctx.label}: ${ctx.parsed} casos`;}}}}
+      }
+    });
+  }catch(e){ console.warn('perdidos-por-nivel', e); }
+}
+
+function expandirNivelPerdido(i){
+  irAResultados();
+  const n=_perdidosPorNivelCache?.[i];
+  if(!n) return;
+  document.querySelectorAll('#dash-chips-equipo .chip').forEach(c=>c.classList.remove('active'));
+  document.getElementById('dash-colaboracion').innerHTML='';
+  const leadsFormato=n.alumnos.map(a=>({nombre:a.nombre,telefono:a.telefono,etapa:a.motivo,creado:a.creado}));
+  renderDashTable(leadsFormato, `📉 Perdidos en ${n.nivel}`, n.cantidad);
 }
 
 async function buildDash(){
@@ -3359,6 +3409,7 @@ async function buildDash(){
     <div class="mc purple"><div class="mc-icon"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round">${ICONS.conversion}</svg></div><div class="mc-lbl">Conversión real</div><div class="mc-val">${res.conversion_real_solo_admisiones}</div><div class="mc-sub">inscritos ÷ (activos+perdidos)</div></div>`;
 
   cargarInscritosPorGrado();
+  cargarPerdidosPorNivel();
 
   const gc='rgba(20,30,55,.06)',tc='rgba(20,30,55,.55)';
   const esLedger=document.documentElement.classList.contains('theme-ledger');
@@ -3439,7 +3490,16 @@ async function buildDash(){
 }
 
 // Segmentación real: consulta a Odoo en vivo (no filtra una muestra chica en el navegador)
+// Baja la pantalla suavemente hasta donde aparecen los resultados — sin esto, el
+// director hace clic y no ve que pasó nada porque la tabla queda fuera de vista.
+function irAResultados(){
+  setTimeout(()=>{
+    document.getElementById('t-dash')?.closest('.tw')?.scrollIntoView({behavior:'smooth', block:'center'});
+  }, 60);
+}
+
 async function filtrarPorEtapa(etapa){
+  irAResultados();
   document.querySelectorAll('#dash-chips-equipo .chip').forEach(c=>c.classList.remove('active'));
   await cargarLeadsFiltrados({etapa}, `📍 ${etapa}`);
 }
@@ -3457,6 +3517,7 @@ async function filtrarPorAsesora(vendedor, idx){
   document.getElementById('chip-'+idx)?.classList.add('active');
   const emojiEquipo=['💙','💚','🧡','💜','❤️','💛','🩷'];
   const emoji=emojiEquipo[idx%emojiEquipo.length];
+  irAResultados();
   mostrarColaboracion(vendedor, emoji);
   await cargarLeadsFiltrados({vendedor}, `${emoji} ${vendedor}`);
 }
@@ -3472,12 +3533,46 @@ function llenarColumnaColaboracion(equipo, bitacora){
     if(!participacion){ celda.innerHTML='<span style="color:var(--text3)">—</span>'; return; }
     const nombreCorto=v.vendedor.split(' ')[0];
     let n=participacion[v.vendedor];
+    let claveReal=v.vendedor;
     if(n===undefined){
       const claveParecida=Object.keys(participacion).find(k=>k.includes(nombreCorto)||v.vendedor.includes(k));
       n=claveParecida?participacion[claveParecida]:0;
+      claveReal=claveParecida||v.vendedor;
     }
-    celda.innerHTML=`<span style="font-weight:800;color:var(--green)">${n>0?'🎓 ':''}${n}</span>`;
+    celda.innerHTML=n>0
+      ?`<span onclick="mostrarEvidenciaColaboracion('${claveReal.replace(/'/g,"\\'")}')" style="font-weight:800;color:var(--green);cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px" title="Clic para ver la evidencia en Odoo">🎓 ${n}</span>`
+      :`<span style="font-weight:800;color:var(--text3)">0</span>`;
   });
+}
+
+// Muestra la evidencia real detrás de "colaboró en X inscritos": la cadena completa de
+// quién tocó cada caso, con link directo a Odoo para poder verificarlo — para poder
+// responder "en Odoo aparece esto" cuando alguien pregunte de dónde sale el dato.
+async function mostrarEvidenciaColaboracion(nombreEnCadena){
+  irAResultados();
+  document.querySelectorAll('#dash-chips-equipo .chip').forEach(c=>c.classList.remove('active'));
+  document.getElementById('dash-colaboracion').innerHTML='';
+  const tEl=document.getElementById('t-dash');
+  const tw=tEl?.closest('.tw');
+  if(tw){ const title=tw.querySelector('.tw-t'); if(title) title.innerHTML=`🔎 Evidencia: casos donde participó ${nombreEnCadena}`; }
+  tEl.innerHTML='<div style="text-align:center;padding:30px;color:var(--text3);font-size:12px">⏳ Cargando evidencia…</div>';
+  const bitacora=await precargarBitacora();
+  if(!bitacora || !bitacora.ok || !bitacora.bitacora){
+    tEl.innerHTML='<div style="text-align:center;padding:30px;color:var(--red)">No se pudo cargar la evidencia</div>';
+    return;
+  }
+  const casos=bitacora.bitacora.filter(b=>(b.cadena_de_traspasos||[]).includes(nombreEnCadena));
+  if(!casos.length){ tEl.innerHTML='<div style="text-align:center;padding:30px;color:var(--text3)">No se encontraron casos</div>'; return; }
+  tEl.innerHTML=`<div style="padding:12px 20px 4px;font-size:11px;color:var(--text2)">${casos.length} caso${casos.length===1?'':'s'} — clic en "Ver en Odoo" para confirmar el historial real de la conversación</div>
+    <table><thead><tr><th>Nombre</th><th>Cadena completa</th><th>Cerró</th><th>Fecha inscripción</th><th></th></tr></thead><tbody>
+    ${casos.map(c=>`<tr>
+      <td><div style="font-weight:600">${c.nombre||'Sin nombre'}</div><div style="font-size:11px;color:var(--text3)">${c.telefono||'—'}</div></td>
+      <td style="font-size:11.5px">${(c.cadena_de_traspasos||[]).map(a=>a===nombreEnCadena?`<b style="color:var(--green)">${a}</b>`:a).join(' → ')}</td>
+      <td style="font-size:12px">${c.vendedor_que_cerro||'—'}</td>
+      <td style="font-size:11px;color:var(--text3)">${c.fecha_inscripcion?c.fecha_inscripcion.substring(0,10):'—'}</td>
+      <td>${c.lead_id?`<a href="https://alba.capouilliez.edu.gt/web#id=${c.lead_id}&model=crm.lead&view_type=form" target="_blank" style="font-size:11px;color:var(--blue);font-weight:600;white-space:nowrap">Ver en Odoo →</a>`:''}</td>
+    </tr>`).join('')}
+    </tbody></table>`;
 }
 
 async function mostrarColaboracion(vendedor, emoji){
@@ -3495,16 +3590,21 @@ async function mostrarColaboracion(vendedor, emoji){
   // variaciones ("Vanessa" vs "Vanessa Lopez Carreto"), así que se busca por inclusión.
   const nombreCorto=vendedor.split(' ')[0];
   let colaboraciones=participacion[vendedor];
+  let claveReal=vendedor;
   if(colaboraciones===undefined){
     const claveParecida=Object.keys(participacion).find(k=>k.includes(nombreCorto)||vendedor.includes(k));
     colaboraciones=claveParecida?participacion[claveParecida]:0;
+    claveReal=claveParecida||vendedor;
   }
-  colabEl.innerHTML=`<div style="margin:14px 20px 0;padding:14px 16px;background:linear-gradient(135deg,var(--green2),transparent);border:1.5px solid var(--green);border-radius:10px;display:flex;align-items:center;gap:12px">
-    <div style="font-size:26px">🎓</div>
-    <div>
-      <div style="font-weight:800;color:var(--green);font-size:15px">${emoji} ${vendedor} colaboró en ${colaboraciones} inscripci${colaboraciones===1?'ón':'ones'}</div>
-      <div style="font-size:11.5px;color:var(--text2)">Cuenta cualquier participación real en la cadena (calificando, dando seguimiento o cerrando) sobre ${bitacora.total_inscritos_revisados} inscritos revisados — no solo los que quedaron asignados a su nombre al final.</div>
+  colabEl.innerHTML=`<div style="margin:14px 20px 0;padding:14px 16px;background:linear-gradient(135deg,var(--green2),transparent);border:1.5px solid var(--green);border-radius:10px;display:flex;align-items:center;gap:12px;justify-content:space-between;flex-wrap:wrap">
+    <div style="display:flex;align-items:center;gap:12px">
+      <div style="font-size:26px">🎓</div>
+      <div>
+        <div style="font-weight:800;color:var(--green);font-size:15px">${emoji} ${vendedor} colaboró en ${colaboraciones} inscripci${colaboraciones===1?'ón':'ones'}</div>
+        <div style="font-size:11.5px;color:var(--text2)">Cuenta cualquier participación real en la cadena (calificando, dando seguimiento o cerrando) sobre ${bitacora.total_inscritos_revisados} inscritos revisados — no solo los que quedaron asignados a su nombre al final.</div>
+      </div>
     </div>
+    ${colaboraciones>0?`<button onclick="mostrarEvidenciaColaboracion('${claveReal.replace(/'/g,"\\'")}')" style="background:var(--green);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:11.5px;font-weight:700;cursor:pointer;white-space:nowrap">🔎 Ver evidencia en Odoo</button>`:''}
   </div>`;
 }
 
