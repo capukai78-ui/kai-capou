@@ -357,6 +357,7 @@ tr:hover td{background:var(--g4)}
       </div>
       <div class="tw" style="border-top:4px solid var(--teal)">
         <div class="tw-h"><div class="tw-t"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>Últimos leads</div></div>
+        <div id="dash-colaboracion"></div>
         <div id="t-dash"></div>
       </div>
     </div>
@@ -3222,6 +3223,17 @@ const ICONS = {
   conversion:'<path d="M12 20V10M18 20V4M6 20v-4"/>'
 };
 
+// La bitácora de colaboración es una consulta pesada (recorre cada inscrito uno por
+// uno contra AcruxLab), así que se precarga UNA sola vez en segundo plano apenas
+// carga el dashboard, y se guarda en caché — así el director no espera al hacer clic.
+let _bitacoraPromise=null;
+function precargarBitacora(){
+  if(_bitacoraPromise) return _bitacoraPromise;
+  _bitacoraPromise=fetch(API+'/api/reportes/bitacora-inscritos?limite=80',{headers:{Authorization:'Bearer '+TOKEN}})
+    .then(r=>r.json()).catch(()=>({ok:false}));
+  return _bitacoraPromise;
+}
+
 async function buildDash(){
   const metricsEl=document.getElementById('dash-metrics');
   metricsEl.innerHTML=Array(4).fill('<div class="mc mc-skel"><div class="mc-icon" style="background:var(--bg3)"></div><div class="skel-line" style="width:70%"></div><div class="skel-line" style="width:45%;height:30px;margin:8px 0"></div><div class="skel-line" style="width:55%"></div></div>').join('');
@@ -3273,42 +3285,48 @@ async function buildDash(){
       onHover(evt,elements){evt.native.target.style.cursor=elements.length?'pointer':'default';},
       onClick(evt,elements){
         if(!elements.length)return;
-        const etapa=pLabels[elements[0].index];
-        const filtrados=_dashLeads.filter(l=>l.etapa===etapa);
-        renderDashTable(filtrados,etapa);
+        filtrarPorEtapa(pLabels[elements[0].index]);
       },
-      plugins:{legend:{position:'bottom',labels:{color:'rgba(20,30,55,.6)',font:{size:10,weight:600},padding:10,usePointStyle:true,pointStyle:'circle',
-        generateLabels(c){return c.data.labels.map((l,i)=>({text:`${l.length>16?l.slice(0,16)+'…':l} (${c.data.datasets[0].data[i]})`,fillStyle:c.data.datasets[0].backgroundColor[i],strokeStyle:c.data.datasets[0].backgroundColor[i],lineWidth:1,index:i,datasetIndex:0}));}
-      }},tooltip:{backgroundColor:navyTema,padding:10,cornerRadius:8,callbacks:{label(ctx){return ` ${ctx.label}: ${ctx.parsed} leads`;}}}}
+      plugins:{legend:{position:'bottom',labels:{color:'rgba(20,30,55,.6)',font:{size:10,weight:600},padding:10,usePointStyle:true,pointStyle:'circle',boxWidth:8,
+        generateLabels(c){return c.data.labels.map((l,i)=>({text:`${l.length>26?l.slice(0,26)+'…':l} (${c.data.datasets[0].data[i]})`,fillStyle:c.data.datasets[0].backgroundColor[i],strokeStyle:c.data.datasets[0].backgroundColor[i],lineWidth:1,index:i,datasetIndex:0}));}
+      }},tooltip:{backgroundColor:navyTema,padding:10,cornerRadius:8,callbacks:{label(ctx){return ` 👉 ${ctx.label}: ${ctx.parsed} leads`;}}}}
     }
   });
 
-  // Rendimiento del equipo — chips interactivos reales (filtran la tabla de últimos leads) + tabla
+  // Rendimiento del equipo — chips interactivos reales (filtran vía Odoo en vivo, no una muestra chica)
   const equipo=dash.rendimiento_equipo||[];
   // Paleta de texto: oscurecida respecto a COLORS porque estos valores se usan como
   // color de fuente en nombres de asesoras (13-14px) y necesitan 4.5:1 de contraste
   // sobre blanco, no solo el 3:1 que basta para relleno de gráfica.
   const paletaEquipo=esLedger?['#2E5AA8','#166F53','#8A5A1F','#6B4A9E','#B5433C','#1E7D8C','#A34E72']:['#2F5CFF','#00805A','#A6650A','#6D3FD1','#C2274A','#0E7A85','#B2296A'];
+  window._paletaEquipoActual=paletaEquipo;
+  const emojiEquipo=['💙','💚','🧡','💜','❤️','💛','🩷'];
   const chipsEl=document.getElementById('dash-chips-equipo');
   if(equipo.length){
-    chipsEl.innerHTML = `<button class="chip" id="chip-todos" onclick="filtrarPorAsesora(null)"><span class="chip-dot" style="background:var(--text3)"></span>Todo el equipo</button>` +
+    chipsEl.innerHTML = `<button class="chip active" id="chip-todos" onclick="filtrarPorAsesora(null)"><span class="chip-dot" style="background:var(--text3)"></span>🌐 Todo el equipo</button>` +
       equipo.map((v,i)=>{
         const color=paletaEquipo[i%paletaEquipo.length];
-        return `<button class="chip" id="chip-${i}" style="--ac:${color}" onclick="filtrarPorAsesora('${v.vendedor.replace(/'/g,"\\'")}',${i})"><span class="chip-dot" style="color:${color}"></span>${v.vendedor} (${v.total})</button>`;
+        const emoji=emojiEquipo[i%emojiEquipo.length];
+        return `<button class="chip" id="chip-${i}" style="--ac:${color}" onclick="filtrarPorAsesora('${v.vendedor.replace(/'/g,"\\'")}',${i})">${emoji} ${v.vendedor} (${v.total})</button>`;
       }).join('');
-    document.getElementById('chip-todos').classList.add('active');
   } else { chipsEl.innerHTML=''; }
 
   document.getElementById('dash-equipo').innerHTML=equipo.length?`<table><thead><tr>
     <th>Asesora</th><th>Leads simples</th><th>Oportunidades</th><th>Inscritos</th><th>Total</th><th>% del total</th>
   </tr></thead><tbody>${equipo.map((v,i)=>{
     const color=paletaEquipo[i%paletaEquipo.length];
+    const emoji=emojiEquipo[i%emojiEquipo.length];
     const pctNum=parseInt(v.porcentaje_del_total)||0;
+    const maxInscritos=Math.max(...equipo.map(x=>x.inscritos));
+    const esLider=v.inscritos>0 && v.inscritos===maxInscritos;
     return `<tr style="cursor:pointer" onclick="filtrarPorAsesora('${v.vendedor.replace(/'/g,"\\'")}',${i})">
-      <td><div style="font-weight:700;color:${color};display:flex;align-items:center;gap:7px"><span class="chip-dot" style="color:${color};width:9px;height:9px"></span>${v.vendedor}</div></td>
+      <td><div style="font-weight:700;color:${color};display:flex;align-items:center;gap:7px">
+        <span style="font-size:14px">${emoji}</span>${v.vendedor}
+        ${esLider?'<span class="bx" style="background:var(--amber2,rgba(255,159,28,.14));color:var(--amber);font-size:9px">🏆 LÍDER EN INSCRITOS</span>':''}
+      </div></td>
       <td style="font-size:13px">${v.leads_simples.toLocaleString()}</td>
       <td style="font-size:13px">${v.oportunidades.toLocaleString()}</td>
-      <td style="font-size:13px;color:var(--green);font-weight:700">${v.inscritos}</td>
+      <td style="font-size:13px;color:var(--green);font-weight:700">${v.inscritos?'🎓 ':''}${v.inscritos}</td>
       <td style="font-size:14px;font-weight:800">${v.total.toLocaleString()}</td>
       <td><div style="display:flex;align-items:center;gap:6px">
         <div style="width:60px;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden">
@@ -3322,37 +3340,102 @@ async function buildDash(){
 
   // Tabla inicial — últimos leads
   renderDashTable(_dashLeads, null);
+
+  // Precarga silenciosa en segundo plano, para que la colaboración por asesora
+  // esté lista (o casi) cuando el director haga clic en un chip de equipo.
+  precargarBitacora();
 }
 
-function filtrarPorAsesora(vendedor, idx){
+// Segmentación real: consulta a Odoo en vivo (no filtra una muestra chica en el navegador)
+async function filtrarPorEtapa(etapa){
   document.querySelectorAll('#dash-chips-equipo .chip').forEach(c=>c.classList.remove('active'));
+  await cargarLeadsFiltrados({etapa}, `📍 ${etapa}`);
+}
+
+async function filtrarPorAsesora(vendedor, idx){
+  document.querySelectorAll('#dash-chips-equipo .chip').forEach(c=>c.classList.remove('active'));
+  const colabEl=document.getElementById('dash-colaboracion');
   if(vendedor===null){
-    document.getElementById('chip-todos').classList.add('active');
+    document.getElementById('chip-todos')?.classList.add('active');
+    colabEl.innerHTML='';
     renderDashTable(_dashLeads, null);
-  } else {
-    document.getElementById('chip-'+idx).classList.add('active');
-    const filtrados=_dashLeads.filter(l=>l.vendedor===vendedor);
-    renderDashTable(filtrados, vendedor);
+    return;
+  }
+  document.getElementById('chip-'+idx)?.classList.add('active');
+  const emojiEquipo=['💙','💚','🧡','💜','❤️','💛','🩷'];
+  const emoji=emojiEquipo[idx%emojiEquipo.length];
+  mostrarColaboracion(vendedor, emoji);
+  await cargarLeadsFiltrados({vendedor}, `${emoji} ${vendedor}`);
+}
+
+let _colabToken=0;
+async function mostrarColaboracion(vendedor, emoji){
+  const miToken=++_colabToken;
+  const colabEl=document.getElementById('dash-colaboracion');
+  colabEl.innerHTML=`<div style="margin:14px 20px 0;padding:12px 16px;background:var(--bg3);border-radius:10px;font-size:12px;color:var(--text2);display:flex;align-items:center;gap:8px">⏳ Calculando en cuántas inscripciones colaboró ${vendedor} (puede tardar unos segundos)…</div>`;
+  const bitacora=await precargarBitacora();
+  if(miToken!==_colabToken) return; // el director ya seleccionó otra asesora mientras esperábamos
+  if(!bitacora || !bitacora.ok){
+    colabEl.innerHTML=`<div style="margin:14px 20px 0;padding:12px 16px;background:var(--bg3);border-radius:10px;font-size:12px;color:var(--text3)">No se pudo calcular la colaboración real en este momento.</div>`;
+    return;
+  }
+  const participacion=bitacora.participacion_en_la_cadena||{};
+  // Coincidencia flexible: los nombres en la cadena de AcruxLab pueden venir con
+  // variaciones ("Vanessa" vs "Vanessa Lopez Carreto"), así que se busca por inclusión.
+  const nombreCorto=vendedor.split(' ')[0];
+  let colaboraciones=participacion[vendedor];
+  if(colaboraciones===undefined){
+    const claveParecida=Object.keys(participacion).find(k=>k.includes(nombreCorto)||vendedor.includes(k));
+    colaboraciones=claveParecida?participacion[claveParecida]:0;
+  }
+  colabEl.innerHTML=`<div style="margin:14px 20px 0;padding:14px 16px;background:linear-gradient(135deg,var(--green2),transparent);border:1.5px solid var(--green);border-radius:10px;display:flex;align-items:center;gap:12px">
+    <div style="font-size:26px">🎓</div>
+    <div>
+      <div style="font-weight:800;color:var(--green);font-size:15px">${emoji} ${vendedor} colaboró en ${colaboraciones} inscripci${colaboraciones===1?'ón':'ones'}</div>
+      <div style="font-size:11.5px;color:var(--text2)">Cuenta cualquier participación real en la cadena (calificando, dando seguimiento o cerrando) sobre ${bitacora.total_inscritos_revisados} inscritos revisados — no solo los que quedaron asignados a su nombre al final.</div>
+    </div>
+  </div>`;
+}
+
+async function cargarLeadsFiltrados(params, tituloFiltro){
+  const tEl=document.getElementById('t-dash');
+  tEl.innerHTML='<div style="text-align:center;padding:30px;color:var(--text3);font-size:12px">⏳ Buscando en Odoo…</div>';
+  const qs=new URLSearchParams(params).toString();
+  try{
+    const r=await fetch(API+'/api/dashboard-marketing/leads-filtrados?'+qs,{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json());
+    if(r.ok){
+      renderDashTable(r.leads, tituloFiltro, r.total_coincidencias);
+    } else {
+      tEl.innerHTML='<div style="text-align:center;padding:30px;color:var(--red)">No se pudo cargar el filtro</div>';
+    }
+  }catch(e){
+    tEl.innerHTML='<div style="text-align:center;padding:30px;color:var(--red)">Error de conexión</div>';
   }
 }
 
-function renderDashTable(leads, etapaFiltro){
+function renderDashTable(leads, etapaFiltro, totalReal){
   const tEl=document.getElementById('t-dash');
   const tw=tEl?.closest('.tw');
 
   if(tw){
     const title=tw.querySelector('.tw-t');
     const iconoReloj='<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>';
-    if(title) title.innerHTML = iconoReloj + (etapaFiltro || 'Últimos leads');
+    if(title) title.innerHTML = etapaFiltro ? etapaFiltro : (iconoReloj + '🕐 Últimos leads');
+    let contador=tw.querySelector('.dash-table-contador');
+    if(totalReal!==undefined){
+      if(!contador){ contador=document.createElement('div'); contador.className='dash-table-contador'; contador.style.cssText='font-size:11px;color:var(--text2);padding:0 20px 10px'; tEl.parentNode.insertBefore(contador, tEl); }
+      contador.textContent = totalReal>leads.length ? `Mostrando ${leads.length} de ${totalReal} leads reales que coinciden` : `${totalReal} lead${totalReal===1?'':'s'} en total`;
+      contador.style.display='block';
+    } else if(contador){ contador.style.display='none'; }
   }
   tEl.innerHTML=leads.length
     ?`<table><thead><tr><th>Nombre</th><th>Teléfono</th><th>Etapa</th><th>Fecha</th></tr></thead><tbody>${leads.map(l=>`<tr>
       <td><div style="font-weight:500">${l.nombre||'Sin nombre'}</div></td>
       <td style="font-size:12px;color:var(--text2)">${l.telefono||'—'}</td>
-      <td><span class="bx blue" style="font-size:10px">${l.etapa||'—'}</span></td>
+      <td><span class="bx blue" style="font-size:10.5px;text-transform:none;white-space:normal;max-width:190px;line-height:1.3">${l.etapa||'Sin etapa'}</span></td>
       <td style="font-size:11px;color:var(--text3)">${l.creado?l.creado.substring(0,10):'—'}</td>
     </tr>`).join('')}</tbody></table>`
-    :'<div style="text-align:center;padding:20px;color:var(--text3)">Sin datos para este filtro</div>';
+    :'<div style="text-align:center;padding:20px;color:var(--text3)">😶 No se encontraron leads para este filtro</div>';
 }
 
 async function renderLeads(){
