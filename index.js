@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-graficas-grandes-y-colaboracion-visible'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-dashboard-inteligente'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7384,6 +7384,77 @@ app.get('/api/dashboard-marketing', authMiddleware, async (req, res) => {
 // "Sin datos" aunque sí hubiera cientos de leads reales — el problema era que la
 // muestra local era demasiado chica, no que el filtro estuviera mal escrito. Esta
 // consulta va directo a Odoo con el filtro pedido, así que siempre refleja la realidad.
+// Inscritos agrupados por grado real (capo_level_of_interests) — para que la dirección
+// vea de un vistazo cuántos se inscribieron en cada nivel, con el detalle de nombres
+// disponible al hacer clic (no hay que adivinar el campo: se confirmó en producción
+// que el visible en pantalla es capo_level_of_interests, many2many).
+const NOMBRES_CARRERA = { 1: 'Preprimaria', 2: 'Primaria', 3: 'Básico', 4: 'Bachillerato en Ciencias y Letras', 13: 'Diversificado' };
+app.get('/api/dashboard-marketing/inscritos-por-grado', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const FILTRO_EMPRESA = ['company_id', '=', 1];
+    const inscritos = await odooCallLocal('crm.lead', 'search_read',
+      [[['active', '=', true], FILTRO_EMPRESA, ['stage_id.name', '=', '2027 - Inscritos']]],
+      { fields: ['id', 'partner_name', 'contact_name', 'name', 'phone', 'mobile', 'capo_level_of_interests', 'create_date'], limit: 2000, context: { active_test: false } }
+    ) || [];
+
+    const porGrado = {}; // { 'Preprimaria': { cantidad, alumnos:[...] } }
+    let sinGrado = [];
+    inscritos.forEach(l => {
+      const ids = Array.isArray(l.capo_level_of_interests) ? l.capo_level_of_interests : [];
+      const alumno = { nombre: l.partner_name || l.contact_name || l.name, telefono: (l.mobile && String(l.mobile) !== 'false') ? l.mobile : (l.phone || null), creado: l.create_date };
+      if (!ids.length) { sinGrado.push(alumno); return; }
+      ids.forEach(id => {
+        const nombreGrado = NOMBRES_CARRERA[id] || `Grado #${id}`;
+        if (!porGrado[nombreGrado]) porGrado[nombreGrado] = { grado: nombreGrado, cantidad: 0, alumnos: [] };
+        porGrado[nombreGrado].cantidad++;
+        porGrado[nombreGrado].alumnos.push(alumno);
+      });
+    });
+    const resultado = Object.values(porGrado).sort((a, b) => b.cantidad - a.cantidad);
+    if (sinGrado.length) resultado.push({ grado: 'Sin grado registrado', cantidad: sinGrado.length, alumnos: sinGrado });
+
+    res.json({ ok: true, total_inscritos: inscritos.length, por_grado: resultado });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Para un motivo de pérdida específico (ej. "Ubicación"), muestra de qué zona/departamento
+// escribían esas familias — usa el campo "zona" que KAI ya captura en cada conversación
+// (guardado en x_studio_notas_1), para identificar patrones geográficos a futuro.
+app.get('/api/dashboard-marketing/zonas-por-motivo', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const { motivo } = req.query;
+    if (!motivo) return res.status(400).json({ ok: false, error: 'Falta el parámetro motivo' });
+    const FILTRO_EMPRESA = ['company_id', '=', 1];
+    const desde12Meses = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').substring(0, 19);
+
+    const reasons = await odooCallLocal('crm.lost.reason', 'search_read', [[['name', '=', motivo]]], { fields: ['id'], limit: 1 }).catch(() => []);
+    const dominio = [['active', '=', false], FILTRO_EMPRESA, ['create_date', '>=', desde12Meses]];
+    if (reasons && reasons.length) dominio.push(['lost_reason_id', '=', reasons[0].id]);
+    else dominio.push(['lost_reason_id.name', '=', motivo]);
+
+    const leads = await odooCallLocal('crm.lead', 'search_read',
+      [dominio],
+      { fields: ['id', 'x_studio_notas_1', 'partner_name', 'contact_name', 'name'], limit: 1000, context: { active_test: false } }
+    ) || [];
+
+    const porZona = {};
+    let sinZona = 0;
+    leads.forEach(l => {
+      const raw = l.x_studio_notas_1;
+      const esZonaValida = raw && String(raw) !== 'false' && !String(raw).startsWith('http');
+      if (!esZonaValida) { sinZona++; return; }
+      const zona = String(raw).trim();
+      porZona[zona] = (porZona[zona] || 0) + 1;
+    });
+    const resultado = Object.entries(porZona).map(([zona, cantidad]) => ({ zona, cantidad })).sort((a, b) => b.cantidad - a.cantidad);
+
+    res.json({ ok: true, motivo, total_casos: leads.length, con_zona_registrada: leads.length - sinZona, sin_zona_registrada: sinZona, zonas: resultado });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+
 app.get('/api/dashboard-marketing/leads-filtrados', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
@@ -7415,10 +7486,27 @@ app.get('/api/dashboard-marketing/leads-filtrados', authMiddleware, async (req, 
       { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'mobile', 'stage_id', 'user_id', 'create_date'], limit: tope, order: 'create_date desc' }
     ) || [];
     const total = await odooCallLocal('crm.lead', 'search_count', [dominio]);
+
+    // Pipeline del MISMO filtro (ej. todo lo de Cindy, no solo los 40 que se muestran)
+    // para que la gráfica de arriba pueda redibujarse cuando se selecciona una asesora.
+    // Se pide solo el campo stage_id (liviano) y se agrupa en el propio código — mismo
+    // patrón que el dashboard principal, evitando read_group por su formato inconsistente
+    // entre versiones de Odoo (ya documentado como problema real en este proyecto).
+    let pipelineDelFiltro = null;
+    if (vendedor) {
+      const soloEtapas = await odooCallLocal('crm.lead', 'search_read',
+        [dominio], { fields: ['stage_id'], limit: 3000 }
+      ) || [];
+      const porEtapa = {};
+      soloEtapas.forEach(l => { const e = l.stage_id?.[1] || '(sin etapa)'; porEtapa[e] = (porEtapa[e] || 0) + 1; });
+      pipelineDelFiltro = Object.entries(porEtapa).map(([etapa, cantidad]) => ({ etapa, cantidad })).sort((a, b) => b.cantidad - a.cantidad);
+    }
+
     res.json({
       ok: true,
       total_coincidencias: total,
       mostrando: leads.length,
+      pipeline_del_filtro: pipelineDelFiltro,
       dominio_usado: dominio, // para depurar rápido desde el navegador si algo sigue sin calzar
       leads: leads.map(l => ({
         nombre: l.partner_name || l.contact_name || l.name,
