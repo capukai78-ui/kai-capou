@@ -86,7 +86,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-piloto-reset-pruebas'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-piloto-corrige-bitacora-duplicada'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -743,8 +743,10 @@ async function intentarConsumirCupoPiloto(tenantId, numero) {
 
   const actual = await PilotoLeadDiario.findOne({ tenant_id: tenantId, fecha });
   if (actual && actual.numeros.includes(numero)) {
-    // Ya se le había dado cupo hoy (ej. reintento del mismo mensaje) — no se descuenta de nuevo
-    return { cupo: true, numeroDeOrden: actual.numeros.indexOf(numero) + 1 };
+    // Ya se le había dado cupo hoy (ej. reintento del mismo mensaje, o segundo mensaje
+    // de la misma conversación) — no se descuenta de nuevo NI se vuelve a registrar en
+    // la bitácora, para no inflar el historial con el mismo caso varias veces.
+    return { cupo: true, numeroDeOrden: actual.numeros.indexOf(numero) + 1, yaContadoAntes: true };
   }
 
   const actualizado = await PilotoLeadDiario.findOneAndUpdate(
@@ -753,7 +755,7 @@ async function intentarConsumirCupoPiloto(tenantId, numero) {
     { new: true }
   );
   if (!actualizado) return { cupo: false };
-  return { cupo: true, numeroDeOrden: actualizado.contador };
+  return { cupo: true, numeroDeOrden: actualizado.contador, yaContadoAntes: false };
 }
 
 async function registrarBitacoraPiloto(tenantId, numero, canal, resultado, numeroDeOrden, vendedora) {
@@ -3123,8 +3125,10 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
         console.log(`🧪 [PILOTO] Cupo diario de ${PILOTO_5_LEADS_LIMITE_DIARIO} alcanzado — ${numeroOrigen} pasa directo a vendedoras, sin respuesta de KAI`);
         return '';
       }
-      await registrarBitacoraPiloto(tenant._id, numeroOrigen, 'whatsapp', 'atendido', resultadoCupo.numeroDeOrden, obtenerVendedoraDeTurnoPiloto());
-      console.log(`🧪 [PILOTO] ${numeroOrigen} es el lead #${resultadoCupo.numeroDeOrden} de hoy — KAI lo atiende y lo asignará a ${obtenerVendedoraDeTurnoPiloto()}`);
+      if (!resultadoCupo.yaContadoAntes) {
+        await registrarBitacoraPiloto(tenant._id, numeroOrigen, 'whatsapp', 'atendido', resultadoCupo.numeroDeOrden, obtenerVendedoraDeTurnoPiloto());
+        console.log(`🧪 [PILOTO] ${numeroOrigen} es el lead #${resultadoCupo.numeroDeOrden} de hoy — KAI lo atiende y lo asignará a ${obtenerVendedoraDeTurnoPiloto()}`);
+      }
     }
   }
 
