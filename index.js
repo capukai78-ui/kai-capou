@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-quitar-admin-del-equipo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-graficas-grandes-y-colaboracion-visible'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7390,11 +7390,25 @@ app.get('/api/dashboard-marketing/leads-filtrados', authMiddleware, async (req, 
     const FILTRO_EMPRESA = ['company_id', '=', 1];
     const { etapa, vendedor, limit } = req.query;
     const dominio = [['active', '=', true], FILTRO_EMPRESA];
-    if (etapa) dominio.push(['stage_id.name', '=', etapa]);
-    if (vendedor) {
-      if (vendedor === 'Sin asignar') dominio.push(['user_id', '=', false]);
-      else dominio.push(['user_id.name', '=', vendedor]);
+
+    // Se resuelve primero el ID real (en vez de filtrar con notación de punto tipo
+    // 'stage_id.name', que es más frágil) — así el dominio final solo usa comparaciones
+    // directas por ID, el patrón más confiable en Odoo.
+    if (etapa) {
+      const stages = await odooCallLocal('crm.stage', 'search_read', [[['name', '=', etapa]]], { fields: ['id'], limit: 1 }).catch(() => []);
+      if (stages && stages.length) dominio.push(['stage_id', '=', stages[0].id]);
+      else dominio.push(['stage_id.name', 'like', etapa]); // respaldo si no calzó exacto
     }
+    if (vendedor) {
+      if (vendedor === 'Sin asignar') {
+        dominio.push(['user_id', '=', false]);
+      } else {
+        const users = await odooCallLocal('res.users', 'search_read', [[['name', '=', vendedor]]], { fields: ['id'], limit: 1 }).catch(() => []);
+        if (users && users.length) dominio.push(['user_id', '=', users[0].id]);
+        else dominio.push(['user_id.name', 'like', vendedor]); // respaldo por si el nombre viene incompleto
+      }
+    }
+
     const tope = Math.min(parseInt(limit) || 40, 200);
     const leads = await odooCallLocal('crm.lead', 'search_read',
       [dominio],
@@ -7405,6 +7419,7 @@ app.get('/api/dashboard-marketing/leads-filtrados', authMiddleware, async (req, 
       ok: true,
       total_coincidencias: total,
       mostrando: leads.length,
+      dominio_usado: dominio, // para depurar rápido desde el navegador si algo sigue sin calzar
       leads: leads.map(l => ({
         nombre: l.partner_name || l.contact_name || l.name,
         telefono: (l.mobile && String(l.mobile) !== 'false') ? l.mobile : (l.phone || null),
