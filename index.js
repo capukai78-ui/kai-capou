@@ -72,7 +72,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-ux-accesibilidad'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-quitar-admin-del-equipo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7320,11 +7320,13 @@ app.get('/api/dashboard-marketing', authMiddleware, async (req, res) => {
       const vendedor = l.user_id?.[1] || 'Sin asignar';
       if (porVendedor[vendedor]) porVendedor[vendedor].inscritos++;
     });
-    const rendimientoEquipo = Object.values(porVendedor).map(v => ({
-      ...v,
-      total: v.leads_simples + v.oportunidades,
-      porcentaje_del_total: totalActivos ? `${Math.round(((v.leads_simples + v.oportunidades) / totalActivos) * 100)}%` : '0%'
-    })).sort((a, b) => b.total - a.total);
+    const rendimientoEquipo = Object.values(porVendedor)
+      .filter(v => !/^administrador$/i.test(v.vendedor)) // ruido de Odoo (auto-claim con sesión de admin abierta), no es una asesora real
+      .map(v => ({
+        ...v,
+        total: v.leads_simples + v.oportunidades,
+        porcentaje_del_total: totalActivos ? `${Math.round(((v.leads_simples + v.oportunidades) / totalActivos) * 100)}%` : '0%'
+      })).sort((a, b) => b.total - a.total);
 
     // Últimos leads reales, en tiempo real
     const ultimos = await odooCallLocal('crm.lead', 'search_read',
@@ -7373,6 +7375,43 @@ app.get('/api/dashboard-marketing', authMiddleware, async (req, res) => {
         total: nuevos24h.length,
         con_telefono: nuevos24h.length // ya viene de "activos", que no filtra por teléfono — informativo
       }
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Segmentación REAL del dashboard: antes filtrábamos en el navegador sobre la lista
+// de "últimos 20 leads", por lo que casi cualquier combinación de etapa/asesora daba
+// "Sin datos" aunque sí hubiera cientos de leads reales — el problema era que la
+// muestra local era demasiado chica, no que el filtro estuviera mal escrito. Esta
+// consulta va directo a Odoo con el filtro pedido, así que siempre refleja la realidad.
+app.get('/api/dashboard-marketing/leads-filtrados', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const FILTRO_EMPRESA = ['company_id', '=', 1];
+    const { etapa, vendedor, limit } = req.query;
+    const dominio = [['active', '=', true], FILTRO_EMPRESA];
+    if (etapa) dominio.push(['stage_id.name', '=', etapa]);
+    if (vendedor) {
+      if (vendedor === 'Sin asignar') dominio.push(['user_id', '=', false]);
+      else dominio.push(['user_id.name', '=', vendedor]);
+    }
+    const tope = Math.min(parseInt(limit) || 40, 200);
+    const leads = await odooCallLocal('crm.lead', 'search_read',
+      [dominio],
+      { fields: ['id', 'name', 'partner_name', 'contact_name', 'phone', 'mobile', 'stage_id', 'user_id', 'create_date'], limit: tope, order: 'create_date desc' }
+    ) || [];
+    const total = await odooCallLocal('crm.lead', 'search_count', [dominio]);
+    res.json({
+      ok: true,
+      total_coincidencias: total,
+      mostrando: leads.length,
+      leads: leads.map(l => ({
+        nombre: l.partner_name || l.contact_name || l.name,
+        telefono: (l.mobile && String(l.mobile) !== 'false') ? l.mobile : (l.phone || null),
+        etapa: l.stage_id?.[1] || 'Sin etapa',
+        vendedor: l.user_id?.[1] || 'Sin asignar',
+        creado: l.create_date
+      }))
     });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
