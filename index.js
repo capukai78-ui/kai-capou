@@ -45,6 +45,20 @@ function esNumeroDePrueba(numero) {
   });
 }
 
+// ===== PILOTO: 5 leads nuevos al día durante 2 semanas =====
+// Solo aplica a contactos NUEVOS (que nunca han escrito antes), en horario hábil.
+// Los primeros 5 del día reciben nivel + imágenes + asignación a la vendedora de
+// turno, y ahí termina el trabajo de KAI. Del 6to en adelante, ese mismo día, KAI no
+// responde nada — las vendedoras atienden desde cero. Fuera de horario y fines de
+// semana, durante ESTAS 2 semanas, todo queda sin cambios (como estaba antes del
+// piloto) — el nuevo comportamiento de fuera de horario es cosa de producción, no
+// de este piloto.
+const PILOTO_5_LEADS_ACTIVO = true; // interruptor maestro — cambiar a false para apagar el piloto por completo
+const PILOTO_5_LEADS_SOLO_PRUEBAS = true; // mientras esto sea true, SOLO aplica a NUMEROS_DE_PRUEBA — cambiar a false cuando ya se probó y se quiere activar con leads reales
+const PILOTO_5_LEADS_LIMITE_DIARIO = 5;
+const PILOTO_5_LEADS_FECHA_INICIO = '2026-08-10'; // lunes de la Semana 1 (Cindy) — no tocar salvo que cambie el arranque real del piloto
+const PILOTO_5_LEADS_VENDEDORAS = ['Cindy Godoy', 'Vanessa Lopez Carreto']; // [semana 1, semana 2] — alterna cada 7 días desde la fecha de inicio
+
 // Consulta el nombre real del usuario de Instagram/Messenger vía la Graph API de Meta.
 // Antes se guardaba "null" a propósito y el contacto quedaba visible solo como
 // "fb_25568420539447877" o "Sin nombre" — esto intenta traer el nombre real que Meta
@@ -72,7 +86,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-scroll-perdidos-nivel-evidencia'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-piloto-reset-pruebas'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -369,6 +383,28 @@ const contactoSchema = new mongoose.Schema({
 }, { timestamps: true });
 contactoSchema.index({ tenant_id: 1, numero: 1 }, { unique: true });
 const Contacto = mongoose.model('Contacto', contactoSchema);
+
+// ===== PILOTO 5 LEADS/DÍA — contador diario y bitácora =====
+const pilotoLeadDiarioSchema = new mongoose.Schema({
+  tenant_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Tenant' },
+  fecha: { type: String, required: true }, // 'YYYY-MM-DD' hora Guatemala
+  contador: { type: Number, default: 0 },
+  numeros: { type: [String], default: [] } // números ya contados hoy — evita duplicar si llega dos veces el mismo mensaje
+});
+pilotoLeadDiarioSchema.index({ tenant_id: 1, fecha: 1 }, { unique: true });
+const PilotoLeadDiario = mongoose.model('PilotoLeadDiario', pilotoLeadDiarioSchema);
+
+const pilotoBitacoraSchema = new mongoose.Schema({
+  tenant_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Tenant' },
+  fecha_hora: { type: Date, default: Date.now },
+  numero: String,
+  canal: { type: String, default: 'whatsapp' },
+  resultado: { type: String, enum: ['atendido', 'excedente'] },
+  numero_de_orden: { type: Number, default: null }, // 1 a 5, o null si fue excedente
+  vendedora_asignada: { type: String, default: null }
+});
+const PilotoBitacora = mongoose.model('PilotoBitacora', pilotoBitacoraSchema);
+
 
 const Tenant        = mongoose.model('Tenant', tenantSchema);
 const User          = mongoose.model('User', userSchema);
@@ -669,6 +705,81 @@ async function asignarAgenteLibre(tenantId) {
   // la siguiente. Si hay empate, gana el que aparece primero en la lista (orden estable).
   agentes.sort((a, b) => (countMap[a._id.toString()] || 0) - (countMap[b._id.toString()] || 0));
   return agentes[0];
+}
+
+// ===== PILOTO 5 LEADS/DÍA — funciones auxiliares =====
+
+// Fecha de hoy en formato 'YYYY-MM-DD', hora Guatemala — mismo truco de zona horaria
+// que ya usa estaDentroDeHorarioLaboral(), para que el "día" del contador coincida
+// exactamente con el día que el equipo percibe, sin importar la zona del servidor.
+function fechaHoyGT() {
+  const ahoraGT = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Guatemala' }));
+  const y = ahoraGT.getFullYear();
+  const m = String(ahoraGT.getMonth() + 1).padStart(2, '0');
+  const d = String(ahoraGT.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+// Qué vendedora le toca esta semana del piloto — Semana 1 = Cindy, Semana 2 = Vanessa,
+// alternando cada 7 días desde PILOTO_5_LEADS_FECHA_INICIO.
+function obtenerVendedoraDeTurnoPiloto() {
+  const inicio = new Date(PILOTO_5_LEADS_FECHA_INICIO + 'T00:00:00-06:00'); // Guatemala es UTC-6 todo el año
+  const ahoraGT = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Guatemala' }));
+  const diasTranscurridos = Math.floor((ahoraGT - inicio) / (1000 * 60 * 60 * 24));
+  const semana = Math.max(0, Math.floor(diasTranscurridos / 7));
+  return PILOTO_5_LEADS_VENDEDORAS[semana % PILOTO_5_LEADS_VENDEDORAS.length];
+}
+
+// Intenta reservar un cupo del día para este número. Atómico a propósito (usa el
+// filtro de MongoDB como control de concurrencia) — si dos papás escriben casi al
+// mismo tiempo cuando ya van 4, no se cuelan los dos como 5 y 6 al mismo tiempo.
+async function intentarConsumirCupoPiloto(tenantId, numero) {
+  const fecha = fechaHoyGT();
+  await PilotoLeadDiario.findOneAndUpdate(
+    { tenant_id: tenantId, fecha },
+    { $setOnInsert: { tenant_id: tenantId, fecha, contador: 0, numeros: [] } },
+    { upsert: true }
+  ).catch(() => {});
+
+  const actual = await PilotoLeadDiario.findOne({ tenant_id: tenantId, fecha });
+  if (actual && actual.numeros.includes(numero)) {
+    // Ya se le había dado cupo hoy (ej. reintento del mismo mensaje) — no se descuenta de nuevo
+    return { cupo: true, numeroDeOrden: actual.numeros.indexOf(numero) + 1 };
+  }
+
+  const actualizado = await PilotoLeadDiario.findOneAndUpdate(
+    { tenant_id: tenantId, fecha, contador: { $lt: PILOTO_5_LEADS_LIMITE_DIARIO }, numeros: { $ne: numero } },
+    { $inc: { contador: 1 }, $push: { numeros: numero } },
+    { new: true }
+  );
+  if (!actualizado) return { cupo: false };
+  return { cupo: true, numeroDeOrden: actualizado.contador };
+}
+
+async function registrarBitacoraPiloto(tenantId, numero, canal, resultado, numeroDeOrden, vendedora) {
+  try {
+    await PilotoBitacora.create({ tenant_id: tenantId, numero, canal, resultado, numero_de_orden: numeroDeOrden || null, vendedora_asignada: vendedora || null });
+  } catch (e) { console.warn('⚠️ No se pudo registrar bitácora del piloto:', e.message); }
+}
+
+// Reemplazo de asignarAgenteLibre solo para leads NUEVOS mientras el piloto está
+// activo: en vez del reparto 1 a 1 normal, fuerza a la vendedora de turno de la
+// semana. Fuera de las condiciones del piloto, cae exactamente al comportamiento
+// de siempre — es un reemplazo seguro, no un camino paralelo.
+async function elegirVendedoraParaNuevoLead(tenantId, numeroOrigen) {
+  const pilotoAplica = PILOTO_5_LEADS_ACTIVO
+    && (!PILOTO_5_LEADS_SOLO_PRUEBAS || esNumeroDePrueba(numeroOrigen))
+    && estaDentroDeHorarioLaboral();
+
+  if (pilotoAplica) {
+    const nombreVendedora = obtenerVendedoraDeTurnoPiloto();
+    const primerNombre = nombreVendedora.split(' ')[0].toLowerCase();
+    const vendedoras = await UsuarioPanel.find({ tenant_id: tenantId, role: 'vendedor', activo: true }).catch(() => []);
+    const encontrada = vendedoras.find(v => (v.nombre || '').toLowerCase().includes(primerNombre));
+    if (encontrada) return encontrada;
+    console.warn(`🧪 [PILOTO] No se encontró en el panel a "${nombreVendedora}" — cae al reparto normal`);
+  }
+  return asignarAgenteLibre(tenantId);
 }
 
 // Asegura que cada conversación NUEVA de AcruxLab (sin nadie que le haya respondido
@@ -2373,7 +2484,9 @@ async function crearCandidatoEnOdoo(tenant, contacto, numero, resultadoNivel) {
 
     // Asignar un vendedor por reparto 1 a 1 (mismo mecanismo que WhatsApp/AcruxLab) —
     // si tiene vinculado su usuario de Odoo, se asigna también ahí como vendedor real.
-    const agenteAsignado = await asignarAgenteLibre(tenant._id);
+    // Si el piloto de 5 leads/día está activo y aplica a este número, esto fuerza a la
+    // vendedora de turno de la semana en vez del reparto normal.
+    const agenteAsignado = await elegirVendedoraParaNuevoLead(tenant._id, numero);
 
     const leadId = await odooCallLocal('crm.lead', 'create', [{
       name: nombreLead,
@@ -2506,7 +2619,9 @@ async function procesarMensajeOmnichannel(numero, nombre, mensaje, canal, tenant
 
     // Buscar o crear contacto con el canal de origen registrado
     let contacto = await Contacto.findOne({ tenant_id: tenant._id, numero });
+    let esContactoGenuinoNuevo = false;
     if (!contacto) {
+      esContactoGenuinoNuevo = true;
       contacto = await Contacto.create({
         tenant_id: tenant._id,
         numero,
@@ -2522,6 +2637,22 @@ async function procesarMensajeOmnichannel(numero, nombre, mensaje, canal, tenant
       if (nombre && !contacto.nombre) contacto.nombre = nombre;
       contacto.ultimo_contacto = new Date();
       await contacto.save();
+    }
+
+    // ===== PILOTO: 5 leads nuevos al día — mismo contador que WhatsApp =====
+    // Instagram y Messenger están en modo lectura (no hay conversación activa de KAI que
+    // suprimir), así que aquí solo importa a quién se asigna: si cae dentro del cupo de
+    // hoy, se fuerza a la vendedora de turno; si ya se acabó el cupo, sigue el reparto
+    // normal — no tiene sentido "no responder" algo que de por sí no estaba respondiendo.
+    let vendedoraPilotoParaEsteLead = null;
+    if (esContactoGenuinoNuevo && PILOTO_5_LEADS_ACTIVO && (!PILOTO_5_LEADS_SOLO_PRUEBAS || esNumeroDePrueba(numero)) && estaDentroDeHorarioLaboral()) {
+      const resultadoCupo = await intentarConsumirCupoPiloto(tenant._id, numero);
+      if (resultadoCupo.cupo) {
+        vendedoraPilotoParaEsteLead = obtenerVendedoraDeTurnoPiloto();
+        await registrarBitacoraPiloto(tenant._id, numero, canal, 'atendido', resultadoCupo.numeroDeOrden, vendedoraPilotoParaEsteLead);
+      } else {
+        await registrarBitacoraPiloto(tenant._id, numero, canal, 'excedente', null, null);
+      }
     }
 
     // Crear lead en Odoo si no existe aún — con etiqueta de canal
@@ -2553,7 +2684,14 @@ async function procesarMensajeOmnichannel(numero, nombre, mensaje, canal, tenant
       // campo sin poner. Si no se hace explícito (aunque sea "false"), Odoo por defecto
       // le pone como vendedor a quien está creando el registro — que es KAI mismo. Eso
       // fue justo la causa real de que 53 leads terminaran asignados a "Administrador".
-      const agenteNuevo = await asignarAgenteLibre(tenant._id);
+      let agenteNuevo = null;
+      if (vendedoraPilotoParaEsteLead) {
+        const primerNombre = vendedoraPilotoParaEsteLead.split(' ')[0].toLowerCase();
+        const vendedoras = await UsuarioPanel.find({ tenant_id: tenant._id, role: 'vendedor', activo: true }).catch(() => []);
+        agenteNuevo = vendedoras.find(v => (v.nombre || '').toLowerCase().includes(primerNombre)) || null;
+        if (!agenteNuevo) console.warn(`🧪 [PILOTO] No se encontró en el panel a "${vendedoraPilotoParaEsteLead}" — cae al reparto normal`);
+      }
+      if (!agenteNuevo) agenteNuevo = await asignarAgenteLibre(tenant._id);
 
       const leadId = await odooCallLocal('crm.lead', 'create', [{
         name: `Lead KAI — ${nombre || 'Sin nombre'} (${etiquetaCanal})`,
@@ -2967,6 +3105,26 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
       convActiva.ultimaActividad = new Date();
       await convActiva.save();
       return null; // null = no enviar respuesta automática, el agente responde manualmente desde el panel
+    }
+  }
+
+  // ===== PILOTO: 5 leads nuevos al día (2 semanas) =====
+  // Solo aplica a contactos que NUNCA han escrito antes (se verifica contra Contacto,
+  // no contra Odoo — un contacto ya conocido sigue recibiendo servicio normal, sin
+  // límite, sin importar cuántos van hoy). Se evalúa DESPUÉS de descartar proveedores,
+  // leads ya asignados en Odoo, y handoffs activos — para no gastar cupo en casos que
+  // de todas formas no iban a consumir trabajo real de KAI.
+  if (PILOTO_5_LEADS_ACTIVO && (!PILOTO_5_LEADS_SOLO_PRUEBAS || esNumeroDePrueba(numeroOrigen)) && estaDentroDeHorarioLaboral()) {
+    const yaEsConocido = await Contacto.findOne({ tenant_id: tenant._id, numero: numeroOrigen }).catch(() => null);
+    if (!yaEsConocido) {
+      const resultadoCupo = await intentarConsumirCupoPiloto(tenant._id, numeroOrigen);
+      if (!resultadoCupo.cupo) {
+        await registrarBitacoraPiloto(tenant._id, numeroOrigen, 'whatsapp', 'excedente', null, null);
+        console.log(`🧪 [PILOTO] Cupo diario de ${PILOTO_5_LEADS_LIMITE_DIARIO} alcanzado — ${numeroOrigen} pasa directo a vendedoras, sin respuesta de KAI`);
+        return '';
+      }
+      await registrarBitacoraPiloto(tenant._id, numeroOrigen, 'whatsapp', 'atendido', resultadoCupo.numeroDeOrden, obtenerVendedoraDeTurnoPiloto());
+      console.log(`🧪 [PILOTO] ${numeroOrigen} es el lead #${resultadoCupo.numeroDeOrden} de hoy — KAI lo atiende y lo asignará a ${obtenerVendedoraDeTurnoPiloto()}`);
     }
   }
 
@@ -7564,6 +7722,77 @@ app.get('/api/dashboard-marketing/leads-filtrados', authMiddleware, async (req, 
         vendedor: l.user_id?.[1] || 'Sin asignar',
         creado: l.create_date
       }))
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Bitácora del piloto de 5 leads/día — cuántos van hoy, quién, a qué hora, y a quién
+// se asignó cada uno. ?fecha=YYYY-MM-DD para consultar un día distinto a hoy.
+app.get('/api/debug/piloto-5-leads', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const fecha = req.query.fecha || fechaHoyGT();
+    const contadorDoc = await PilotoLeadDiario.findOne({ tenant_id: req.user.tenant_id, fecha });
+    const inicioDia = new Date(fecha + 'T00:00:00-06:00');
+    const finDia = new Date(fecha + 'T23:59:59-06:00');
+    const bitacora = await PilotoBitacora.find({
+      tenant_id: req.user.tenant_id,
+      fecha_hora: { $gte: inicioDia, $lte: finDia }
+    }).sort({ fecha_hora: 1 });
+
+    res.json({
+      ok: true,
+      configuracion: {
+        activo: PILOTO_5_LEADS_ACTIVO,
+        solo_pruebas: PILOTO_5_LEADS_SOLO_PRUEBAS,
+        limite_diario: PILOTO_5_LEADS_LIMITE_DIARIO,
+        fecha_inicio_piloto: PILOTO_5_LEADS_FECHA_INICIO,
+        vendedora_de_turno_ahora: obtenerVendedoraDeTurnoPiloto()
+      },
+      fecha_consultada: fecha,
+      atendidos_hoy: contadorDoc?.contador || 0,
+      cupo_disponible: Math.max(0, PILOTO_5_LEADS_LIMITE_DIARIO - (contadorDoc?.contador || 0)),
+      bitacora: bitacora.map(b => ({
+        hora: b.fecha_hora,
+        numero: b.numero,
+        canal: b.canal,
+        resultado: b.resultado,
+        numero_de_orden: b.numero_de_orden,
+        vendedora_asignada: b.vendedora_asignada
+      }))
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Reinicia la memoria de un número de PRUEBA para poder repetir el escenario desde cero
+// cuantas veces haga falta — sin esto, un número de prueba solo se puede usar UNA vez
+// como "lead nuevo" (después queda como contacto conocido para siempre). Por seguridad,
+// SOLO funciona con números que estén en NUMEROS_DE_PRUEBA — nunca con un número real.
+app.post('/api/debug/piloto-5-leads/reiniciar-numero-prueba', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const { numero } = req.body;
+    if (!numero) return res.status(400).json({ ok: false, error: 'Falta el número' });
+    if (!esNumeroDePrueba(numero)) {
+      return res.status(400).json({ ok: false, error: 'Este endpoint solo funciona con números que estén en NUMEROS_DE_PRUEBA — por seguridad, nunca con un número real.' });
+    }
+
+    const fecha = fechaHoyGT();
+    const contactoBorrado = await Contacto.deleteMany({ tenant_id: req.user.tenant_id, numero });
+    const convBorrada = await Conversacion.deleteMany({ tenant_id: req.user.tenant_id, numero });
+    conversaciones.delete(numero); // memoria en RAM de la sesión de WhatsApp (historial de esta corrida del servidor)
+
+    // Saca este número del contador de hoy, para que se pueda volver a contar como "nuevo"
+    await PilotoLeadDiario.updateOne(
+      { tenant_id: req.user.tenant_id, fecha, numeros: numero },
+      { $pull: { numeros: numero }, $inc: { contador: -1 } }
+    );
+
+    res.json({
+      ok: true,
+      mensaje: `Listo — ${numero} quedó como si nunca hubiera escrito. Puede volver a probar el escenario completo desde cero.`,
+      contactos_borrados: contactoBorrado.deletedCount,
+      conversaciones_borradas: convBorrada.deletedCount
     });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
