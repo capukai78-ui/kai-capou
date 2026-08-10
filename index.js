@@ -87,7 +87,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-fix-kai-no-interrumpe-humano'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-sync-agente-automatico-en-cada-envio'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -10222,6 +10222,26 @@ app.post('/api/acrux/responder', authMiddleware, async (req, res) => {
       [[contacto_id], valoresMensaje],
       { context: { lang: 'es_GT', tz: 'America/Guatemala', is_acrux_chat_room: true } }
     );
+
+    // ===== SINCRONIZAR EL AGENTE EN ODOO, AUTOMÁTICO, SIEMPRE =====
+    // send_message deja a Odoo pensando que el remitente fue el usuario técnico de
+    // servicio ("Administrador") — eso pasó hoy con Gerardo y Dulce, y tuvo que
+    // corregirse a mano cada vez con /api/debug/probar-sincronizar-agente. A partir de
+    // ahora, ese mismo arreglo corre AQUÍ, en automático, cada vez que se manda algo —
+    // así nadie tiene que acordarse de sincronizar después. Si esto falla, NO se
+    // bloquea el envío (el mensaje ya salió) — solo se registra en el log.
+    try {
+      const asignActual = await AsignacionAcrux.findOne({ tenant_id: req.user.tenant_id, contacto_id });
+      if (asignActual?.agente_id) {
+        const agenteReal = await UsuarioPanel.findById(asignActual.agente_id);
+        if (agenteReal?.odoo_user_id) {
+          await odooCallLocal('acrux.chat.conversation', 'write', [[contacto_id], { agent_id: agenteReal.odoo_user_id }]);
+          console.log(`👤 [Sincronización automática] Contacto ${contacto_id} → agente en Odoo puesto en "${agenteReal.nombre}" (nunca queda como Administrador)`);
+        }
+      }
+    } catch (e) {
+      console.error(`⚠️ [Sincronización automática] No se pudo poner el agente real en Odoo para el contacto ${contacto_id}: ${e.message}`);
+    }
 
     // Diagnóstico: releer el último mensaje saliente de este contacto para confirmar
     // que esta vez sí quedó con msgid real (señal de que WhatsApp lo recibió).
