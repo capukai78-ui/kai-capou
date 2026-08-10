@@ -86,7 +86,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-corrige-ortografia-mensajes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-prioridad-chats-sobre-backlog'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -640,6 +640,17 @@ function estaDentroDeHorarioLaboral() {
   if (dia === 5) return horaDecimal >= 7 && horaDecimal < 15; // Viernes 7-15h
   return false;
 }
+
+// Minutos transcurridos desde que abrió el colegio HOY (7:00 GT). Se usa para darle
+// prioridad a los chats reales sobre el backlog de formularios: el motor proactivo
+// espera un margen antes de empezar a gastar cupo del piloto, para que un papá que
+// escribe apenas abren no se quede sin cupo porque el motor ya se lo gastó todo en
+// leads de formulario que llevan días esperando.
+function minutosDesdeAperturaHoy() {
+  const ahoraGT = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Guatemala' }));
+  return (ahoraGT.getHours() * 60 + ahoraGT.getMinutes()) - (7 * 60); // apertura siempre es 7:00
+}
+const PILOTO_MOTOR_PROACTIVO_ESPERA_MINUTOS = 60; // el motor no toca el backlog de formularios hasta 1h después de abrir
 
 // Construye el mensaje de traspaso correcto según si hay agente asignado y si estamos
 // dentro del horario laboral — para no prometer "te conecto ahora" cuando en realidad
@@ -2231,6 +2242,13 @@ async function motorProactivoContactarLeads() {
         // entrantes de WhatsApp/Instagram/Messenger — sin importar la fuente, KAI no
         // debe atender a más de 5 familias nuevas al día durante estas 2 semanas.
         if (PILOTO_5_LEADS_ACTIVO && (!PILOTO_5_LEADS_SOLO_PRUEBAS || esNumeroDePrueba(telLead)) && estaDentroDeHorarioLaboral()) {
+          // Prioridad a chats reales: el backlog de formularios espera su turno los
+          // primeros minutos desde que abre el colegio, para que un papá que escribe
+          // apenas empieza el día no se quede sin cupo por el backlog acumulado.
+          if (minutosDesdeAperturaHoy() < PILOTO_MOTOR_PROACTIVO_ESPERA_MINUTOS && !esNumeroDePrueba(telLead)) {
+            console.log(`🧪 [PILOTO] Dentro del margen de prioridad para chats reales (primeros ${PILOTO_MOTOR_PROACTIVO_ESPERA_MINUTOS} min desde apertura) — el motor proactivo espera, reintenta en la próxima corrida`);
+            break; // se corta toda la corrida de hoy por ahora — se reintenta en 10 min
+          }
           const resultadoCupo = await intentarConsumirCupoPiloto(tenant._id, telLead);
           if (!resultadoCupo.cupo) {
             console.log(`🧪 [PILOTO] Cupo diario de ${PILOTO_5_LEADS_LIMITE_DIARIO} alcanzado — el motor proactivo se detiene aquí; los leads de formulario que quedan los atienden las vendedoras manualmente`);
@@ -7823,7 +7841,9 @@ app.get('/api/debug/piloto-5-leads', authMiddleware, async (req, res) => {
         solo_pruebas: PILOTO_5_LEADS_SOLO_PRUEBAS,
         limite_diario: PILOTO_5_LEADS_LIMITE_DIARIO,
         fecha_inicio_piloto: PILOTO_5_LEADS_FECHA_INICIO,
-        vendedora_de_turno_ahora: obtenerVendedoraDeTurnoPiloto()
+        vendedora_de_turno_ahora: obtenerVendedoraDeTurnoPiloto(),
+        minutos_desde_apertura_hoy: minutosDesdeAperturaHoy(),
+        motor_proactivo_de_formularios: minutosDesdeAperturaHoy() < PILOTO_MOTOR_PROACTIVO_ESPERA_MINUTOS ? `Esperando — le da prioridad a chats reales por ${PILOTO_MOTOR_PROACTIVO_ESPERA_MINUTOS - minutosDesdeAperturaHoy()} min más` : 'Activo — ya puede usar el cupo restante para el backlog de formularios'
       },
       fecha_consultada: fecha,
       atendidos_hoy: contadorDoc?.contador || 0,
