@@ -86,7 +86,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-categorias-probables-con-numero-prueba'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-corrige-ortografia-mensajes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -2361,9 +2361,9 @@ function detectarCategoriaFueraDeAdmisiones(texto) {
 // (incluida la redacción original) porque son mensajes institucionales ya en uso,
 // no algo que a KAI le toque redactar de nuevo.
 const MENSAJES_FUERA_DE_ADMISIONES = {
-  reinscripcion: '¡Buen día! Se ha comunicado ha Admisiones Capouilliez.\nCualquier duda o inconveniente con su proceso de reinscripción, puede comunicarse al:\n2429 1919 o al WhatsApp 3071 6648\nEn horario 8:00 a 14:00 hrs. \nFeliz día',
-  empleo: 'Buen día, Se ha comunicado ha Admisiones Capouilliez,\npuede enviar su CV al siguiente correo rrhh@capouilliez.edu.gt \nFeliz día.',
-  proveedor: 'Buen día, Se ha comunicado ha Admisiones Capouilliez,\npuede enviar su información al siguiente correo alejandra.fajardo@selecuen.com\nFeliz día.'
+  reinscripcion: '¡Buen día! Se ha comunicado a Admisiones Capouilliez.\nCualquier duda o inconveniente con su proceso de reinscripción, puede comunicarse al:\n2429 1919 o al WhatsApp 3071 6648\nEn horario 8:00 a 14:00 hrs. \nFeliz día',
+  empleo: 'Buen día, Se ha comunicado a Admisiones Capouilliez,\npuede enviar su CV al siguiente correo rrhh@capouilliez.edu.gt \nFeliz día.',
+  proveedor: 'Buen día, Se ha comunicado a Admisiones Capouilliez,\npuede enviar su información al siguiente correo alejandra.fajardo@selecuen.com\nFeliz día.'
 };
 const MENSAJE_RESPUESTA_PROVEEDOR = MENSAJES_FUERA_DE_ADMISIONES.proveedor; // se conserva el nombre viejo por compatibilidad
 
