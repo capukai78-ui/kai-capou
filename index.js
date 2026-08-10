@@ -87,7 +87,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-sync-agente-automatico-en-cada-envio'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-asignar-vendedor-especifico-acrux'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -10100,6 +10100,38 @@ app.post('/api/acrux/liberar', authMiddleware, async (req, res) => {
     ).catch(() => {});
 
     res.json({ ok: true, mensaje: 'Conversación liberada — ya la puede ver y tomar cualquier vendedora' });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Asigna una conversación de AcruxLab a un vendedor ESPECÍFICO (por correo), sin mandar
+// ningún mensaje — útil para casos como Ana Lucía: Cindy ya la atendió de verdad
+// (directo en Odoo), pero nuestro registro nunca pasó a modo "humano", así que no le
+// aparecía en su bandeja aunque ya era suya. Sincroniza Odoo en el mismo paso.
+// POST /api/acrux/asignar-a-vendedor-especifico  body: { contacto_id, email }
+app.post('/api/acrux/asignar-a-vendedor-especifico', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const { contacto_id, email } = req.body;
+    if (!contacto_id || !email) return res.json({ ok: false, error: 'Faltan contacto_id y/o email' });
+
+    const vendedor = await UsuarioPanel.findOne({ tenant_id: req.user.tenant_id, email: new RegExp(`^${email}$`, 'i') });
+    if (!vendedor) return res.json({ ok: false, error: `No se encontró ningún usuario del panel con el correo ${email}` });
+
+    await AsignacionAcrux.findOneAndUpdate(
+      { tenant_id: req.user.tenant_id, contacto_id },
+      { modo: 'humano', fecha_modo_humano: new Date(), agente_id: vendedor._id, agente_nombre: vendedor.nombre, sin_auto_recuperacion: true },
+      { upsert: true, setDefaultsOnInsert: true }
+    );
+
+    let odooSincronizado = false;
+    if (vendedor.odoo_user_id) {
+      try {
+        await odooCallLocal('acrux.chat.conversation', 'write', [[contacto_id], { agent_id: vendedor.odoo_user_id }]);
+        odooSincronizado = true;
+      } catch (e) { console.error(`⚠️ [asignar-a-vendedor-especifico] No se pudo sincronizar Odoo: ${e.message}`); }
+    }
+
+    res.json({ ok: true, mensaje: `Contacto ${contacto_id} asignado a ${vendedor.nombre}`, odoo_sincronizado: odooSincronizado });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
