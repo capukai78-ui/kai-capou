@@ -24,7 +24,7 @@ dotenv.config();
 //   - Los NÚMEROS DE PRUEBA siguen funcionando exactamente igual que siempre, para que
 //     el equipo pueda seguir probando con confianza mientras se van liberando partes
 // Para reactivar KAI en producción: cambiar esta línea a false.
-const KAI_PAUSADO_PARA_PRODUCCION = true;
+const KAI_PAUSADO_PARA_PRODUCCION = false; // ACTIVADO el 10 de agosto de 2026 — confirmación explícita para iniciar el piloto de 5 leads/día
 
 // ===== NÚMEROS DE PRUEBA =====
 // Son los del equipo que prueban el sistema. KAI SIEMPRE los atiende (aunque figuren
@@ -58,6 +58,7 @@ const PILOTO_5_LEADS_SOLO_PRUEBAS = false; // ACTIVO para leads reales desde el 
 const PILOTO_5_LEADS_LIMITE_DIARIO = 5;
 const PILOTO_5_LEADS_FECHA_INICIO = '2026-08-10'; // lunes de la Semana 1 (Cindy) — no tocar salvo que cambie el arranque real del piloto
 const PILOTO_5_LEADS_VENDEDORAS = ['Cindy Godoy', 'Vanessa Lopez Carreto']; // [semana 1, semana 2] — alterna cada 7 días desde la fecha de inicio
+const PILOTO_MAX_FORMULARIOS_POR_CORRIDA = 1; // máximo de formularios que el motor proactivo atiende en una sola corrida — evita que se coma todo el cupo del día de un golpe
 
 // Consulta el nombre real del usuario de Instagram/Messenger vía la Graph API de Meta.
 // Antes se guardaba "null" a propósito y el contacto quedaba visible solo como
@@ -86,7 +87,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-prioridad-natural-45s-vs-10min'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-KAI-ACTIVADO-produccion'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -2217,6 +2218,7 @@ async function motorProactivoContactarLeads() {
 
     console.log(`🎯 [Motor proactivo] ${conTelefono.length} con teléfono, ${sinTelefono.length} sin teléfono (se leerá el correo de cada uno)`);
     const numerosYaVistos = new Map(); // número → id del lead que sí se contactó
+    let pilotoFormulariosEnEstaCorrida = 0; // ver PILOTO_MAX_FORMULARIOS_POR_CORRIDA más abajo
     for (const lead of aProcesar) {
       // Si dos leads de esta misma corrida traen el mismo teléfono (duplicados en Odoo),
       // solo se contacta el primero — la familia no debe recibir el mensaje dos veces.
@@ -2240,14 +2242,20 @@ async function motorProactivoContactarLeads() {
         // ===== PILOTO: comparte el MISMO cupo diario de 5 que las conversaciones
         // entrantes de WhatsApp/Instagram/Messenger — sin importar la fuente, KAI no
         // debe atender a más de 5 familias nuevas al día durante estas 2 semanas.
-        // Prioridad natural a chats reales: el proceso que atiende chats nuevos corre
-        // cada 45 segundos, mientras que este motor corre cada 10 minutos — 13 veces
-        // más frecuente. Así, cualquier chat nuevo que llegue ya se atendió (y ya gastó
-        // su cupo) mucho antes de que el motor vuelva a correr. No hace falta una
-        // espera artificial: si el motor encuentra cupo libre, es porque de verdad no
-        // hay nada nuevo pendiente en ese momento — puede empezar con los formularios
-        // desde las 7am mismo.
+        //
+        // IMPORTANTE (corregido tras lo del 10 de agosto): el primer día del piloto,
+        // esta corrida se comió las 5 del cupo diario de un solo golpe (13 segundos),
+        // antes de que ningún papá real tuviera oportunidad de escribir. La idea de
+        // "45 segundos vs 10 minutos" solo protege si YA hay chats entrando — no evita
+        // que el motor, al encontrar cupo libre, se lo gaste todo de una vez en su
+        // propia corrida. La corrección real: como mucho UN formulario por corrida,
+        // así, entre cada uno, quedan hasta 10 minutos reales para que llegue un chat
+        // nuevo y tome su lugar primero.
         if (PILOTO_5_LEADS_ACTIVO && (!PILOTO_5_LEADS_SOLO_PRUEBAS || esNumeroDePrueba(telLead)) && estaDentroDeHorarioLaboral()) {
+          if (pilotoFormulariosEnEstaCorrida >= PILOTO_MAX_FORMULARIOS_POR_CORRIDA) {
+            console.log(`🧪 [PILOTO] Ya se atendió ${PILOTO_MAX_FORMULARIOS_POR_CORRIDA} formulario en esta corrida — se deja el resto del cupo (si queda) para la próxima corrida, dando tiempo a que lleguen chats reales`);
+            break;
+          }
           const resultadoCupo = await intentarConsumirCupoPiloto(tenant._id, telLead);
           if (!resultadoCupo.cupo) {
             console.log(`🧪 [PILOTO] Cupo diario de ${PILOTO_5_LEADS_LIMITE_DIARIO} alcanzado — el motor proactivo se detiene aquí; los leads de formulario que quedan los atienden las vendedoras manualmente`);
@@ -2255,6 +2263,7 @@ async function motorProactivoContactarLeads() {
           }
           if (!resultadoCupo.yaContadoAntes) {
             await registrarBitacoraPiloto(tenant._id, telLead, 'formulario', 'atendido', resultadoCupo.numeroDeOrden, obtenerVendedoraDeTurnoPiloto());
+            pilotoFormulariosEnEstaCorrida++;
           }
         }
       }
