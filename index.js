@@ -87,7 +87,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-produccion-por-fecha-11ago'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-fix-orden-modo-ni-whatsapp'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -3034,9 +3034,15 @@ function construirDescripcionImagen(imagenDirecta) {
 function detectarNivelesExplicitosEnMensaje(texto) {
   const t = (texto || '').toLowerCase();
   const detectados = [];
-  if (/preprimaria|jard[ií]n|infantil|k[ií]nder|p[aá]rvulos|preparatoria/.test(t)) detectados.push('preprimaria');
+  // "primaria" es substring literal de "preprimaria" — sin este cuidado, escribir
+  // "preprimaria" (o "pre primaria" con espacio) se leía como DOS niveles mencionados
+  // a la vez (preprimaria Y primaria), rompiendo la detección. Se quita "pre primaria"/
+  // "preprimaria" del texto ANTES de buscar "primaria" sola, así solo cuenta cuando
+  // aparece por su cuenta (ej. un segundo hijo en otro grado).
+  if (/pre\s*primaria|jard[ií]n|infantil|k[ií]nder|p[aá]rvulos|preparatoria/.test(t)) detectados.push('preprimaria');
   if (/secundaria|b[aá]sico|bachillerato|s[eé]ptimo|octavo|noveno|d[eé]cimo|7°|8°|9°|10°/.test(t)) detectados.push('secundaria');
-  if (/primaria|primero|segundo|tercero|cuarto|quinto|sexto|1°|2°|3°|4°|5°|6°/.test(t)) detectados.push('primaria');
+  const textoSinPrePrimaria = t.replace(/pre\s*primaria/g, '');
+  if (/primaria|primero|segundo|tercero|cuarto|quinto|sexto|1°|2°|3°|4°|5°|6°/.test(textoSinPrePrimaria)) detectados.push('primaria');
   return detectados;
 }
 
@@ -3086,9 +3092,16 @@ function calcularNivelDesdeFecha(texto, anoCiclo = 2027) {
 function detectarNivelEnTexto(texto) {
   const t = (texto || '').toLowerCase();
   const detectados = [];
-  if (/preprimaria|jard[ií]n|infantil|k[ií]nder|p[aá]rvulos|preparatoria/.test(t)) detectados.push('preprimaria');
+  // Mismo cuidado que en detectarNivelesExplicitosEnMensaje: "primaria" es substring
+  // literal de "preprimaria", así que sin esto, escribir "preprimaria" junto (sin
+  // espacio) o "pre primaria" (con espacio, forma muy natural de escribirlo) se leía
+  // como AMBIGUO (los dos niveles a la vez) y nunca se detectaba nada — fue justo lo
+  // que le pasó a Dulce el 10 de agosto: escribió "Pre primaria" y el sistema nunca le
+  // mandó la tabla de edades porque nunca reconoció que eligió Preprimaria.
+  if (/pre\s*primaria|jard[ií]n|infantil|k[ií]nder|p[aá]rvulos|preparatoria/.test(t)) detectados.push('preprimaria');
   if (/secundaria|b[aá]sico|bachillerato|s[eé]ptimo|octavo|noveno|d[eé]cimo|7°|8°|9°|10°/.test(t)) detectados.push('secundaria');
-  if (/primaria|primero|segundo|tercero|cuarto|quinto|sexto|1°|2°|3°|4°|5°|6°/.test(t)) detectados.push('primaria');
+  const textoSinPrePrimaria = t.replace(/pre\s*primaria/g, '');
+  if (/primaria|primero|segundo|tercero|cuarto|quinto|sexto|1°|2°|3°|4°|5°|6°/.test(textoSinPrePrimaria)) detectados.push('primaria');
 
   // Si el mensaje menciona VARIOS niveles no se puede saber cuál es el que interesa.
   // Pasa seguido: "mi hijo está en kinder, pero quiero información para 1ro primaria".
@@ -3244,6 +3257,19 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
     }
   }
 
+  // ===== MODO NO INTERACTIVO — números de prueba, SIEMPRE antes del cupo del piloto =====
+  // Se revisa aquí, antes que el cupo, a propósito — un número de prueba nunca debe
+  // depender de si ya se acabaron los 5 cupos del día real. Antes esto estaba DESPUÉS
+  // del bloque del piloto, y por eso un número de prueba se quedaba sin respuesta
+  // ("excedente") en cuanto el cupo real se agotaba — el mismo problema no existía en
+  // AcruxLab porque ahí el orden ya estaba bien desde el principio.
+  const esNuevaSesionEnMemoria = !conversaciones.has(numeroOrigen);
+  if (esNuevaSesionEnMemoria) conversaciones.set(numeroOrigen, { historial: [], ultimaActividad: Date.now() });
+  const ctxSesion = conversaciones.get(numeroOrigen);
+  if (MODO_NO_INTERACTIVO_SOLO_PRUEBAS && esNumeroDePrueba(numeroOrigen)) {
+    return await manejarModoNoInteractivoWhatsApp(tenant, mensajeUsuario, ctxSesion, numeroOrigen);
+  }
+
   // ===== PILOTO: 5 leads nuevos al día (2 semanas) =====
   // Solo aplica a contactos que NUNCA han escrito antes (se verifica contra Contacto,
   // no contra Odoo — un contacto ya conocido sigue recibiendo servicio normal, sin
@@ -3272,14 +3298,6 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
   // mandamos la imagen de una vez, sin generar ningún texto — así KAI queda "listo"
   // para dar cuotas/requisitos/horarios sin que le repitan el grado cada vez, pero sin
   // el riesgo de adivinar con datos viejos de OTRA conversación/día distinto.
-  const esNuevaSesionEnMemoria = !conversaciones.has(numeroOrigen);
-  if (esNuevaSesionEnMemoria) conversaciones.set(numeroOrigen, { historial: [], ultimaActividad: Date.now() });
-  const ctxSesion = conversaciones.get(numeroOrigen);
-
-  // ===== MODO NO INTERACTIVO — nuevo esquema, solo números de prueba por ahora =====
-  if (MODO_NO_INTERACTIVO_SOLO_PRUEBAS && esNumeroDePrueba(numeroOrigen)) {
-    return await manejarModoNoInteractivoWhatsApp(tenant, mensajeUsuario, ctxSesion, numeroOrigen);
-  }
 
   // Recuperar SOLO el nivel guardado (para las imágenes) — el resto de la memoria
   // (nombre, saludo de "qué gusto verte de vuelta", etc.) ya lo maneja más abajo la
@@ -3818,8 +3836,11 @@ function detectarNivelesMenuNI(texto) {
   // Cada nivel se reconoce por: el número (en cualquier parte del mensaje, no solo al
   // inicio — "Gracias, ahora el 2?" debe funcionar), un ordinal en palabras, o el
   // nombre real del nivel/grado. Básico y Bachillerato son opciones separadas (3 y 4).
-  if (/\b1\b|\bprimero\b|\bprimera\b/.test(t) || /preprimaria|jard[ií]n|infantil|k[ií]nder|p[aá]rvulos|preparatoria/.test(t)) detectados.push('preprimaria');
-  if (/\b2\b|\bsegundo\b|\bsegunda\b/.test(t) || /\bprimaria\b/.test(t)) detectados.push('primaria');
+  // "pre primaria" (con espacio, forma muy natural de escribirlo) se quita del texto
+  // antes de buscar "primaria" sola — si no, contaba como los dos niveles a la vez.
+  const textoSinPrePrimariaNI = t.replace(/pre\s*primaria/g, '');
+  if (/\b1\b|\bprimero\b|\bprimera\b/.test(t) || /pre\s*primaria|jard[ií]n|infantil|k[ií]nder|p[aá]rvulos|preparatoria/.test(t)) detectados.push('preprimaria');
+  if (/\b2\b|\bsegundo\b|\bsegunda\b/.test(t) || /\bprimaria\b/.test(textoSinPrePrimariaNI)) detectados.push('primaria');
   if (/\b3\b|\btercero\b|\btercera\b/.test(t) || /\bb[aá]sico\b|\bbasicos\b/.test(t)) detectados.push('basico');
   if (/\b4\b|\bcuarto\b|\bcuarta\b/.test(t) || /bachillerato/.test(t)) detectados.push('bachillerato');
   return detectados;
@@ -3938,7 +3959,22 @@ async function manejarModoNoInteractivoWhatsApp(tenant, mensajeUsuario, ctxSesio
   }
   conversacionDB.mensajes.push({ de: 'padre', texto: mensajeUsuario, fecha: new Date() });
 
-  const nivelesDetectados = detectarNivelesMenuNI(mensajeUsuario);
+  let nivelesDetectados = detectarNivelesMenuNI(mensajeUsuario);
+
+  // Mismo cuidado que en AcruxLab: si el lead ya viene con nivel conocido del
+  // formulario y este mensaje no trae ningún nivel por su cuenta, se usa directo el
+  // nivel del formulario en vez de volver a preguntar el menú.
+  if (!ctxSesion.nivelesNoInteractivoEnviados.length && !ctxSesion.noInteractivoSaludado && !nivelesDetectados.length) {
+    const contactoConNivel = await Contacto.findOne({ tenant_id: tenant._id, numero: numeroOrigen }).catch(() => null);
+    const MAPA_NIVEL_FORM = { preprimaria: 'preprimaria', primaria: 'primaria', 'básico': 'basico', basico: 'basico', bachillerato: 'bachillerato' };
+    const nivelYaConocido = MAPA_NIVEL_FORM[(contactoConNivel?.nivel_interes || '').toLowerCase()];
+    if (nivelYaConocido) {
+      ctxSesion.noInteractivoSaludado = true;
+      nivelesDetectados = [nivelYaConocido];
+      console.log(`📋 [No interactivo][WhatsApp] Nivel tomado directo del formulario para ${numeroOrigen}: ${nivelYaConocido}`);
+    }
+  }
+
   const nivelesNuevos = nivelesDetectados.filter(n => !ctxSesion.nivelesNoInteractivoEnviados.includes(n));
 
   if (!nivelesNuevos.length) {
@@ -3984,19 +4020,19 @@ async function manejarModoNoInteractivoWhatsApp(tenant, mensajeUsuario, ctxSesio
   conversacionDB.ultimaActividad = new Date();
   await conversacionDB.save();
 
-  // ===== ASIGNACIÓN DE VENDEDORA — DESACTIVADA TEMPORALMENTE, mismo motivo que en AcruxLab =====
-  // try {
-  //   const agenteParaAsignar = await asignarAgenteLibre(tenant._id);
-  //   await Conversacion.findOneAndUpdate(
-  //     { tenant_id: tenant._id, numero: numeroOrigen, estado: { $ne: 'cerrado' } },
-  //     {
-  //       estado: 'humano',
-  //       ...(agenteParaAsignar ? { agente_id: agenteParaAsignar._id, agente_nombre: agenteParaAsignar.nombre } : {})
-  //     },
-  //     { upsert: false }
-  //   );
-  //   console.log(`👤 [No interactivo][WhatsApp] Traspaso a ${agenteParaAsignar?.nombre || 'nadie disponible'} — ${numeroOrigen}`);
-  // } catch (e) { console.error(`❌ [No interactivo][WhatsApp] Falló asignar vendedor: ${e.message}`); }
+  // ===== ASIGNACIÓN DE VENDEDORA — reactivada para producción real =====
+  try {
+    const agenteParaAsignar = await elegirVendedoraParaNuevoLead(tenant._id, numeroOrigen);
+    await Conversacion.findOneAndUpdate(
+      { tenant_id: tenant._id, numero: numeroOrigen, estado: { $ne: 'cerrado' } },
+      {
+        estado: 'humano',
+        ...(agenteParaAsignar ? { agente_id: agenteParaAsignar._id, agente_nombre: agenteParaAsignar.nombre } : {})
+      },
+      { upsert: false }
+    );
+    console.log(`👤 [No interactivo][WhatsApp] Traspaso a ${agenteParaAsignar?.nombre || 'nadie disponible'} — ${numeroOrigen}`);
+  } catch (e) { console.error(`❌ [No interactivo][WhatsApp] Falló asignar vendedor: ${e.message}`); }
 
   return MENSAJE_CIERRE_NO_INTERACTIVO;
 }
@@ -6991,7 +7027,22 @@ app.post('/api/debug/acrux-enviar-prueba', authMiddleware, async (req, res) => {
 // Extrae el número de WhatsApp del msgid, formato típico: "false_50256338598@c.us_XXXXX"
 function extraerNumeroDeMsgid(msgid) {
   const m = String(msgid || '').match(/_(\d{8,15})@/);
-  return m ? m[1] : null;
+  if (!m) return null;
+  const digitos = m[1];
+  // Un teléfono real de Guatemala son 8 dígitos (local) u 11 (502 + 8) — cualquier otra
+  // longitud casi siempre es un ID interno de otro canal (Facebook/Instagram) que por
+  // coincidencia calzó con el mismo patrón "_NNN...@". Caso real que lo motivó: un
+  // contacto con msgid de 15 dígitos que no era ningún teléfono, y que arrastraba ese
+  // número inválido a todo el sistema (cupo del piloto, búsqueda de nivel, asignación).
+  if (digitos.length !== 8 && digitos.length !== 11) {
+    console.warn(`⚠️ [extraerNumeroDeMsgid] "${digitos}" (${digitos.length} dígitos) no parece un teléfono válido — se descarta. msgid original: ${msgid}`);
+    return null;
+  }
+  if (digitos.length === 11 && !digitos.startsWith('502')) {
+    console.warn(`⚠️ [extraerNumeroDeMsgid] "${digitos}" tiene 11 dígitos pero no empieza con 502 — se descarta. msgid original: ${msgid}`);
+    return null;
+  }
+  return digitos;
 }
 
 // ===== MÉTRICAS DE ATENCIÓN (vista gerencial) — solo lectura =====
