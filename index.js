@@ -86,7 +86,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-categorias-empleo-reinscripcion'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-categorias-probables-con-numero-prueba'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -898,7 +898,10 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
   // ===== ¿ES PROVEEDOR / EMPLEO / REINSCRIPCIÓN — ALGO AJENO A ADMISIONES NUEVAS? =====
   // Se revisa ANTES que cualquier otra cosa. No se crea lead, no se asigna vendedora,
   // no se llama a la IA, y NO consume cupo del piloto de 5 leads/día.
-  const categoriaFuera = esNumeroDePrueba(numero) ? null : detectarCategoriaFueraDeAdmisiones(mensajeUsuario);
+  // NOTA: a diferencia del resto de filtros, este SÍ aplica también a números de
+  // prueba — a propósito, para poder probar las 3 respuestas fijas (reinscripción,
+  // empleo, proveedor) antes de que lleguen leads reales el lunes.
+  const categoriaFuera = detectarCategoriaFueraDeAdmisiones(mensajeUsuario);
   if (categoriaFuera) {
     console.log(`📦 [AcruxLab] Mensaje de "${categoriaFuera}" detectado (${numero}) — se responde fijo, sin crear lead ni asignar vendedora`);
     return { texto: MENSAJES_FUERA_DE_ADMISIONES[categoriaFuera], handoff: false };
@@ -3073,7 +3076,10 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
   // Se revisa ANTES que cualquier otra cosa — ni se busca lead, ni se asigna vendedora,
   // ni se llama a la IA. Solo se responde el mensaje fijo de esa categoría y ya. No
   // consume cupo del piloto de 5 leads/día.
-  const categoriaFueraWA = esNumeroDePrueba(numeroOrigen) ? null : detectarCategoriaFueraDeAdmisiones(mensajeUsuario);
+  // NOTA: a diferencia del resto de filtros, este SÍ aplica también a números de
+  // prueba — a propósito, para poder probar las 3 respuestas fijas (reinscripción,
+  // empleo, proveedor) antes de que lleguen leads reales el lunes.
+  const categoriaFueraWA = detectarCategoriaFueraDeAdmisiones(mensajeUsuario);
   if (categoriaFueraWA) {
     console.log(`📦 [WhatsApp] Mensaje de "${categoriaFueraWA}" detectado (${numeroOrigen}) — se responde fijo, sin crear lead ni asignar vendedora`);
     return MENSAJES_FUERA_DE_ADMISIONES[categoriaFueraWA];
