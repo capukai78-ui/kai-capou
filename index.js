@@ -87,7 +87,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-modo-no-interactivo-solo-pruebas-hoy'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-produccion-por-fecha-11ago'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -965,7 +965,7 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
   // fallar de la misma forma que el flujo conversacional. Solo corre en horario hábil;
   // de noche KAI se queda en silencio hasta el próximo horario, igual que el resto del
   // piloto. Dura las mismas 2 semanas que el piloto de 5 leads/día.
-  if (MODO_NO_INTERACTIVO_PRODUCCION_ACTIVO && !esNumeroDePrueba(numero) && estaDentroDeHorarioLaboral()) {
+  if (modoNoInteractivoProduccionActivo() && !esNumeroDePrueba(numero) && estaDentroDeHorarioLaboral()) {
     return await manejarModoNoInteractivoAcrux(tenant, mensajeUsuario, conv, contactoId, numero);
   }
 
@@ -3756,7 +3756,13 @@ const MODO_NO_INTERACTIVO_SOLO_PRUEBAS = true;
 // atenderAcruxConIA), así que el conteo de 5/día, la bitácora y el turno de vendedora
 // siguen funcionando exactamente igual que hasta ahora — lo único que cambia es que la
 // IA deja de tener conversación libre con el papá.
-const MODO_NO_INTERACTIVO_PRODUCCION_ACTIVO = false; // hoy solo números de prueba (MODO_NO_INTERACTIVO_SOLO_PRUEBAS) — mañana, tras confirmar, cambiar a true
+// Se activa SOLO, automáticamente, desde esta fecha en adelante (en horario hábil) — no
+// hace falta que nadie suba nada nuevo ni toque un interruptor a mano justo esa mañana.
+// Para cambiar la fecha de arranque, solo se edita esta línea con tiempo.
+const MODO_NO_INTERACTIVO_PRODUCCION_FECHA_INICIO = '2026-08-11';
+function modoNoInteractivoProduccionActivo() {
+  return fechaHoyGT() >= MODO_NO_INTERACTIVO_PRODUCCION_FECHA_INICIO;
+}
 
 const MENSAJE_VIDEO_PROYECTO_NI = 'Con gusto le presentamos nuestro proyecto educativo basado en excelencia y valores. https://youtu.be/tZbsAKo2_g4';
 
