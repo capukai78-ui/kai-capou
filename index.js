@@ -54,7 +54,7 @@ function esNumeroDePrueba(numero) {
 // piloto) — el nuevo comportamiento de fuera de horario es cosa de producción, no
 // de este piloto.
 const PILOTO_5_LEADS_ACTIVO = true; // interruptor maestro — cambiar a false para apagar el piloto por completo
-const PILOTO_5_LEADS_SOLO_PRUEBAS = true; // mientras esto sea true, SOLO aplica a NUMEROS_DE_PRUEBA — cambiar a false cuando ya se probó y se quiere activar con leads reales
+const PILOTO_5_LEADS_SOLO_PRUEBAS = false; // ACTIVO para leads reales desde el lunes 10 de agosto — ya no solo números de prueba
 const PILOTO_5_LEADS_LIMITE_DIARIO = 5;
 const PILOTO_5_LEADS_FECHA_INICIO = '2026-08-10'; // lunes de la Semana 1 (Cindy) — no tocar salvo que cambie el arranque real del piloto
 const PILOTO_5_LEADS_VENDEDORAS = ['Cindy Godoy', 'Vanessa Lopez Carreto']; // [semana 1, semana 2] — alterna cada 7 días desde la fecha de inicio
@@ -86,7 +86,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-piloto-corrige-bitacora-duplicada'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-categorias-empleo-reinscripcion'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -895,12 +895,13 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
     return { texto: null, handoff: false, motivo: 'kai_pausado' };
   }
 
-  // ===== ¿ES UN PROVEEDOR OFRECIENDO PRODUCTOS/SERVICIOS, NO UN PADRE? =====
-  // Mismo filtro que en WhatsApp — se revisa ANTES que cualquier otra cosa. No se crea
-  // lead, no se asigna vendedora, no se llama a la IA.
-  if (!esNumeroDePrueba(numero) && esProveedorOAjenoAAdmisiones(mensajeUsuario)) {
-    console.log(`📦 [AcruxLab] Mensaje de proveedor detectado (${numero}) — se responde fijo, sin crear lead ni asignar vendedora`);
-    return { texto: MENSAJE_RESPUESTA_PROVEEDOR, handoff: false };
+  // ===== ¿ES PROVEEDOR / EMPLEO / REINSCRIPCIÓN — ALGO AJENO A ADMISIONES NUEVAS? =====
+  // Se revisa ANTES que cualquier otra cosa. No se crea lead, no se asigna vendedora,
+  // no se llama a la IA, y NO consume cupo del piloto de 5 leads/día.
+  const categoriaFuera = esNumeroDePrueba(numero) ? null : detectarCategoriaFueraDeAdmisiones(mensajeUsuario);
+  if (categoriaFuera) {
+    console.log(`📦 [AcruxLab] Mensaje de "${categoriaFuera}" detectado (${numero}) — se responde fijo, sin crear lead ni asignar vendedora`);
+    return { texto: MENSAJES_FUERA_DE_ADMISIONES[categoriaFuera], handoff: false };
   }
 
   // Usamos el número limpio (sin prefijo) como clave — así, si el mismo padre ya había
@@ -917,6 +918,26 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
   // flujo conversacional normal en absoluto.
   if (MODO_NO_INTERACTIVO_SOLO_PRUEBAS && esNumeroDePrueba(numero)) {
     return await manejarModoNoInteractivoAcrux(tenant, mensajeUsuario, conv, contactoId);
+  }
+
+  // ===== PILOTO: 5 leads nuevos al día (2 semanas) =====
+  // Este es el canal REAL que usan las familias (AcruxLab, número oficial del colegio)
+  // — no el de Meta, que es solo de pruebas — así que aquí es donde el límite de
+  // verdad importa. Comparte el MISMO cupo diario que WhatsApp Meta, Instagram,
+  // Messenger y el motor proactivo: sin importar la fuente, no más de 5 al día.
+  if (PILOTO_5_LEADS_ACTIVO && (!PILOTO_5_LEADS_SOLO_PRUEBAS || esNumeroDePrueba(numero)) && estaDentroDeHorarioLaboral()) {
+    const yaEsConocido = await Contacto.findOne({ tenant_id: tenant._id, numero }).catch(() => null);
+    if (!yaEsConocido) {
+      const resultadoCupo = await intentarConsumirCupoPiloto(tenant._id, numero);
+      if (!resultadoCupo.cupo) {
+        console.log(`🧪 [PILOTO][AcruxLab] Cupo diario de ${PILOTO_5_LEADS_LIMITE_DIARIO} alcanzado — ${numero} pasa directo a vendedoras, sin respuesta de KAI`);
+        return { texto: null, handoff: false, motivo: 'piloto_cupo_agotado' };
+      }
+      if (!resultadoCupo.yaContadoAntes) {
+        await registrarBitacoraPiloto(tenant._id, numero, 'acrux', 'atendido', resultadoCupo.numeroDeOrden, obtenerVendedoraDeTurnoPiloto());
+        console.log(`🧪 [PILOTO][AcruxLab] ${numero} es el lead #${resultadoCupo.numeroDeOrden} de hoy — KAI lo atiende y lo asignará a ${obtenerVendedoraDeTurnoPiloto()}`);
+      }
+    }
   }
 
   // Recuperar SOLO el nivel guardado (para las imágenes) — el resto de la memoria se
@@ -1519,6 +1540,8 @@ async function procesarNuevosMensajesAcruxLab() {
         // refleja lo que de verdad pasó, revisando el motivo real del resultado.
         if (resultado.motivo === 'kai_pausado') {
           console.log(`⏸️ [AcruxLab] Contacto ${contactoId} — NO se envió nada (pausado en producción)`);
+        } else if (resultado.motivo === 'piloto_cupo_agotado') {
+          console.log(`🧪 [AcruxLab] Contacto ${contactoId} — NO se envió nada (cupo diario del piloto agotado, pasa a vendedoras)`);
         } else {
           console.log(`🤖 KAI respondió por AcruxLab a contacto ${contactoId}${resultado.handoff ? ' (con traspaso a humano)' : ''}${!resultado.texto ? ' (solo imagen)' : ''}`);
         }
@@ -2200,6 +2223,20 @@ async function motorProactivoContactarLeads() {
           continue;
         }
         numerosYaVistos.set(clave, lead.id);
+
+        // ===== PILOTO: comparte el MISMO cupo diario de 5 que las conversaciones
+        // entrantes de WhatsApp/Instagram/Messenger — sin importar la fuente, KAI no
+        // debe atender a más de 5 familias nuevas al día durante estas 2 semanas.
+        if (PILOTO_5_LEADS_ACTIVO && (!PILOTO_5_LEADS_SOLO_PRUEBAS || esNumeroDePrueba(telLead)) && estaDentroDeHorarioLaboral()) {
+          const resultadoCupo = await intentarConsumirCupoPiloto(tenant._id, telLead);
+          if (!resultadoCupo.cupo) {
+            console.log(`🧪 [PILOTO] Cupo diario de ${PILOTO_5_LEADS_LIMITE_DIARIO} alcanzado — el motor proactivo se detiene aquí; los leads de formulario que quedan los atienden las vendedoras manualmente`);
+            break; // se corta TODA la corrida — ya no hay cupo para nadie más hoy, sin importar la fuente
+          }
+          if (!resultadoCupo.yaContadoAntes) {
+            await registrarBitacoraPiloto(tenant._id, telLead, 'formulario', 'atendido', resultadoCupo.numeroDeOrden, obtenerVendedoraDeTurnoPiloto());
+          }
+        }
       }
       const contactar = CANAL_CONTACTO_PROACTIVO === 'acrux' ? contactarLeadPorAcruxLab : contactarLeadPorWhatsApp;
       await contactar(tenant, lead);
@@ -2293,12 +2330,39 @@ async function iniciarHandoff(tenant, numero, nombre, motivoMsg) {
 // a ese punto: si se detecta, se responde con un mensaje fijo y no se asigna vendedora
 // ni se crea ningún lead.
 function esProveedorOAjenoAAdmisiones(texto) {
-  const t = (texto || '').toLowerCase();
-  const señalesProveedor = /promotor(a)?\s+de\s+la\s+marca|represent(o|amos)\s+a\s+la\s+marca|distribuidor(a)?\s+(de|autorizad)|pongo\s+a\s+su\s+disposici[oó]n|ponemos\s+a\s+su\s+disposici[oó]n|nuestra\s+l[ií]nea\s+de\s+productos|cat[aá]logo\s+de\s+productos|precios\s+especiales\s+para|atenci[oó]n\s+personalizada\s+para\s+sus\s+requerimientos|le\s+comparto\s+(mi\s+contacto\s+y\s+)?(nuestro\s+)?cat[aá]logo/.test(t);
-  const mencionaAdmision = /hijo|hija|alumn[oa]|inscrib|admisi[oó]n|colegiatura|matr[ií]cula|cupo|ni[ñn][oa]/.test(t);
-  return señalesProveedor && !mencionaAdmision;
+  return detectarCategoriaFueraDeAdmisiones(texto) !== null;
 }
-const MENSAJE_RESPUESTA_PROVEEDOR = 'Gracias por escribirnos 🙌 Este medio es exclusivo para temas de admisiones del Colegio Capouilliez. Para propuestas comerciales o de proveedores, le pedimos amablemente escribir a nuestro correo institucional. ¡Que tenga un excelente día!';
+
+// Detecta las 3 categorías que Vanessa/Cindy ya responden a mano con mensaje fijo,
+// fuera del proceso de admisiones — para que KAI conteste exactamente lo mismo que
+// ellas, sin gastar cupo del piloto ni intervenir en su proceso.
+function detectarCategoriaFueraDeAdmisiones(texto) {
+  const t = (texto || '').toLowerCase();
+  const mencionaAdmision = /hijo|hija|alumn[oa]|inscrib|admisi[oó]n(?!.*reinscrip)|colegiatura|matr[ií]cula|cupo|ni[ñn][oa]/.test(t);
+
+  // Reinscripción: papás de alumnos YA inscritos, renovando para el siguiente año —
+  // se revisa primero porque puede mencionar "matrícula"/"admisión" de paso.
+  const señalesReinscripcion = /reinscrib|reinscripci[oó]n|renovaci[oó]n\s+de\s+matr[ií]cula|renovar\s+matr[ií]cula/.test(t);
+  if (señalesReinscripcion) return 'reinscripcion';
+
+  const señalesEmpleo = /\b(empleo|vacante|trabaj[oa]r?\s+(con|en)\s+ustedes|env[ií]a?r?\s+(mi\s+)?cv|curr[ií]culum|hoja\s+de\s+vida|plaza\s+laboral|puesto\s+vacante|proceso\s+de\s+reclutamiento)\b/.test(t);
+  if (señalesEmpleo) return 'empleo';
+
+  const señalesProveedor = /promotor(a)?\s+de\s+la\s+marca|represent(o|amos)\s+a\s+la\s+marca|distribuidor(a)?\s+(de|autorizad)|pongo\s+a\s+su\s+disposici[oó]n|ponemos\s+a\s+su\s+disposici[oó]n|nuestra\s+l[ií]nea\s+de\s+productos|cat[aá]logo\s+de\s+productos|precios\s+especiales\s+para|atenci[oó]n\s+personalizada\s+para\s+sus\s+requerimientos|le\s+comparto\s+(mi\s+contacto\s+y\s+)?(nuestro\s+)?cat[aá]logo/.test(t);
+  if (señalesProveedor && !mencionaAdmision) return 'proveedor';
+
+  return null;
+}
+
+// Mensajes EXACTOS que Vanessa ya usa para cada categoría — se mantienen tal cual
+// (incluida la redacción original) porque son mensajes institucionales ya en uso,
+// no algo que a KAI le toque redactar de nuevo.
+const MENSAJES_FUERA_DE_ADMISIONES = {
+  reinscripcion: '¡Buen día! Se ha comunicado ha Admisiones Capouilliez.\nCualquier duda o inconveniente con su proceso de reinscripción, puede comunicarse al:\n2429 1919 o al WhatsApp 3071 6648\nEn horario 8:00 a 14:00 hrs. \nFeliz día',
+  empleo: 'Buen día, Se ha comunicado ha Admisiones Capouilliez,\npuede enviar su CV al siguiente correo rrhh@capouilliez.edu.gt \nFeliz día.',
+  proveedor: 'Buen día, Se ha comunicado ha Admisiones Capouilliez,\npuede enviar su información al siguiente correo alejandra.fajardo@selecuen.com\nFeliz día.'
+};
+const MENSAJE_RESPUESTA_PROVEEDOR = MENSAJES_FUERA_DE_ADMISIONES.proveedor; // se conserva el nombre viejo por compatibilidad
 
 function esAltaIntencion(texto, ultimoMensajeBot) {
   const t = (texto || '').toLowerCase().trim();
@@ -3007,10 +3071,12 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
 
   // ===== ¿ES UN PROVEEDOR OFRECIENDO PRODUCTOS/SERVICIOS, NO UN PADRE? =====
   // Se revisa ANTES que cualquier otra cosa — ni se busca lead, ni se asigna vendedora,
-  // ni se llama a la IA. Solo se responde el mensaje fijo y ya.
-  if (!esNumeroDePrueba(numeroOrigen) && esProveedorOAjenoAAdmisiones(mensajeUsuario)) {
-    console.log(`📦 [WhatsApp] Mensaje de proveedor detectado (${numeroOrigen}) — se responde fijo, sin crear lead ni asignar vendedora`);
-    return MENSAJE_RESPUESTA_PROVEEDOR;
+  // ni se llama a la IA. Solo se responde el mensaje fijo de esa categoría y ya. No
+  // consume cupo del piloto de 5 leads/día.
+  const categoriaFueraWA = esNumeroDePrueba(numeroOrigen) ? null : detectarCategoriaFueraDeAdmisiones(mensajeUsuario);
+  if (categoriaFueraWA) {
+    console.log(`📦 [WhatsApp] Mensaje de "${categoriaFueraWA}" detectado (${numeroOrigen}) — se responde fijo, sin crear lead ni asignar vendedora`);
+    return MENSAJES_FUERA_DE_ADMISIONES[categoriaFueraWA];
   }
 
   // ===== ¿ESTE PAPÁ YA ES DE ALGUIEN EN ODOO? =====
