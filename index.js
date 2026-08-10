@@ -87,7 +87,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-modo-no-interactivo-produccion'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-modo-no-interactivo-solo-pruebas-hoy'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -3756,7 +3756,7 @@ const MODO_NO_INTERACTIVO_SOLO_PRUEBAS = true;
 // atenderAcruxConIA), así que el conteo de 5/día, la bitácora y el turno de vendedora
 // siguen funcionando exactamente igual que hasta ahora — lo único que cambia es que la
 // IA deja de tener conversación libre con el papá.
-const MODO_NO_INTERACTIVO_PRODUCCION_ACTIVO = true;
+const MODO_NO_INTERACTIVO_PRODUCCION_ACTIVO = false; // hoy solo números de prueba (MODO_NO_INTERACTIVO_SOLO_PRUEBAS) — mañana, tras confirmar, cambiar a true
 
 const MENSAJE_VIDEO_PROYECTO_NI = 'Con gusto le presentamos nuestro proyecto educativo basado en excelencia y valores. https://youtu.be/tZbsAKo2_g4';
 
