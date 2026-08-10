@@ -86,7 +86,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-prioridad-chats-sobre-backlog'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-prioridad-natural-45s-vs-10min'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -650,7 +650,6 @@ function minutosDesdeAperturaHoy() {
   const ahoraGT = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Guatemala' }));
   return (ahoraGT.getHours() * 60 + ahoraGT.getMinutes()) - (7 * 60); // apertura siempre es 7:00
 }
-const PILOTO_MOTOR_PROACTIVO_ESPERA_MINUTOS = 60; // el motor no toca el backlog de formularios hasta 1h después de abrir
 
 // Construye el mensaje de traspaso correcto según si hay agente asignado y si estamos
 // dentro del horario laboral — para no prometer "te conecto ahora" cuando en realidad
@@ -2241,14 +2240,14 @@ async function motorProactivoContactarLeads() {
         // ===== PILOTO: comparte el MISMO cupo diario de 5 que las conversaciones
         // entrantes de WhatsApp/Instagram/Messenger — sin importar la fuente, KAI no
         // debe atender a más de 5 familias nuevas al día durante estas 2 semanas.
+        // Prioridad natural a chats reales: el proceso que atiende chats nuevos corre
+        // cada 45 segundos, mientras que este motor corre cada 10 minutos — 13 veces
+        // más frecuente. Así, cualquier chat nuevo que llegue ya se atendió (y ya gastó
+        // su cupo) mucho antes de que el motor vuelva a correr. No hace falta una
+        // espera artificial: si el motor encuentra cupo libre, es porque de verdad no
+        // hay nada nuevo pendiente en ese momento — puede empezar con los formularios
+        // desde las 7am mismo.
         if (PILOTO_5_LEADS_ACTIVO && (!PILOTO_5_LEADS_SOLO_PRUEBAS || esNumeroDePrueba(telLead)) && estaDentroDeHorarioLaboral()) {
-          // Prioridad a chats reales: el backlog de formularios espera su turno los
-          // primeros minutos desde que abre el colegio, para que un papá que escribe
-          // apenas empieza el día no se quede sin cupo por el backlog acumulado.
-          if (minutosDesdeAperturaHoy() < PILOTO_MOTOR_PROACTIVO_ESPERA_MINUTOS && !esNumeroDePrueba(telLead)) {
-            console.log(`🧪 [PILOTO] Dentro del margen de prioridad para chats reales (primeros ${PILOTO_MOTOR_PROACTIVO_ESPERA_MINUTOS} min desde apertura) — el motor proactivo espera, reintenta en la próxima corrida`);
-            break; // se corta toda la corrida de hoy por ahora — se reintenta en 10 min
-          }
           const resultadoCupo = await intentarConsumirCupoPiloto(tenant._id, telLead);
           if (!resultadoCupo.cupo) {
             console.log(`🧪 [PILOTO] Cupo diario de ${PILOTO_5_LEADS_LIMITE_DIARIO} alcanzado — el motor proactivo se detiene aquí; los leads de formulario que quedan los atienden las vendedoras manualmente`);
@@ -7843,7 +7842,7 @@ app.get('/api/debug/piloto-5-leads', authMiddleware, async (req, res) => {
         fecha_inicio_piloto: PILOTO_5_LEADS_FECHA_INICIO,
         vendedora_de_turno_ahora: obtenerVendedoraDeTurnoPiloto(),
         minutos_desde_apertura_hoy: minutosDesdeAperturaHoy(),
-        motor_proactivo_de_formularios: minutosDesdeAperturaHoy() < PILOTO_MOTOR_PROACTIVO_ESPERA_MINUTOS ? `Esperando — le da prioridad a chats reales por ${PILOTO_MOTOR_PROACTIVO_ESPERA_MINUTOS - minutosDesdeAperturaHoy()} min más` : 'Activo — ya puede usar el cupo restante para el backlog de formularios'
+        motor_proactivo_de_formularios: 'Activo — atiende chats nuevos primero (corre cada 45s) y usa el cupo restante para el backlog de formularios (corre cada 10 min)'
       },
       fecha_consultada: fecha,
       atendidos_hoy: contadorDoc?.contador || 0,
