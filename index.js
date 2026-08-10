@@ -87,7 +87,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-fix-orden-modo-ni-whatsapp'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-fix-kai-no-interrumpe-humano'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1357,7 +1357,7 @@ async function procesarNuevosMensajesAcruxLab() {
     const desde = new Date(Date.now() - VENTANA_MOTOR_ACRUX_HORAS * 3600 * 1000).toISOString().replace('T', ' ').substring(0, 19);
     const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
       [[['date_message', '>=', desde]]],
-      { fields: ['id', 'text', 'date_message', 'contact_id', 'msgid', 'from_me'], limit: 2000, order: 'date_message asc' }
+      { fields: ['id', 'text', 'date_message', 'contact_id', 'msgid', 'from_me', 'user_id'], limit: 2000, order: 'date_message asc' }
     );
     if (!mensajes) return;
 
@@ -1480,6 +1480,33 @@ async function procesarNuevosMensajesAcruxLab() {
         ).catch(() => {});
         console.log(`👤 [AcruxLab] Contacto ${contactoId} tomado por "${agenteHumanoEnOdoo}" en el ChatRoom real — KAI no interviene`);
         continue;
+      }
+
+      // ===== RED DE SEGURIDAD: ¿algún humano YA respondió antes en esta conversación,
+      // aunque el campo "agente" de Odoo se haya liberado después? =====
+      // Caso real que lo motivó: Ana Lucía (10 de agosto) — Cindy la atendió varias
+      // veces usando "Start/End Conversation" en Odoo, pero cada "End Conversation"
+      // libera el campo agent_id, y en ese hueco KAI volvió a responder a media
+      // emergencia real (un niño esperando que lo recogieran). El chequeo de arriba
+      // (agentePorContacto) solo ve el estado EN ESTE INSTANTE — no basta. Aquí se
+      // revisa el HISTORIAL completo de la conversación: si algún mensaje saliente fue
+      // de una persona real (no de nuestro usuario de servicio), un humano ya se hizo
+      // cargo, y KAI no debe volver a meterse aunque el campo diga "libre" ahora mismo.
+      if (!esNumeroDePrueba(numero)) {
+        const uidServicioParaEstaRevision = await getOdooUID().catch(() => null);
+        const mensajeDeHumanoPrevio = uidServicioParaEstaRevision
+          ? msgs.find(m => m.from_me && m.user_id && m.user_id[0] !== uidServicioParaEstaRevision)
+          : null;
+        if (mensajeDeHumanoPrevio) {
+          const nombreHumano = mensajeDeHumanoPrevio.user_id[1];
+          await AsignacionAcrux.findOneAndUpdate(
+            { tenant_id: tenant._id, contacto_id: contactoId },
+            { modo: 'humano', fecha_modo_humano: new Date(), agente_nombre: nombreHumano },
+            { upsert: true, setDefaultsOnInsert: true }
+          ).catch(() => {});
+          console.log(`👤 [AcruxLab] Contacto ${contactoId}: "${nombreHumano}" ya respondió antes en el historial (aunque el campo agente esté libre ahora) — KAI no interviene`);
+          continue;
+        }
       }
 
       // ¿Ya está en modo "humano"? Entonces el chat es de esa vendedora y KAI NO se mete
