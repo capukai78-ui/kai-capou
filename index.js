@@ -87,7 +87,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-reclamar-antes-de-enviar-manual'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-auditoria-completa-preprimaria-en-todo-el-codigo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -2989,7 +2989,7 @@ function buscarTodasLasReglasCoincidentes(mensajeUsuario, nivelSesion, nivelesMu
     const coincideNivel = !requiereNivel
       || r.nivel.some(n => contieneKeyword(t, n))
       || (nivelSesionLower && r.nivel.includes(nivelSesionLower))
-      || (nivelesMultiplesLower.length && r.nivel.some(n => nivelesMultiplesLower.some(nm => nm.includes(n))));
+      || (nivelesMultiplesLower.length && r.nivel.some(n => nivelesMultiplesLower.includes(n)));
     if (!coincideNivel) continue;
     const claveImagen = `${r.categoria}|${r.nombre_contiene || r.nivel_educativo || 'general'}`;
     if (!seleccionadas.has(claveImagen)) seleccionadas.set(claveImagen, r);
@@ -3049,7 +3049,7 @@ function completarTemaPendiente(categoria, nivelMencionado) {
   if (!categoria || !nivelMencionado) return null;
   const nivelLower = nivelMencionado.toLowerCase();
   const candidatas = REGLAS_IMAGEN.filter(r => r.categoria === categoria);
-  const match = candidatas.find(r => !r.nivel || r.nivel.length === 0 || r.nivel.some(n => nivelLower.includes(n)));
+  const match = candidatas.find(r => !r.nivel || r.nivel.length === 0 || r.nivel.includes(nivelLower));
   return match || null;
 }
 
@@ -12304,7 +12304,7 @@ app.get('/api/motor/corregir-envio', authMiddleware, async (req, res) => {
 
     // Buscar la imagen correcta para ese nivel y tema
     const filtro = { tenant_id: req.user.tenant_id, activo: true, categoria };
-    const regla = REGLAS_IMAGEN.find(r => r.categoria === categoria && r.nivel?.some(n => nivel.toLowerCase().includes(n)));
+    const regla = REGLAS_IMAGEN.find(r => r.categoria === categoria && r.nivel?.includes(nivel.toLowerCase()));
     if (regla?.nombre_contiene) filtro.nombre = new RegExp(regla.nombre_contiene, 'i');
     else filtro.nivel_educativo = { $in: [nivel, 'Todos'] };
     const imagen = await ImagenMarketing.findOne(filtro).sort({ prioridad: -1, creado: -1 });
