@@ -87,7 +87,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-candado-real-horario-nocturno'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-auditoria-completa-todos-los-procesos'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -3913,16 +3913,37 @@ function detectarNivelesMenuNI(texto) {
   // "Todos", "los cuatro", etc. — pide los cuatro niveles de una vez.
   if (/\btodos\b|\btodas\b|\blos (tres|cuatro)\b|\blas (tres|cuatro)\b/.test(t)) return ['preprimaria', 'primaria', 'basico', 'bachillerato'];
 
-  // Cada nivel se reconoce por: el número (en cualquier parte del mensaje, no solo al
-  // inicio — "Gracias, ahora el 2?" debe funcionar), un ordinal en palabras, o el
-  // nombre real del nivel/grado. Básico y Bachillerato son opciones separadas (3 y 4).
   // "pre primaria" (con espacio, forma muy natural de escribirlo) se quita del texto
   // antes de buscar "primaria" sola — si no, contaba como los dos niveles a la vez.
   const textoSinPrePrimariaNI = t.replace(/pre\s*primaria/g, '');
-  if (/\b1\b|\bprimero\b|\bprimera\b/.test(t) || /pre\s*primaria|jard[ií]n|infantil|k[ií]nder|p[aá]rvulos|preparatoria/.test(t)) detectados.push('preprimaria');
-  if (/\b2\b|\bsegundo\b|\bsegunda\b/.test(t) || /\bprimaria\b/.test(textoSinPrePrimariaNI)) detectados.push('primaria');
-  if (/\b3\b|\btercero\b|\btercera\b/.test(t) || /\bb[aá]sico\b|\bbasicos\b/.test(t)) detectados.push('basico');
-  if (/\b4\b|\bcuarto\b|\bcuarta\b/.test(t) || /bachillerato/.test(t)) detectados.push('bachillerato');
+
+  // El NOMBRE explícito de un nivel siempre manda sobre los números/ordinales. Caso
+  // real que lo motivó: Dvid Reyes escribió "primero primaria" (queriendo decir 1er
+  // grado), pero "primero" es TAMBIÉN la forma de elegir la opción 1 del menú
+  // (Preprimaria) — sin esta prioridad, se detectaban los dos niveles a la vez y se le
+  // mandaron las 7 imágenes de ambos, aunque solo pidió Primaria. Mismo problema con
+  // "tercero primaria", "cuarto básico", etc. — el ordinal del grado choca con el
+  // ordinal del menú.
+  const tieneNombrePreprimaria = /pre\s*primaria|jard[ií]n|infantil|k[ií]nder|p[aá]rvulos|preparatoria/.test(t);
+  const tieneNombrePrimaria = /\bprimaria\b/.test(textoSinPrePrimariaNI);
+  const tieneNombreBasico = /\bb[aá]sico\b|\bbasicos\b/.test(t);
+  const tieneNombreBachillerato = /bachillerato/.test(t);
+
+  if (tieneNombrePreprimaria || tieneNombrePrimaria || tieneNombreBasico || tieneNombreBachillerato) {
+    if (tieneNombrePreprimaria) detectados.push('preprimaria');
+    if (tieneNombrePrimaria) detectados.push('primaria');
+    if (tieneNombreBasico) detectados.push('basico');
+    if (tieneNombreBachillerato) detectados.push('bachillerato');
+    return detectados;
+  }
+
+  // Sin ningún nombre explícito en el mensaje, ahí sí se usan los números/ordinales
+  // como respuesta directa al menú (ej. alguien que solo contesta "1", "2", "el
+  // segundo, por favor").
+  if (/\b1\b|\bprimero\b|\bprimera\b/.test(t)) detectados.push('preprimaria');
+  if (/\b2\b|\bsegundo\b|\bsegunda\b/.test(t)) detectados.push('primaria');
+  if (/\b3\b|\btercero\b|\btercera\b/.test(t)) detectados.push('basico');
+  if (/\b4\b|\bcuarto\b|\bcuarta\b/.test(t)) detectados.push('bachillerato');
   return detectados;
 }
 // Se deja esta versión (un solo nivel) por si algo más la usa — ahora es un simple atajo.
@@ -4149,6 +4170,14 @@ setInterval(async () => {
         // seguía funcionando aunque las respuestas ya estaban pausadas.
         if (KAI_PAUSADO_PARA_PRODUCCION && !esNumeroDePrueba(numero)) {
           console.log(`⏸️ [Cierre por inactividad] KAI pausado en producción — no se cierra ${numero}`);
+          continue;
+        }
+        // ===== CANDADO REAL DE HORARIO — mismo motivo que en el resto del sistema =====
+        // Este cron corre cada 5 minutos, sin parar, 24 horas al día — nunca tenía
+        // revisión de horario. Si una conversación real quedaba inactiva justo entrando
+        // la noche, este mensaje de cierre igual salía. Se deja pendiente: la próxima
+        // corrida DENTRO de horario lo cierra normal, sin perder el caso.
+        if (!esNumeroDePrueba(numero) && !estaDentroDeHorarioLaboral()) {
           continue;
         }
         const tenant = await Tenant.findOne({ activo: true }); // ajustar si hay multi-tenant real
@@ -10184,7 +10213,26 @@ app.post('/api/acrux/asignar-a-vendedor-especifico', authMiddleware, async (req,
       } catch (e) { console.error(`⚠️ [asignar-a-vendedor-especifico] No se pudo sincronizar Odoo: ${e.message}`); }
     }
 
-    res.json({ ok: true, mensaje: `Contacto ${contacto_id} asignado a ${vendedor.nombre}`, odoo_sincronizado: odooSincronizado });
+    // ===== TAMBIÉN sincronizar el LEAD del CRM (crm.lead), no solo la conversación =====
+    // Son dos registros DISTINTOS en Odoo — corregir uno no corrige el otro. Caso real
+    // que lo motivó: Sandry (11 de agosto) quedó con la conversación en Cindy pero su
+    // lead de crm.lead se quedó con Vanessa (el vendedor viejo de cuando escribió por
+    // primera vez), y nadie se dio cuenta hasta que alguien lo vio por casualidad en
+    // Odoo. Se busca el lead por el mismo número de teléfono y se actualiza igual.
+    let leadSincronizado = false;
+    try {
+      const infoConv = await odooCallLocal('acrux.chat.conversation', 'read', [[contacto_id], ['number_format', 'number']]);
+      const numeroConv = infoConv?.[0]?.number_format || infoConv?.[0]?.number;
+      if (numeroConv && vendedor.odoo_user_id) {
+        const leadAsociado = await buscarLeadExistente({ telefono: String(numeroConv).replace(/\D/g, '') });
+        if (leadAsociado?.id) {
+          await odooCallLocal('crm.lead', 'write', [[leadAsociado.id], { user_id: vendedor.odoo_user_id }]);
+          leadSincronizado = true;
+        }
+      }
+    } catch (e) { console.error(`⚠️ [asignar-a-vendedor-especifico] No se pudo sincronizar el lead del CRM: ${e.message}`); }
+
+    res.json({ ok: true, mensaje: `Contacto ${contacto_id} asignado a ${vendedor.nombre}`, odoo_sincronizado: odooSincronizado, lead_crm_sincronizado: leadSincronizado });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
@@ -10334,6 +10382,20 @@ app.post('/api/acrux/responder', authMiddleware, async (req, res) => {
         if (agenteReal?.odoo_user_id) {
           await odooCallLocal('acrux.chat.conversation', 'write', [[contacto_id], { agent_id: agenteReal.odoo_user_id }]);
           console.log(`👤 [Sincronización automática] Contacto ${contacto_id} → agente en Odoo puesto en "${agenteReal.nombre}" (nunca queda como Administrador)`);
+
+          // El lead del CRM (crm.lead) es un registro APARTE de la conversación — se
+          // sincroniza igual, para que nunca quede un caso como el de Sandry (11 de
+          // agosto): conversación en Cindy, pero el lead del CRM todavía en Vanessa.
+          try {
+            const infoConv = await odooCallLocal('acrux.chat.conversation', 'read', [[contacto_id], ['number_format', 'number']]);
+            const numeroConv = infoConv?.[0]?.number_format || infoConv?.[0]?.number;
+            if (numeroConv) {
+              const leadAsociado = await buscarLeadExistente({ telefono: String(numeroConv).replace(/\D/g, '') });
+              if (leadAsociado?.id) {
+                await odooCallLocal('crm.lead', 'write', [[leadAsociado.id], { user_id: agenteReal.odoo_user_id }]);
+              }
+            }
+          } catch (e2) { console.error(`⚠️ [Sincronización automática] No se pudo sincronizar el lead del CRM para el contacto ${contacto_id}: ${e2.message}`); }
         }
       }
     } catch (e) {
