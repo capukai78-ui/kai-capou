@@ -34,6 +34,7 @@ const KAI_PAUSADO_PARA_PRODUCCION = false; // ACTIVADO el 10 de agosto de 2026 �
 const NUMEROS_DE_PRUEBA = [
   '50252060423', // Luvy — IT / pruebas
   '50230066358', // Sylvia Flores — admisiones / pruebas
+  '50233686401', // Luvy — segundo número, prueba limpia formulario vs WhatsApp directo, 11 de agosto
 ];
 
 function esNumeroDePrueba(numero) {
@@ -87,7 +88,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-zona-horaria-guatemala-corregida'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-numero-prueba-limpio-formulario'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
