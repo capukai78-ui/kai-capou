@@ -87,7 +87,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-auditoria-completa-todos-los-procesos'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-zona-horaria-guatemala-corregida'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -635,6 +635,21 @@ function detectaInsistenciaAgente(texto) {
 // Horario real de atención humana: Lunes a Jueves 7:00-16:00, Viernes 7:00-15:00
 // (hora de Guatemala). Fuera de esto, ningún vendedor va a contestar aunque KAI
 // "transfiera" — hay que avisar eso en vez de prometer conexión inmediata.
+// Odoo guarda date_message en UTC crudo, sin ninguna marca que lo diga — por eso hoy
+// se prestó a leerse por error como si ya fuera hora de Guatemala (6 horas de
+// diferencia). Esta función convierte ese string crudo a un string legible en hora de
+// Guatemala, para que el panel y cualquier reporte SIEMPRE muestren la hora real.
+function fechaOdooAGuatemala(fechaUtcCruda) {
+  if (!fechaUtcCruda) return null;
+  const fechaUtc = new Date(fechaUtcCruda.replace(' ', 'T') + 'Z');
+  const partes = new Intl.DateTimeFormat('es-GT', {
+    timeZone: 'America/Guatemala', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+  }).formatToParts(fechaUtc);
+  const obj = Object.fromEntries(partes.map(p => [p.type, p.value]));
+  return `${obj.year}-${obj.month}-${obj.day} ${obj.hour}:${obj.minute}:${obj.second}`;
+}
+
 function estaDentroDeHorarioLaboral() {
   const ahoraGT = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Guatemala' }));
   const dia = ahoraGT.getDay(); // 0=domingo, 1=lunes ... 6=sábado
@@ -3998,6 +4013,19 @@ async function manejarModoNoInteractivoAcrux(tenant, mensajeUsuario, conv, conta
   // Uno o más niveles nuevos — el video del proyecto se manda UNA SOLA VEZ en toda la
   // conversación, no solo dentro del mismo mensaje ("1, 2 y 3" no debe repetirlo 3
   // veces, y tampoco debe repetirse si más adelante pide otro nivel por separado).
+
+  // ===== RECLAMAR LA CONVERSACIÓN ANTES DE ENVIAR =====
+  // Mismo motivo que en /api/acrux/responder: si esta conversación ya se traspasó
+  // antes (un nivel anterior) y algo sincronizó el agente en Odoo mientras tanto (ej.
+  // alguien revisando el panel), Odoo rechaza el envío con "ya no es atendida por
+  // usted" — y como aquí no hay ningún admin viendo el error en pantalla, se perdía en
+  // silencio. Caso real que lo motivó: alguien pidió "1" y le llegó bien, después pidió
+  // "2, 3 y 4" y no le llegó nada.
+  try {
+    const uidServicioParaEnvioNI = await getOdooUID();
+    await odooCallLocal('acrux.chat.conversation', 'write', [[contactoId], { agent_id: uidServicioParaEnvioNI }]);
+  } catch (e) { console.error(`⚠️ [No interactivo] No se pudo reclamar la conversación antes de enviar: ${e.message}`); }
+
   if (!conv.videoProyectoEnviado) {
     await enviarTextoAcruxLab(contactoId, MENSAJE_VIDEO_PROYECTO_NI);
     conv.videoProyectoEnviado = true;
@@ -7092,8 +7120,9 @@ app.get('/api/debug/acrux-conversaciones', authMiddleware, async (req, res) => {
       const num = m.contact_number || 'sin_numero';
       if (!porNumero[num]) porNumero[num] = { numero: num, nombre: m.contact_name || num, total_mensajes: 0, ultimo_mensaje: null, ultima_fecha: null };
       porNumero[num].total_mensajes++;
-      if (!porNumero[num].ultima_fecha || m.date_message > porNumero[num].ultima_fecha) {
-        porNumero[num].ultima_fecha = m.date_message;
+      if (!porNumero[num].ultima_fecha || m.date_message > porNumero[num].ultima_fecha_cruda) {
+        porNumero[num].ultima_fecha_cruda = m.date_message;
+        porNumero[num].ultima_fecha = fechaOdooAGuatemala(m.date_message);
         porNumero[num].ultimo_mensaje = (m.text || '').substring(0, 100);
       }
     });
@@ -7435,8 +7464,9 @@ app.get('/api/acrux/conversaciones', authMiddleware, async (req, res) => {
       c.total_mensajes++;
       if (!m.from_me && !m.read_date) c.no_leidos++;
       if (!c.numero) c.numero = extraerNumeroDeMsgid(m.msgid); // por si el primer mensaje encontrado no traía msgid parseable
-      if (!c.ultima_fecha || m.date_message > c.ultima_fecha) {
-        c.ultima_fecha = m.date_message;
+      if (!c.ultima_fecha_cruda || m.date_message > c.ultima_fecha_cruda) {
+        c.ultima_fecha_cruda = m.date_message;
+        c.ultima_fecha = fechaOdooAGuatemala(m.date_message);
         c.ultimo_mensaje = (m.text || '').substring(0, 120);
         c.ultimo_de = m.from_me ? 'agente' : 'padre';
       }
@@ -7641,7 +7671,7 @@ app.get('/api/acrux/conversaciones/:contactoId', authMiddleware, async (req, res
         return {
           de: m.from_me ? 'agente' : 'padre',
           texto: m.text || '',
-          fecha: m.date_message,
+          fecha: fechaOdooAGuatemala(m.date_message),
           leido: !!m.read_date,
           agente: m.from_me ? (m.user_id ? m.user_id[1] : null) : null,
           es_imagen: m.ttype === 'image',
