@@ -87,7 +87,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-fix-preprimaria-imagenes-y-cupo-silencio'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-reclamar-antes-de-enviar-manual'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -10266,6 +10266,18 @@ app.post('/api/acrux/responder', authMiddleware, async (req, res) => {
         button_ids: []
       };
     }
+
+    // ===== RECLAMAR LA CONVERSACIÓN ANTES DE ENVIAR =====
+    // Odoo rechaza send_message con "Esta conversación ya no es atendida por usted" si
+    // el agent_id actual no coincide con quien manda — y como ahora sincronizamos el
+    // agente real (Cindy, etc.) automáticamente DESPUÉS de cada envío, el segundo envío
+    // seguido con la sesión de Administrador queda bloqueado. Se reclama temporalmente
+    // con el usuario de servicio antes de mandar, y se devuelve al agente real justo
+    // después (en el paso de sincronización que ya existía) — así nunca choca.
+    try {
+      const uidServicioParaEnvio = await getOdooUID();
+      await odooCallLocal('acrux.chat.conversation', 'write', [[contacto_id], { agent_id: uidServicioParaEnvio }]);
+    } catch (e) { console.error(`⚠️ [responder] No se pudo reclamar la conversación antes de enviar: ${e.message}`); }
 
     const resultado = await odooCallLocal(
       'acrux.chat.conversation',
