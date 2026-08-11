@@ -87,7 +87,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-auditoria-completa-preprimaria-en-todo-el-codigo'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-candado-real-horario-nocturno'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -907,6 +907,21 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
   if (KAI_PAUSADO_PARA_PRODUCCION && !esNumeroDePrueba(numero)) {
     console.log(`⏸️ [AcruxLab] KAI pausado en producción — no se responde a ${numero} (número real)`);
     return { texto: null, handoff: false, motivo: 'kai_pausado' };
+  }
+
+  // ===== CANDADO REAL DE HORARIO — "de noche, silencio total" =====
+  // Antes, fuera de horario solo se saltaba el CONTEO del cupo (los bloques del piloto
+  // y del modo no interactivo tienen "&& estaDentroDeHorarioLaboral()"), pero el resto
+  // del código seguía funcionando igual, cayendo al flujo conversacional viejo — que
+  // además tenía su PROPIA lógica escrita a propósito para seguir atendiendo de noche
+  // ("fuera de horario nadie va a retomarla, así que KAI debe seguir"). El 11 de agosto
+  // esto hizo que KAI atendiera de madrugada (00:18, 01:19, 04:29...) a familias reales
+  // sin ningún límite de cupo. Este candado detiene TODO — no solo el conteo — para
+  // números reales fuera de horario, sin excepción y sin importar qué diga el resto
+  // del código más abajo. Los números de prueba nunca se bloquean por esto.
+  if (!esNumeroDePrueba(numero) && !estaDentroDeHorarioLaboral()) {
+    console.log(`🌙 [AcruxLab] Fuera de horario hábil — KAI no responde a ${numero} (número real) hasta el próximo horario`);
+    return { texto: null, handoff: false, motivo: 'fuera_de_horario' };
   }
 
   // ===== ¿ES PROVEEDOR / EMPLEO / REINSCRIPCIÓN — ALGO AJENO A ADMISIONES NUEVAS? =====
@@ -2265,6 +2280,16 @@ let _procesandoMotorProactivo = false;
 async function motorProactivoContactarLeads() {
   if (!MOTOR_PROACTIVO_ACTIVO) return;
   if (_procesandoMotorProactivo) return;
+  // ===== CANDADO REAL DE HORARIO — "de noche, silencio total" =====
+  // Antes, el chequeo de horario solo vivía DENTRO del bloque de cupo del piloto (más
+  // abajo, anidado dentro del "if (telLead...)") — así que si un lead no traía teléfono
+  // reconocible, o simplemente el corte de horario hacía que ese bloque entero se
+  // saltara, el código igual llegaba a `contactar(tenant, lead)` sin ningún freno. El 11
+  // de agosto esto hizo que el motor contactara y atendiera familias reales de
+  // madrugada (00:18, 01:19, 04:29...), sin ningún límite de cupo. Ahora se revisa aquí,
+  // primero que nada — si no es horario hábil, el motor no contacta a NADIE en esta
+  // corrida, punto.
+  if (!estaDentroDeHorarioLaboral()) return;
   _procesandoMotorProactivo = true;
   try {
     const tenant = await Tenant.findOne({ activo: true });
@@ -3190,6 +3215,15 @@ async function responderConIA(tenant, mensajeUsuario, numeroOrigen) {
   // ===== INTERRUPTOR MAESTRO: KAI PAUSADO EN PRODUCCIÓN =====
   if (KAI_PAUSADO_PARA_PRODUCCION && !esNumeroDePrueba(numeroOrigen)) {
     console.log(`⏸️ [WhatsApp] KAI pausado en producción — no se responde a ${numeroOrigen} (número real)`);
+    return '';
+  }
+
+  // ===== CANDADO REAL DE HORARIO — "de noche, silencio total" =====
+  // Mismo arreglo que en AcruxLab (ver el comentario largo allá para el caso real que
+  // lo motivó, el 11 de agosto). Sin esto, el flujo conversacional viejo seguía
+  // atendiendo de madrugada a números reales, sin ningún límite de cupo.
+  if (!esNumeroDePrueba(numeroOrigen) && !estaDentroDeHorarioLaboral()) {
+    console.log(`🌙 [WhatsApp] Fuera de horario hábil — KAI no responde a ${numeroOrigen} (número real) hasta el próximo horario`);
     return '';
   }
 
