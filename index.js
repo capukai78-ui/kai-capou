@@ -87,7 +87,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-asignar-vendedor-especifico-acrux'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.07.20-fix-preprimaria-imagenes-y-cupo-silencio'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -947,7 +947,26 @@ async function atenderAcruxConIA(tenant, mensajeUsuario, numero, contactoId) {
     if (!yaEsConocido) {
       const resultadoCupo = await intentarConsumirCupoPiloto(tenant._id, numero);
       if (!resultadoCupo.cupo) {
-        console.log(`🧪 [PILOTO][AcruxLab] Cupo diario de ${PILOTO_5_LEADS_LIMITE_DIARIO} alcanzado — ${numero} pasa directo a vendedoras, sin respuesta de KAI`);
+        console.log(`🧪 [PILOTO][AcruxLab] Cupo diario de ${PILOTO_5_LEADS_LIMITE_DIARIO} alcanzado — ${numero} pasa directo a vendedoras`);
+        // Antes esto dejaba a la familia en silencio absoluto — el panel mostraba una
+        // vendedora "asignada" (por el reparto de turno) pero nadie le había dicho nada
+        // a la familia, ni KAI ni un humano. Caso real que lo motivó: una familia
+        // escribió, esperó, y nunca recibió ni un solo mensaje. Ahora se manda un
+        // mensaje breve UNA SOLA VEZ (se revisa si ya se hizo el traspaso antes de
+        // mandarlo de nuevo), y se asigna de una vez a la vendedora de turno.
+        const yaTraspasado = await AsignacionAcrux.findOne({ tenant_id: tenant._id, contacto_id: contactoId, modo: 'humano' });
+        if (!yaTraspasado) {
+          const vendedoraTurno = await elegirVendedoraParaNuevoLead(tenant._id, numero);
+          await AsignacionAcrux.findOneAndUpdate(
+            { tenant_id: tenant._id, contacto_id: contactoId },
+            { modo: 'humano', fecha_modo_humano: new Date(), ...(vendedoraTurno ? { agente_id: vendedoraTurno._id, agente_nombre: vendedoraTurno.nombre } : {}) },
+            { upsert: true, setDefaultsOnInsert: true }
+          );
+          if (vendedoraTurno?.odoo_user_id) {
+            await odooCallLocal('acrux.chat.conversation', 'write', [[contactoId], { agent_id: vendedoraTurno.odoo_user_id }]).catch(() => {});
+          }
+          return { texto: '¡Gracias por escribirnos! 😊 En este momento una de nuestras asesoras le va a contactar directamente para ayudarle con todo lo que necesite.', handoff: false, motivo: 'piloto_cupo_agotado' };
+        }
         return { texto: null, handoff: false, motivo: 'piloto_cupo_agotado' };
       }
       if (!resultadoCupo.yaContadoAntes) {
@@ -1599,7 +1618,7 @@ async function procesarNuevosMensajesAcruxLab() {
         if (resultado.motivo === 'kai_pausado') {
           console.log(`⏸️ [AcruxLab] Contacto ${contactoId} — NO se envió nada (pausado en producción)`);
         } else if (resultado.motivo === 'piloto_cupo_agotado') {
-          console.log(`🧪 [AcruxLab] Contacto ${contactoId} — NO se envió nada (cupo diario del piloto agotado, pasa a vendedoras)`);
+          console.log(`🧪 [AcruxLab] Contacto ${contactoId} — cupo diario del piloto agotado${resultado.texto ? ' (mensaje de cortesía enviado, traspasado a vendedora)' : ' (ya se le había avisado antes, sin repetir)'}`);
         } else {
           console.log(`🤖 KAI respondió por AcruxLab a contacto ${contactoId}${resultado.handoff ? ' (con traspaso a humano)' : ''}${!resultado.texto ? ' (solo imagen)' : ''}`);
         }
@@ -2969,7 +2988,7 @@ function buscarTodasLasReglasCoincidentes(mensajeUsuario, nivelSesion, nivelesMu
     const requiereNivel = r.nivel && r.nivel.length > 0;
     const coincideNivel = !requiereNivel
       || r.nivel.some(n => contieneKeyword(t, n))
-      || (nivelSesionLower && r.nivel.some(n => nivelSesionLower.includes(n)))
+      || (nivelSesionLower && r.nivel.includes(nivelSesionLower))
       || (nivelesMultiplesLower.length && r.nivel.some(n => nivelesMultiplesLower.some(nm => nm.includes(n))));
     if (!coincideNivel) continue;
     const claveImagen = `${r.categoria}|${r.nombre_contiene || r.nivel_educativo || 'general'}`;
@@ -2998,7 +3017,7 @@ function buscarReglaImagenCoincidente(mensajeUsuario, nivelSesion) {
   const matchesEnMensaje = candidatas.filter(r => r.nivel && r.nivel.length > 0 && r.nivel.some(n => contieneKeyword(t, n)));
   if (matchesEnMensaje.length) {
     if (matchesEnMensaje.length > 1 && nivelSesionLower) {
-      const coincideConSesion = matchesEnMensaje.find(r => r.nivel.some(n => nivelSesionLower.includes(n)));
+      const coincideConSesion = matchesEnMensaje.find(r => r.nivel.includes(nivelSesionLower));
       if (coincideConSesion) {
         return { regla: coincideConSesion, ambigua: false, categoria: coincideConSesion.categoria };
       }
@@ -3012,7 +3031,7 @@ function buscarReglaImagenCoincidente(mensajeUsuario, nivelSesion) {
 
   // PRIORIDAD 3: alguna candidata coincide con el grado ya establecido antes en la sesión
   if (nivelSesionLower) {
-    const matchEnSesion = candidatas.find(r => r.nivel.some(n => nivelSesionLower.includes(n)));
+    const matchEnSesion = candidatas.find(r => r.nivel.includes(nivelSesionLower));
     if (matchEnSesion) return { regla: matchEnSesion, ambigua: false, categoria: matchEnSesion.categoria };
   }
 
