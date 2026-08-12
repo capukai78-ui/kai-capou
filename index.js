@@ -88,7 +88,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.08.12-clasificacion-ia-instagram-facebook'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.08.12-clasificacion-social-anti-duplicados'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -12898,7 +12898,7 @@ Los teléfonos de Guatemala tienen 8 dígitos. NO inventes datos que no estén e
 Incluye TODOS los índices que te den.`;
 
     const entrada = paraClasificar.map(c => `[${c.indice}] (${c.canal}) ${c.nombre || 'Sin nombre'}: ${c.texto}`).join('\n');
-    const respuesta = await llamarClaude(systemPrompt, [{ role: 'user', content: entrada.substring(0, 12000) }], 3000);
+    const respuesta = await llamarClaude(systemPrompt, [{ role: 'user', content: entrada.substring(0, 12000) }], 8000);
     if (!respuesta) return res.json({ ok: false, error: 'La IA no respondió (revisar saldo de Anthropic)' });
 
     let clasificaciones;
@@ -12970,13 +12970,30 @@ app.post('/api/motor/clasificar-social-automatico', authMiddleware, async (req, 
     const ejecutar = req.body?.ejecutar === true;
     const desde = new Date(Date.now() - dias * 24 * 3600 * 1000);
 
-    const convs = await Conversacion.find({
+    const convsTodas = await Conversacion.find({
       tenant_id: req.user.tenant_id,
       canal: { $in: ['instagram', 'messenger'] },
       ultimaActividad: { $gte: desde }
     }).sort({ ultimaActividad: -1 }).limit(80);
 
-    if (!convs.length) return res.json({ ok: true, total: 0, mensaje: 'No hay conversaciones de Instagram/Messenger en ese rango' });
+    if (!convsTodas.length) return res.json({ ok: true, total: 0, mensaje: 'No hay conversaciones de Instagram/Messenger en ese rango' });
+
+    // ===== NO REPROCESAR LO QUE YA SE REVISÓ Y NO CAMBIÓ =====
+    // Si esto se corre todos los días (como está pensado), sin este filtro cada corrida
+    // volvería a intentar crear/tocar el mismo lead una y otra vez para conversaciones
+    // que ya se clasificaron antes. Solo se vuelve a revisar si: nunca se clasificó, o
+    // llegaron mensajes nuevos después de la última clasificación (el papá pudo haber
+    // escrito algo distinto después de un simple "😢").
+    const convs = convsTodas.filter(c => {
+      if (!c.categoria_social) return true;
+      if (!c.categoria_social_fecha) return true;
+      return new Date(c.ultimaActividad) > new Date(c.categoria_social_fecha);
+    });
+    const yaProcesadasSinCambios = convsTodas.length - convs.length;
+
+    if (!convs.length) {
+      return res.json({ ok: true, total: 0, ya_procesadas_sin_cambios: yaProcesadasSinCambios, mensaje: 'Todo lo de este rango ya estaba clasificado y sin mensajes nuevos — no había nada que reprocesar' });
+    }
 
     const paraClasificar = convs.map((c, i) => {
       const textos = (c.mensajes || []).filter(m => m.de === 'padre').map(m => m.texto).join(' | ').substring(0, 500);
@@ -13007,17 +13024,26 @@ Los teléfonos de Guatemala tienen 8 dígitos. NO inventes datos que no estén e
 Incluye TODOS los índices que te den.`;
 
     const entrada = paraClasificar.map(c => `[${c.indice}] (${c.canal}) ${c.nombre || 'Sin nombre'}: ${c.texto}`).join('\n');
-    const respuesta = await llamarClaude(systemPrompt, [{ role: 'user', content: entrada.substring(0, 12000) }], 3000);
+    const respuesta = await llamarClaude(systemPrompt, [{ role: 'user', content: entrada.substring(0, 12000) }], 8000);
     if (!respuesta) return res.json({ ok: false, error: 'La IA no respondió (revisar saldo de Anthropic)' });
 
     let clasificaciones;
     try {
       let limpio = respuesta.replace(/```json|```/g, '').trim();
       const inicio = limpio.indexOf('[');
-      const fin = limpio.lastIndexOf(']');
-      if (inicio === -1 || fin === -1 || fin < inicio) throw new Error('No se encontró un arreglo JSON en la respuesta');
-      limpio = limpio.substring(inicio, fin + 1);
-      clasificaciones = JSON.parse(limpio);
+      if (inicio === -1) throw new Error('No se encontró un arreglo JSON en la respuesta');
+      let fin = limpio.lastIndexOf(']');
+      if (fin === -1 || fin < inicio) {
+        // Se cortó antes de cerrar el arreglo — rescatamos cada objeto {...} completo
+        // que sí alcanzó a salir, en vez de perder toda la clasificación.
+        limpio = limpio.substring(inicio);
+        const objetos = limpio.match(/\{[^{}]*\}/g) || [];
+        clasificaciones = objetos.map(o => { try { return JSON.parse(o); } catch { return null; } }).filter(Boolean);
+        if (!clasificaciones.length) throw new Error('La respuesta se cortó y no se pudo rescatar ningún objeto');
+      } else {
+        limpio = limpio.substring(inicio, fin + 1);
+        clasificaciones = JSON.parse(limpio);
+      }
     } catch (e) {
       return res.json({ ok: false, error: 'La IA devolvió un formato inesperado', respuesta_cruda: respuesta.substring(0, 800) });
     }
@@ -13098,6 +13124,7 @@ Incluye TODOS los índices que te den.`;
       ok: true,
       modo: ejecutar ? 'EJECUTADO' : 'VISTA_PREVIA',
       total_revisados: paraClasificar.length,
+      ya_procesadas_sin_cambios: yaProcesadasSinCambios,
       resumen: {
         calientes: resultados.filter(r => r.categoria === 'CALIENTE').length,
         tramites: resultados.filter(r => r.categoria === 'TRAMITE').length,
