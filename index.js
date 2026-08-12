@@ -88,7 +88,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.07.20-numero-prueba-limpio-formulario'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.08.12-fix-turno-piloto-en-primer-contacto'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -2102,7 +2102,12 @@ async function contactarLeadPorAcruxLab(tenant, lead) {
 
   let vendedorAsignado = null;
   try {
-    vendedorAsignado = await asignarAgenteLibre(tenant._id);
+    // Antes usaba asignarAgenteLibre (reparto genérico de todo el equipo), que podía
+    // asignar a cualquier vendedora disponible sin importar de quién es el turno esta
+    // semana en el piloto. Bug real encontrado el 12 de agosto: la bitácora del piloto
+    // decía "Cindy" pero esta línea había asignado a Vanessa — la función correcta que
+    // sí respeta PILOTO_5_LEADS_VENDEDORAS es elegirVendedoraParaNuevoLead.
+    vendedorAsignado = await elegirVendedoraParaNuevoLead(tenant._id, tel);
     if (vendedorAsignado?.odoo_user_id) {
       await odooCallLocal('crm.lead', 'write', [[lead.id], { user_id: vendedorAsignado.odoo_user_id }]).catch(() => {});
     }
@@ -2205,7 +2210,9 @@ async function contactarLeadPorWhatsApp(tenant, lead) {
     // interés de verdad — y se le entrega a ESTA MISMA vendedora, no a otra.
     let vendedorAsignado = null;
     try {
-      vendedorAsignado = await asignarAgenteLibre(tenant._id);
+      // Mismo bug que en AcruxLab, corregido el 12 de agosto: usaba el reparto
+      // genérico en vez de respetar el turno semanal del piloto.
+      vendedorAsignado = await elegirVendedoraParaNuevoLead(tenant._id, tel);
       if (vendedorAsignado?.odoo_user_id) {
         await odooCallLocal('crm.lead', 'write', [[lead.id], { user_id: vendedorAsignado.odoo_user_id }]).catch(() => {});
       }
