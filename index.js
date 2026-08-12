@@ -88,7 +88,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.08.12-filtro-social-pestana-admin-y-bloqueo-vendedores'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.08.12-ocultar-etiqueta-canal-vendedoras'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7605,7 +7605,10 @@ function esLeadRealSocial(texto) {
           revisado_social: !!c.revisado_social,
           agente: c.agente_nombre || null,
           agente_fecha: null,
-          etiquetas: [`Canal — ${c.canal === 'instagram' ? 'Instagram' : 'Messenger'}`],
+          // Las vendedoras no necesitan ver "Canal — Instagram/Messenger" — se enfocan
+          // solo en atender, sin distraerse con de dónde vino. El admin sí la sigue
+          // viendo, le sirve como referencia.
+          etiquetas: req.user.role === 'vendedor' ? [] : [`Canal — ${c.canal === 'instagram' ? 'Instagram' : 'Messenger'}`],
           prioridad: '0',
           nota: null
         };
