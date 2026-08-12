@@ -88,7 +88,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.08.12-ocultar-etiqueta-canal-vendedoras'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.08.12-escaneo-y-creacion-leads-faltantes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -13153,6 +13153,94 @@ async function clasificarSocialAutomaticoDiarioTodos() {
 }
 setInterval(clasificarSocialAutomaticoDiarioTodos, 24 * 60 * 60 * 1000);
 setTimeout(clasificarSocialAutomaticoDiarioTodos, 3 * 60 * 1000); // primera corrida 3 min después de arrancar
+
+// ===== ESCANEAR CONVERSACIONES DE ACRUXLAB SIN LEAD EN ODOO =====
+// Encuentra familias que escribieron directo (sin formulario) y que KAI/una vendedora
+// ya atendió, pero que nunca quedaron registradas como lead en el CRM — el hueco real
+// encontrado el 12 de agosto (casos Ana Ventura y YNCP). Es SOLO LECTURA, no crea nada.
+app.get('/api/debug/escanear-conversaciones-sin-lead', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const limite = Math.min(parseInt(req.query.limit) || 300, 1000);
+    const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
+      [[]],
+      { fields: ['id', 'text', 'date_message', 'contact_id', 'msgid', 'from_me', 'user_id'], limit: limite, order: 'date_message desc' }
+    );
+    if (!mensajes) return res.json({ ok: false, error: 'No se pudo leer acrux.chat.message' });
+
+    const porContacto = {};
+    mensajes.forEach(m => {
+      if (!m.contact_id) return;
+      const contactoId = m.contact_id[0];
+      if (!porContacto[contactoId]) porContacto[contactoId] = { contacto_id: contactoId, nombre: m.contact_id[1], numero: extraerNumeroDeMsgid(m.msgid), total_mensajes: 0, ultimo_mensaje: null, ultima_fecha: null, hubo_agente_real: false };
+      const c = porContacto[contactoId];
+      c.total_mensajes++;
+      if (!c.ultima_fecha || m.date_message > c.ultima_fecha) { c.ultima_fecha = m.date_message; c.ultimo_mensaje = (m.text || '').substring(0, 100); }
+      if (m.from_me && m.user_id) c.hubo_agente_real = true;
+    });
+
+    // Solo nos interesan conversaciones reales, con actividad de un agente (bot o
+    // humano) — no las que nunca se contestaron, esas no son "atendidas sin lead".
+    const candidatas = Object.values(porContacto).filter(c => c.hubo_agente_real && c.numero && !esNumeroDePrueba(c.numero));
+
+    const resultados = [];
+    for (const c of candidatas) {
+      const leadExistente = await buscarLeadExistente({ telefono: c.numero }).catch(() => null);
+      if (!leadExistente) {
+        const asign = await AsignacionAcrux.findOne({ tenant_id: req.user.tenant_id, contacto_id: c.contacto_id });
+        resultados.push({
+          contacto_id: c.contacto_id, nombre: c.nombre, numero: c.numero,
+          total_mensajes: c.total_mensajes, ultimo_mensaje: c.ultimo_mensaje,
+          ultima_fecha: fechaOdooAGuatemala(c.ultima_fecha),
+          agente_asignado: asign?.agente_id ? (await UsuarioPanel.findById(asign.agente_id))?.nombre : null
+        });
+      }
+    }
+
+    res.json({ ok: true, total_conversaciones_revisadas: candidatas.length, total_sin_lead: resultados.length, casos: resultados });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// ===== CREAR EL LEAD FALTANTE PARA UN CASO PUNTUAL =====
+// POST /api/debug/crear-lead-faltante  { contacto_id: 8995 }
+app.post('/api/debug/crear-lead-faltante', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const contactoId = req.body?.contacto_id;
+    if (!contactoId) return res.json({ ok: false, error: 'Falta contacto_id' });
+
+    const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
+      [[['contact_id', '=', Number(contactoId)]]],
+      { fields: ['text', 'date_message', 'contact_id', 'msgid', 'from_me'], order: 'date_message asc', limit: 200 }
+    );
+    if (!mensajes || !mensajes.length) return res.json({ ok: false, error: 'No se encontraron mensajes para ese contacto_id' });
+
+    const numero = extraerNumeroDeMsgid(mensajes[0].msgid);
+    if (!numero) return res.json({ ok: false, error: 'No se pudo extraer el número de este contacto' });
+
+    const yaExiste = await buscarLeadExistente({ telefono: numero });
+    if (yaExiste) return res.json({ ok: false, error: `Ya existe el lead #${yaExiste.id}, no se crea otro`, lead_existente: yaExiste.id });
+
+    const nombre = mensajes[0].contact_id?.[1] || 'Sin nombre';
+    const asign = await AsignacionAcrux.findOne({ tenant_id: req.user.tenant_id, contacto_id: Number(contactoId) });
+    const vendedor = asign?.agente_id ? await UsuarioPanel.findById(asign.agente_id) : null;
+    const tenant = await Tenant.findOne({ _id: req.user.tenant_id });
+
+    const resumenMensajes = mensajes.filter(m => m.de !== undefined || true).map(m => `${m.from_me ? 'Colegio' : 'Familia'}: ${(m.text || '').substring(0, 150)}`).join('\n').substring(0, 1500);
+
+    const leadId = await odooCallLocal('crm.lead', 'create', [{
+      name: `${nombre} — WhatsApp directo (registrado retroactivo)`,
+      phone: numero,
+      partner_name: nombre,
+      description: `Lead creado retroactivamente el 12 de agosto — familia que escribió directo por WhatsApp y KAI la atendió, pero nunca se había generado su lead en Odoo.\n\nHistorial:\n${resumenMensajes}`,
+      team_id: tenant?.odoo_team_id || 1,
+      type: 'opportunity',
+      user_id: vendedor?.odoo_user_id || undefined
+    }]);
+
+    res.json({ ok: true, lead_creado: leadId, nombre, numero, vendedor: vendedor?.nombre || 'sin asignar', link: `https://alba.capouilliez.edu.gt/web#id=${leadId}&model=crm.lead&view_type=form` });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
 
 app.get('/api/debug/contactos-sin-conversacion', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
