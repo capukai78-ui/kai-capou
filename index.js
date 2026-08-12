@@ -88,7 +88,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.08.12-fix-turno-piloto-en-primer-contacto'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.08.12-clasificacion-ia-instagram-facebook'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -315,7 +315,12 @@ const conversacionSchema = new mongoose.Schema({
   // Solo aplica a Instagram/Messenger (canal de solo lectura, no se puede responder).
   // Equivalente a "Soltar" en Odoo: marca el lead como ya revisado, para que salga de
   // "esperando respuesta" sin necesidad de contestar.
-  revisado_social: { type: Boolean, default: false }
+  revisado_social: { type: Boolean, default: false },
+  // Clasificación de IA para Instagram/Messenger — CALIENTE, EXPLORATORIO, TRAMITE,
+  // NO_RELEVANTE o null (todavía sin clasificar). Se usa para ocultar del panel lo que
+  // no es un lead real y para decidir si se crea el lead en Odoo o no.
+  categoria_social: { type: String, enum: ['CALIENTE', 'EXPLORATORIO', 'TRAMITE', 'NO_RELEVANTE', null], default: null },
+  categoria_social_fecha: { type: Date, default: null }
 });
 const Conversacion = mongoose.model('Conversacion', conversacionSchema);
 
@@ -7574,6 +7579,15 @@ function esLeadRealSocial(texto) {
       const socialMapeadas = socialConvs.map(c => {
         const ultimo = (c.mensajes || [])[c.mensajes.length - 1];
         const textoUltimo = ultimo ? String(ultimo.texto || '') : '';
+        // Si ya pasó por el clasificador de IA (categoria_social), esa clasificación
+        // manda — es mucho más precisa que el filtro de palabras clave, que dejaba
+        // pasar spam con palabras como "inscripción" (ej. anuncios de otros negocios).
+        // Mientras no se haya clasificado todavía, se usa el filtro de palabras clave
+        // como respaldo, para no ocultar algo potencialmente real sin haberlo revisado.
+        const yaClasificado = !!c.categoria_social;
+        const esLeadReal = yaClasificado
+          ? ['CALIENTE', 'TRAMITE'].includes(c.categoria_social)
+          : esLeadRealSocial(textoUltimo);
         return {
           contacto_id: `social_${c._id}`,
           nombre: c.nombre || (c.canal === 'instagram' ? 'IG — Orgánico' : 'FB — Orgánico'),
@@ -7581,7 +7595,8 @@ function esLeadRealSocial(texto) {
           canal: c.canal,
           es_social: true,
           solo_lectura: true,
-          es_lead_real: esLeadRealSocial(textoUltimo),
+          es_lead_real: esLeadReal,
+          categoria_social: c.categoria_social || 'SIN_CLASIFICAR',
           total_mensajes: (c.mensajes || []).length,
           no_leidos: 0,
           ultimo_mensaje: textoUltimo.substring(0, 120) || null,
@@ -12942,9 +12957,159 @@ Incluye TODOS los índices que te den.`;
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
-// Contactos del formulario que NO tienen conversación en el panel — pasa con los que
-// se contactaron antes de que el sistema creara la conversación automáticamente, y por
-// eso no aparecen en Chats en Vivo. Con ?reparar=1 se les crea la que falta.
+// ===== CLASIFICAR Y PROCESAR SOCIAL — TODO EN UN PASO =====
+// A diferencia de /api/motor/escanear-social (que solo muestra una vista previa sin
+// guardar nada), este endpoint SÍ guarda la categoría en cada conversación — para que
+// el panel pueda ocultar lo que no es relevante — y crea el lead en Odoo automático
+// para CALIENTE y TRAMITE (Exploratorio y No relevante se quedan ocultos, sin lead).
+// POST /api/motor/clasificar-social-automatico  { dias: 7, ejecutar: true }
+app.post('/api/motor/clasificar-social-automatico', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const dias = Math.min(parseInt(req.body?.dias) || 7, 180);
+    const ejecutar = req.body?.ejecutar === true;
+    const desde = new Date(Date.now() - dias * 24 * 3600 * 1000);
+
+    const convs = await Conversacion.find({
+      tenant_id: req.user.tenant_id,
+      canal: { $in: ['instagram', 'messenger'] },
+      ultimaActividad: { $gte: desde }
+    }).sort({ ultimaActividad: -1 }).limit(80);
+
+    if (!convs.length) return res.json({ ok: true, total: 0, mensaje: 'No hay conversaciones de Instagram/Messenger en ese rango' });
+
+    const paraClasificar = convs.map((c, i) => {
+      const textos = (c.mensajes || []).filter(m => m.de === 'padre').map(m => m.texto).join(' | ').substring(0, 500);
+      return { indice: i, id: c._id.toString(), canal: c.canal, numero: c.numero, nombre: c.nombre || null, texto: textos || '(sin mensajes)' };
+    });
+
+    const systemPrompt = `Eres un asistente del Colegio Capouilliez (Guatemala) que revisa mensajes recibidos por Instagram y Facebook Messenger.
+
+Clasifica CADA conversación en una de estas categorías:
+- "CALIENTE": el mensaje muestra interés real en inscribir a un alumno (pregunta por cuotas, admisión, cupos, requisitos, edades, dice que quiere inscribir, o pide agendar una visita/recorrido por las instalaciones).
+- "EXPLORATORIO": pregunta algo del colegio sin intención clara de inscribir todavía (horarios, ubicación, información general).
+- "TRAMITE": es un padre/alumno actual pidiendo algo administrativo (constancias, notas, pagos, papelería de alumno inscrito). NO es admisión.
+- "NO_RELEVANTE": felicitaciones, saludos, comentarios sobre publicaciones, bromas, spam, ofertas de proveedores, solicitudes de empleo, o cualquier cosa que no requiera acción de admisiones.
+
+OJO CON EL TONO — muchos padres escriben de forma muy formal o protocolaria ("El motivo
+de la presente es para manifestar nuestro interés...", "solicitar su valioso apoyo..."),
+y eso NO los hace menos interesados: suelen ser de los más serios. Clasifica por el
+CONTENIDO, no por el estilo. Si menciona a su hijo, su edad, un grado, pide información
+de admisión o quiere agendar una visita → es CALIENTE, aunque parezca carta de oficina.
+Solo va a NO_RELEVANTE si de verdad no tiene que ver con inscribir a un alumno.
+
+Devuelve ÚNICAMENTE un arreglo JSON, sin explicaciones ni markdown, con este formato exacto:
+[{"indice": 0, "categoria": "CALIENTE", "motivo": "explicación breve", "nombre_detectado": "nombre del padre si aparece, o null", "telefono": "solo dígitos si aparece un teléfono en el mensaje, o null", "nivel": "Preprimaria, Primaria, Secundaria o null", "correo": "correo si aparece, o null"}]
+
+Para el nivel: "2do primaria" o "4to grado" → "Primaria"; "básico" o "bachillerato" → "Secundaria"; "kinder", "párvulos" o "preparatoria" → "Preprimaria".
+Los teléfonos de Guatemala tienen 8 dígitos. NO inventes datos que no estén en el texto.
+
+Incluye TODOS los índices que te den.`;
+
+    const entrada = paraClasificar.map(c => `[${c.indice}] (${c.canal}) ${c.nombre || 'Sin nombre'}: ${c.texto}`).join('\n');
+    const respuesta = await llamarClaude(systemPrompt, [{ role: 'user', content: entrada.substring(0, 12000) }], 3000);
+    if (!respuesta) return res.json({ ok: false, error: 'La IA no respondió (revisar saldo de Anthropic)' });
+
+    let clasificaciones;
+    try {
+      let limpio = respuesta.replace(/```json|```/g, '').trim();
+      const inicio = limpio.indexOf('[');
+      const fin = limpio.lastIndexOf(']');
+      if (inicio === -1 || fin === -1 || fin < inicio) throw new Error('No se encontró un arreglo JSON en la respuesta');
+      limpio = limpio.substring(inicio, fin + 1);
+      clasificaciones = JSON.parse(limpio);
+    } catch (e) {
+      return res.json({ ok: false, error: 'La IA devolvió un formato inesperado', respuesta_cruda: respuesta.substring(0, 800) });
+    }
+
+    const porIndice = {};
+    (clasificaciones || []).forEach(c => { porIndice[c.indice] = c; });
+
+    const CATEGORIAS_QUE_SI_SE_ATIENDEN = ['CALIENTE', 'TRAMITE'];
+    const tenant = await Tenant.findOne({ _id: req.user.tenant_id });
+    const resultados = [];
+
+    for (const item of paraClasificar) {
+      const cl = porIndice[item.indice] || {};
+      const categoria = cl.categoria || 'SIN_CLASIFICAR';
+
+      // ===== SIEMPRE se guarda la categoría, se atienda o no =====
+      await Conversacion.findOneAndUpdate(
+        { _id: item.id, tenant_id: req.user.tenant_id },
+        { $set: { categoria_social: categoria, categoria_social_fecha: new Date() } }
+      ).catch(() => {});
+
+      const entradaResultado = { nombre: cl.nombre_detectado || item.nombre || 'Sin nombre', canal: item.canal, categoria };
+
+      if (!CATEGORIAS_QUE_SI_SE_ATIENDEN.includes(categoria)) {
+        entradaResultado.accion = 'oculto del panel, sin lead creado';
+        resultados.push(entradaResultado);
+        continue;
+      }
+
+      if (!ejecutar) {
+        entradaResultado.accion = 'se crearía el lead (vista previa, no ejecutado)';
+        resultados.push(entradaResultado);
+        continue;
+      }
+
+      let tel = cl.telefono ? String(cl.telefono).replace(/\D/g, '') : null;
+      if (tel && tel.length === 8) tel = '502' + tel;
+
+      try {
+        const leadExistente = await buscarLeadExistente({ telefono: tel, correo: cl.correo });
+        if (leadExistente) {
+          const tagRedesExistente = await getOdooTagId(TAG_KAI_REDES);
+          if (tagRedesExistente) {
+            await odooCallLocal('crm.lead', 'write', [[leadExistente.id], { tag_ids: [[4, tagRedesExistente]] }]).catch(() => {});
+          }
+          await anotarOrigenEnLead(leadExistente.id, leadExistente.active === false,
+            `📲 Volvió a escribir por <b>${item.canal === 'instagram' ? 'Instagram' : 'Messenger'}</b> — clasificado como ${categoria}: "${(item.texto || '').substring(0, 200)}"`);
+          entradaResultado.YA_EXISTIA = true;
+          entradaResultado.lead = leadExistente.id;
+          entradaResultado.accion = 'se etiquetó y se dejó nota, no se creó lead nuevo';
+        } else {
+          const vendedor = await elegirVendedoraParaNuevoLead(tenant._id, tel);
+          const tagRedes = await getOdooTagId(TAG_KAI_REDES);
+          const leadId = await odooCallLocal('crm.lead', 'create', [{
+            name: `${entradaResultado.nombre} — vía ${item.canal === 'instagram' ? 'Instagram' : 'Messenger'} (${categoria})`,
+            phone: tel || undefined,
+            email_from: cl.correo || undefined,
+            partner_name: entradaResultado.nombre,
+            description: `Detectado automáticamente por KAI (${categoria}) en ${item.canal}.\nMensaje: ${(item.texto || '').substring(0, 300)}\nNivel detectado: ${cl.nivel || 'no especificado'}`,
+            team_id: tenant?.odoo_team_id || 1,
+            type: 'opportunity',
+            user_id: vendedor?.odoo_user_id || undefined,
+            tag_ids: tagRedes ? [[6, 0, [tagRedes]]] : undefined
+          }]);
+          entradaResultado.lead_creado = leadId;
+          entradaResultado.vendedor = vendedor?.nombre || 'sin asignar';
+          entradaResultado.accion = 'lead nuevo creado en Odoo';
+        }
+      } catch (e) {
+        entradaResultado.accion = 'ERROR al procesar: ' + e.message;
+      }
+
+      resultados.push(entradaResultado);
+      await new Promise(x => setTimeout(x, 1200));
+    }
+
+    res.json({
+      ok: true,
+      modo: ejecutar ? 'EJECUTADO' : 'VISTA_PREVIA',
+      total_revisados: paraClasificar.length,
+      resumen: {
+        calientes: resultados.filter(r => r.categoria === 'CALIENTE').length,
+        tramites: resultados.filter(r => r.categoria === 'TRAMITE').length,
+        exploratorios_ocultos: resultados.filter(r => r.categoria === 'EXPLORATORIO').length,
+        no_relevantes_ocultos: resultados.filter(r => r.categoria === 'NO_RELEVANTE').length,
+      },
+      detalle: resultados
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+
 app.get('/api/debug/contactos-sin-conversacion', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
