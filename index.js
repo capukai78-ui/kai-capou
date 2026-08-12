@@ -24,7 +24,7 @@ dotenv.config();
 //   - Los NÚMEROS DE PRUEBA siguen funcionando exactamente igual que siempre, para que
 //     el equipo pueda seguir probando con confianza mientras se van liberando partes
 // Para reactivar KAI en producción: cambiar esta línea a false.
-const KAI_PAUSADO_PARA_PRODUCCION = false; // ACTIVADO el 10 de agosto de 2026 — confirmación explícita para iniciar el piloto de 5 leads/día
+const KAI_PAUSADO_PARA_PRODUCCION = true; // PAUSADO el 12 de agosto de 2026, a petición explícita del cliente durante el piloto — reactivar solo con confirmación explícita
 
 // ===== NÚMEROS DE PRUEBA =====
 // Son los del equipo que prueban el sistema. KAI SIEMPRE los atiende (aunque figuren
@@ -88,7 +88,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.08.12-escaneo-y-creacion-leads-faltantes'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.08.12-PAUSADO-produccion'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
