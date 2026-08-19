@@ -88,7 +88,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.08.12-PAUSADO-produccion'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.08.12-PAUSADO-leads-solo-lectura'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -13158,6 +13158,39 @@ setTimeout(clasificarSocialAutomaticoDiarioTodos, 3 * 60 * 1000); // primera cor
 // Encuentra familias que escribieron directo (sin formulario) y que KAI/una vendedora
 // ya atendió, pero que nunca quedaron registradas como lead en el CRM — el hueco real
 // encontrado el 12 de agosto (casos Ana Ventura y YNCP). Es SOLO LECTURA, no crea nada.
+// ===== SOLO LECTURA — leads de Odoo por fecha, para reportes de desempeño =====
+// No escribe nada, no crea, no modifica — únicamente lee y devuelve. Pensado para
+// comparar desempeño de KAI vs. vendedoras trabajando solas, sin arriesgar tocar nada.
+// GET /api/debug/leads-de-hoy-solo-lectura?fecha=2026-08-12
+app.get('/api/debug/leads-de-hoy-solo-lectura', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const fecha = req.query.fecha || new Date().toISOString().substring(0, 10);
+    const desdeUTC = new Date(fecha + 'T06:00:00Z').toISOString().replace('T', ' ').substring(0, 19); // 00:00 Guatemala = 06:00 UTC
+    const hastaUTC = new Date(fecha + 'T23:59:59Z').toISOString().replace('T', ' ').substring(0, 19);
+
+    const leads = await odooCallLocal('crm.lead', 'search_read',
+      [[['create_date', '>=', desdeUTC], ['create_date', '<=', hastaUTC]]],
+      { fields: ['id', 'name', 'phone', 'partner_name', 'user_id', 'stage_id', 'type', 'active', 'create_date', 'write_date', 'description'], order: 'create_date asc', limit: 200 }
+    );
+
+    const resultado = (leads || []).map(l => ({
+      id: l.id,
+      nombre: l.name,
+      telefono: l.phone,
+      vendedor: l.user_id ? l.user_id[1] : 'Sin asignar',
+      etapa: l.stage_id ? l.stage_id[1] : null,
+      tipo: l.type,
+      activo: l.active,
+      creado: fechaOdooAGuatemala(l.create_date),
+      ultima_modificacion: fechaOdooAGuatemala(l.write_date),
+      link: `https://alba.capouilliez.edu.gt/web#id=${l.id}&model=crm.lead&view_type=form`
+    }));
+
+    res.json({ ok: true, fecha, total: resultado.length, leads: resultado });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/debug/escanear-conversaciones-sin-lead', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
   try {
