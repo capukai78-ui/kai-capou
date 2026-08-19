@@ -88,7 +88,7 @@ async function obtenerNombreFacebook(psid, token) {
   });
 }
 
-const VERSION_KAI = 'v2026.08.12-PAUSADO-leads-solo-lectura'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
+const VERSION_KAI = 'v2026.08.12-PAUSADO-tiempos-por-fecha-exacta'; // Cambia esta línea cada vez que subas un cambio importante, para verificar en /api/version
 const SERVIDOR_INICIADO = Date.now();
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -13188,6 +13188,77 @@ app.get('/api/debug/leads-de-hoy-solo-lectura', authMiddleware, async (req, res)
     }));
 
     res.json({ ok: true, fecha, total: resultado.length, leads: resultado });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// ===== SOLO LECTURA — tiempos de respuesta por rango de fechas exacto =====
+// A diferencia de /api/acrux/conversaciones (que trae los últimos N mensajes y de ahí
+// filtra), esto le pide a Odoo el rango de fechas exacto directamente — no se pierde
+// nada aunque haya mucha actividad más reciente empujando lo viejo fuera de la ventana.
+// GET /api/debug/tiempos-respuesta-por-fecha?desde=2026-08-03&hasta=2026-08-09
+app.get('/api/debug/tiempos-respuesta-por-fecha', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ ok: false });
+  try {
+    const desde = req.query.desde;
+    const hasta = req.query.hasta;
+    if (!desde || !hasta) return res.json({ ok: false, error: 'Faltan los parámetros desde y hasta (formato AAAA-MM-DD)' });
+
+    const desdeUTC = new Date(desde + 'T06:00:00Z').toISOString().replace('T', ' ').substring(0, 19);
+    const hastaUTC = new Date(hasta + 'T23:59:59-06:00').toISOString().replace('T', ' ').substring(0, 19);
+
+    const mensajes = await odooCallLocal('acrux.chat.message', 'search_read',
+      [[['date_message', '>=', desdeUTC], ['date_message', '<=', hastaUTC]]],
+      { fields: ['id', 'text', 'date_message', 'contact_id', 'from_me', 'user_id'], order: 'contact_id asc, date_message asc', limit: 5000 }
+    );
+    if (!mensajes) return res.json({ ok: false, error: 'No se pudo leer acrux.chat.message' });
+
+    // Agrupar por contacto, en orden cronológico
+    const porContacto = {};
+    mensajes.forEach(m => {
+      if (!m.contact_id) return;
+      const cid = m.contact_id[0];
+      if (!porContacto[cid]) porContacto[cid] = [];
+      porContacto[cid].push(m);
+    });
+
+    const registros = [];
+    for (const cid of Object.keys(porContacto)) {
+      const msgs = porContacto[cid];
+      for (let i = 0; i < msgs.length; i++) {
+        if (msgs[i].from_me) continue; // buscamos mensajes del padre
+        for (let j = i + 1; j < msgs.length; j++) {
+          if (msgs[j].from_me && msgs[j].user_id) {
+            const nombreAgente = msgs[j].user_id[1];
+            if (nombreAgente.toLowerCase().includes('administrador')) break; // fue KAI, no cuenta para este reporte
+            if (/Start Conversation|End Conversation/.test(msgs[j].text || '')) continue;
+            const t1 = new Date(msgs[i].date_message.replace(' ', 'T') + 'Z');
+            const t2 = new Date(msgs[j].date_message.replace(' ', 'T') + 'Z');
+            const minutos = (t2 - t1) / 60000;
+            if (minutos >= 0 && minutos < 1440) registros.push({ vendedora: nombreAgente, minutos: Math.round(minutos * 10) / 10 });
+            break;
+          }
+          if (!msgs[j].from_me) break;
+        }
+      }
+    }
+
+    const porVendedora = {};
+    registros.forEach(r => { (porVendedora[r.vendedora] = porVendedora[r.vendedora] || []).push(r.minutos); });
+
+    const stats = {};
+    for (const [v, tiempos] of Object.entries(porVendedora)) {
+      const ordenados = [...tiempos].sort((a, b) => a - b);
+      stats[v] = {
+        total_respuestas: tiempos.length,
+        promedio_min: Math.round((tiempos.reduce((a, b) => a + b, 0) / tiempos.length) * 10) / 10,
+        mediana_min: Math.round(ordenados[Math.floor(ordenados.length / 2)] * 10) / 10,
+        pct_menos_5min: Math.round(100 * tiempos.filter(m => m < 5).length / tiempos.length),
+        pct_menos_30min: Math.round(100 * tiempos.filter(m => m < 30).length / tiempos.length),
+        pct_mas_1hora: Math.round(100 * tiempos.filter(m => m >= 60).length / tiempos.length),
+      };
+    }
+
+    res.json({ ok: true, desde, hasta, total_contactos: Object.keys(porContacto).length, total_respuestas_medidas: registros.length, stats });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
